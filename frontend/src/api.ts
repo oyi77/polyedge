@@ -8,6 +8,30 @@ const api = axios.create({
   timeout: 15000,
 })
 
+// Admin API instance — injects Authorization header from localStorage
+const adminApi = axios.create({
+  baseURL: `${API_BASE}/api`,
+  timeout: 15000,
+})
+
+adminApi.interceptors.request.use(config => {
+  const key = localStorage.getItem('adminApiKey')
+  if (key) {
+    config.headers = config.headers ?? {}
+    config.headers['Authorization'] = `Bearer ${key}`
+  }
+  return config
+})
+
+export function getAdminApiKey(): string {
+  return localStorage.getItem('adminApiKey') ?? ''
+}
+
+export function setAdminApiKey(key: string) {
+  if (key) localStorage.setItem('adminApiKey', key)
+  else localStorage.removeItem('adminApiKey')
+}
+
 export async function fetchDashboard(): Promise<DashboardData> {
   const { data } = await api.get<DashboardData>('/dashboard')
   return data
@@ -80,14 +104,19 @@ export async function fetchWeatherSignals(): Promise<WeatherSignal[]> {
   return data
 }
 
-// Admin API
+// Admin API (uses adminApi which injects Authorization header)
 export async function fetchAdminSettings(): Promise<Record<string, Record<string, unknown>>> {
-  const { data } = await api.get('/admin/settings')
+  const { data } = await adminApi.get('/admin/settings')
   return data
 }
 
 export async function updateAdminSettings(updates: Record<string, unknown>): Promise<{ status: string; message: string }> {
-  const { data } = await api.post('/admin/settings', { updates })
+  const { data } = await adminApi.post('/admin/settings', { updates })
+  return data
+}
+
+export async function switchTradingMode(mode: 'paper' | 'testnet' | 'live'): Promise<{ status: string; mode: string }> {
+  const { data } = await adminApi.post('/admin/mode', { mode })
   return data
 }
 
@@ -102,7 +131,7 @@ export async function fetchSystemStatus(): Promise<{
   db_trade_count: number
   db_signal_count: number
 }> {
-  const { data } = await api.get('/admin/system')
+  const { data } = await adminApi.get('/admin/system')
   return data
 }
 
@@ -112,6 +141,6 @@ export async function fetchCopyTraderStatus(): Promise<{
   wallet_details: Array<{ address: string; pseudonym: string; score: number; profit_30d: number }>
   recent_signals: Array<Record<string, unknown>>
 }> {
-  const { data } = await api.get('/copy-trader/status')
+  const { data } = await adminApi.get('/copy-trader/status')
   return data
 }

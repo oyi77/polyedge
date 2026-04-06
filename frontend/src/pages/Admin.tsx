@@ -3,6 +3,7 @@ import { NavBar } from '../components/NavBar'
 import { SettingsEditor } from '../components/admin/SettingsEditor'
 import { SystemStatus } from '../components/admin/SystemStatus'
 import { CopyTraderMonitor } from '../components/admin/CopyTraderMonitor'
+import { getAdminApiKey, setAdminApiKey } from '../api'
 
 const TABS = ['Settings', 'System', 'Copy Trader', 'Telegram'] as const
 type Tab = typeof TABS[number]
@@ -37,12 +38,44 @@ function TelegramTab() {
   )
 }
 
+function ApiKeyBar() {
+  const [key, setKey] = useState(getAdminApiKey())
+  const [saved, setSaved] = useState(false)
+
+  const handleSave = () => {
+    setAdminApiKey(key)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  return (
+    <div className="shrink-0 bg-neutral-950 border-b border-neutral-800 px-4 py-1.5 flex items-center gap-3">
+      <span className="text-[9px] text-neutral-600 uppercase tracking-wider shrink-0">Admin Key</span>
+      <input
+        type="password"
+        value={key}
+        onChange={e => setKey(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && handleSave()}
+        placeholder="Bearer token (leave blank if not required)"
+        className="flex-1 bg-transparent border border-neutral-800 text-neutral-400 text-[10px] px-2 py-0.5 font-mono focus:border-neutral-600 focus:outline-none"
+      />
+      <button
+        onClick={handleSave}
+        className="px-2 py-0.5 bg-neutral-800 border border-neutral-700 text-neutral-400 text-[9px] uppercase tracking-wider hover:border-neutral-600 transition-colors"
+      >
+        {saved ? 'Saved' : 'Set'}
+      </button>
+    </div>
+  )
+}
+
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<Tab>('Settings')
 
   return (
     <div className="h-screen bg-black text-neutral-200 flex flex-col overflow-hidden font-mono">
       <NavBar title="Admin Dashboard" />
+      <ApiKeyBar />
 
       {/* Tab Bar */}
       <div className="shrink-0 border-b border-neutral-800 px-4 flex items-center gap-0">

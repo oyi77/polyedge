@@ -1259,6 +1259,39 @@ async def update_admin_settings(body: SettingsUpdate, _: None = Depends(require_
     return {"status": "ok", "message": f"Updated {updated_count} settings"}
 
 
+class ModeSwitch(BaseModel):
+    mode: str
+
+
+@app.post("/api/admin/mode")
+async def switch_mode(body: ModeSwitch, _: None = Depends(require_admin)):
+    """Switch trading mode at runtime and persist to .env."""
+    new_mode = body.mode.lower()
+    if new_mode not in ("paper", "testnet", "live"):
+        raise HTTPException(status_code=400, detail="mode must be paper, testnet, or live")
+
+    old_mode = settings.TRADING_MODE
+    settings.TRADING_MODE = new_mode
+
+    # Persist to .env
+    env_path = ".env"
+    env_lines = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_lines[k.strip()] = v.strip()
+    env_lines["TRADING_MODE"] = new_mode
+    with open(env_path, "w") as f:
+        for k, v in env_lines.items():
+            f.write(f"{k}={v}\n")
+
+    logger.info(f"Trading mode switched: {old_mode} → {new_mode}")
+    return {"status": "ok", "mode": new_mode, "previous_mode": old_mode}
+
+
 @app.get("/api/admin/system")
 async def get_admin_system(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Return system health overview."""
