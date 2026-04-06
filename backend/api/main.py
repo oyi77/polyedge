@@ -1093,6 +1093,218 @@ async def get_copy_signals(limit: int = 20):
         return []
 
 
+# =========================================================================
+# Admin endpoints
+# =========================================================================
+
+class SettingsUpdate(BaseModel):
+    updates: dict
+
+
+_bot_start_time = datetime.utcnow()
+
+SECRET_KEYWORDS = {"KEY", "SECRET", "PASSWORD", "PASSPHRASE", "TOKEN", "PRIVATE"}
+
+
+def _is_secret(field_name: str) -> bool:
+    upper = field_name.upper()
+    return any(kw in upper for kw in SECRET_KEYWORDS)
+
+
+def _mask_value(field_name: str, value) -> str:
+    if value is None or value == "" or value == "None":
+        return ""
+    if _is_secret(field_name):
+        return "****"
+    return value
+
+
+def _get_grouped_settings() -> dict:
+    """Return all settings grouped by category with secrets masked."""
+    trading = {}
+    weather = {}
+    risk = {}
+    api_keys = {}
+    telegram = {}
+    system = {}
+
+    field_groups = {
+        "TRADING_MODE": trading,
+        "INITIAL_BANKROLL": trading,
+        "KELLY_FRACTION": trading,
+        "MAX_TRADE_SIZE": trading,
+        "DAILY_LOSS_LIMIT": trading,
+        "MIN_EDGE_THRESHOLD": trading,
+        "MAX_ENTRY_PRICE": trading,
+        "MAX_TRADES_PER_WINDOW": trading,
+        "MAX_TOTAL_PENDING_TRADES": trading,
+        "WEATHER_ENABLED": weather,
+        "WEATHER_CITIES": weather,
+        "WEATHER_MIN_EDGE_THRESHOLD": weather,
+        "WEATHER_MAX_ENTRY_PRICE": weather,
+        "WEATHER_MAX_TRADE_SIZE": weather,
+        "WEATHER_SCAN_INTERVAL_SECONDS": weather,
+        "MIN_TIME_REMAINING": risk,
+        "MAX_TIME_REMAINING": risk,
+        "MIN_MARKET_VOLUME": risk,
+        "POLYMARKET_API_KEY": api_keys,
+        "POLYMARKET_PRIVATE_KEY": api_keys,
+        "POLYMARKET_API_SECRET": api_keys,
+        "POLYMARKET_API_PASSPHRASE": api_keys,
+        "KALSHI_API_KEY_ID": api_keys,
+        "KALSHI_PRIVATE_KEY_PATH": api_keys,
+        "GROQ_API_KEY": api_keys,
+        "TELEGRAM_BOT_TOKEN": telegram,
+        "TELEGRAM_ADMIN_CHAT_IDS": telegram,
+        "DATABASE_URL": system,
+        "SCAN_INTERVAL_SECONDS": system,
+        "SETTLEMENT_INTERVAL_SECONDS": system,
+        "KALSHI_ENABLED": system,
+        "POLYGON_AMOY_CHAIN_ID": system,
+    }
+
+    for field_name, group in field_groups.items():
+        if hasattr(settings, field_name):
+            raw = getattr(settings, field_name)
+            group[field_name] = _mask_value(field_name, raw)
+
+    return {
+        "trading": trading,
+        "weather": weather,
+        "risk": risk,
+        "api_keys": api_keys,
+        "telegram": telegram,
+        "system": system,
+    }
+
+
+@app.get("/api/admin/settings")
+async def get_admin_settings():
+    """Return all configurable settings grouped by category."""
+    return _get_grouped_settings()
+
+
+@app.post("/api/admin/settings")
+async def update_admin_settings(body: SettingsUpdate):
+    """Update settings at runtime and persist to .env file."""
+    env_path = ".env"
+
+    # Read existing .env
+    env_lines = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_lines[k.strip()] = v.strip()
+
+    updated_count = 0
+    for field, value in body.updates.items():
+        if not hasattr(settings, field):
+            continue
+        # Skip if secret placeholder sent back
+        if str(value) == "****":
+            continue
+        # Type coerce
+        current = getattr(settings, field)
+        if isinstance(current, bool):
+            value = str(value).lower() in ("true", "1", "yes")
+        elif isinstance(current, int):
+            value = int(value)
+        elif isinstance(current, float):
+            value = float(value)
+        setattr(settings, field, value)
+        env_lines[field] = str(value)
+        updated_count += 1
+
+    # Write .env
+    with open(env_path, "w") as f:
+        for k, v in env_lines.items():
+            f.write(f"{k}={v}\n")
+
+    return {"status": "ok", "message": f"Updated {updated_count} settings"}
+
+
+@app.get("/api/admin/system")
+async def get_admin_system(db: Session = Depends(get_db)):
+    """Return system health overview."""
+    state = db.query(BotState).first()
+    pending_trades = db.query(Trade).filter(Trade.settled == False).count()
+    db_trade_count = db.query(Trade).count()
+    db_signal_count = db.query(Signal).count()
+
+    uptime = (datetime.utcnow() - _bot_start_time).total_seconds()
+
+    return {
+        "trading_mode": settings.TRADING_MODE,
+        "bot_running": state.is_running if state else False,
+        "uptime_seconds": int(uptime),
+        "pending_trades": pending_trades,
+        "telegram_configured": bool(settings.TELEGRAM_BOT_TOKEN),
+        "kalshi_enabled": settings.KALSHI_ENABLED,
+        "weather_enabled": settings.WEATHER_ENABLED,
+        "db_trade_count": db_trade_count,
+        "db_signal_count": db_signal_count,
+    }
+
+
+@app.get("/api/copy-trader/status")
+async def get_copy_trader_status():
+    """Return copy trader status with tracked wallets."""
+    wallet_details = []
+    recent_signals = []
+
+    try:
+        from backend.strategies.copy_trader import LeaderboardScorer
+        import httpx
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as http:
+            scorer = LeaderboardScorer(http)
+            traders = await scorer.fetch_and_score(top_n=10)
+
+        wallet_details = [
+            {
+                "address": t.wallet[:10] + "..." if len(t.wallet) > 10 else t.wallet,
+                "pseudonym": t.pseudonym,
+                "score": t.score,
+                "profit_30d": t.profit_30d,
+            }
+            for t in traders
+        ]
+    except Exception:
+        pass
+
+    try:
+        db = SessionLocal()
+        copy_signals = (
+            db.query(Signal)
+            .filter(Signal.market_type == "copy")
+            .order_by(Signal.timestamp.desc())
+            .limit(10)
+            .all()
+        )
+        recent_signals = [
+            {
+                "market_ticker": s.market_ticker,
+                "direction": s.direction,
+                "size": s.suggested_size,
+                "timestamp": s.timestamp.isoformat(),
+            }
+            for s in copy_signals
+        ]
+        db.close()
+    except Exception:
+        pass
+
+    return {
+        "enabled": True,
+        "tracked_wallets": len(wallet_details),
+        "wallet_details": wallet_details,
+        "recent_signals": recent_signals,
+    }
+
+
 @app.websocket("/ws/events")
 async def websocket_events(websocket: WebSocket):
     await ws_manager.connect(websocket)

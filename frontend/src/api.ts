@@ -78,3 +78,39 @@ export async function fetchWeatherSignals(): Promise<WeatherSignal[]> {
   const { data } = await api.get<WeatherSignal[]>('/weather/signals')
   return data
 }
+
+// Admin API
+export async function fetchAdminSettings(): Promise<Record<string, Record<string, unknown>>> {
+  const { data } = await api.get('/admin/settings')
+  return data
+}
+
+export async function updateAdminSettings(updates: Record<string, unknown>): Promise<{ status: string; message: string }> {
+  const { data } = await api.post('/admin/settings', { updates })
+  return data
+}
+
+export async function fetchSystemStatus(): Promise<{
+  trading_mode: string
+  bot_running: boolean
+  uptime_seconds: number
+  pending_trades: number
+  telegram_configured: boolean
+  kalshi_enabled: boolean
+  weather_enabled: boolean
+  db_trade_count: number
+  db_signal_count: number
+}> {
+  const { data } = await api.get('/admin/system')
+  return data
+}
+
+export async function fetchCopyTraderStatus(): Promise<{
+  enabled: boolean
+  tracked_wallets: number
+  wallet_details: Array<{ address: string; pseudonym: string; score: number; profit_30d: number }>
+  recent_signals: Array<Record<string, unknown>>
+}> {
+  const { data } = await api.get('/copy-trader/status')
+  return data
+}
