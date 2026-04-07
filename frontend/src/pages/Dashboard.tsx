@@ -1059,7 +1059,7 @@ export default function Dashboard() {
         )}
 
         <div className="flex-1" />
-        <StatsCards stats={stats} />
+        <StatsCards />
 
         <div className="flex items-center gap-2 shrink-0">
           {authRequired && (
@@ -1068,15 +1068,6 @@ export default function Dashboard() {
             ) : (
               <button onClick={() => setShowLogin(true)} className="px-2 py-1 text-[9px] text-neutral-500 border border-neutral-700 hover:border-green-500/40 hover:text-green-400 uppercase tracking-wider transition-colors">Login</button>
             )
-          )}
-          {(!authRequired || isAuthenticated) && (
-            <button
-              onClick={() => scanMutation.mutate()}
-              disabled={scanMutation.isPending}
-              className="px-2.5 py-1 bg-neutral-900 border border-neutral-700 hover:border-neutral-600 text-neutral-300 text-[10px] uppercase tracking-wider transition-colors disabled:opacity-50 whitespace-nowrap"
-            >
-              {scanMutation.isPending ? 'Scanning...' : 'Scan'}
-            </button>
           )}
           <LiveClock />
         </div>
