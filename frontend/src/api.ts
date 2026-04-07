@@ -1,7 +1,9 @@
 import axios from 'axios'
 import type { DashboardData, Signal, Trade, BotStats, BtcPrice, BtcWindow, WeatherForecast, WeatherSignal } from './types'
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// Empty string = relative URL (uses vite proxy in preview, same-origin in prod)
+// Set VITE_API_URL to override (e.g. for local dev pointing at remote API)
+const API_BASE = import.meta.env.VITE_API_URL || ''
 
 const api = axios.create({
   baseURL: `${API_BASE}/api`,
