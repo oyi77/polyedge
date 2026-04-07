@@ -853,10 +853,15 @@ function PerformanceTab() {
     .filter((t: any) => t.timestamp && new Date(t.timestamp) >= todayStart)
     .reduce((s: number, t: any) => s + (t.pnl ?? 0), 0)
 
-  const totalPnl = (stats as any)?.total_pnl ?? 0
-  const bankroll = (stats as any)?.bankroll ?? 0
-  const winRate = (stats as any)?.win_rate ?? 0
-  const totalTrades = (stats as any)?.total_trades ?? 0
+  // Use mode-aware stats for consistency with StatsCards
+  const activeStats = (stats as any)?.mode === 'live' && (stats as any)?.live 
+    ? (stats as any).live 
+    : (stats as any)?.paper || (stats as any)
+  
+  const totalPnl = activeStats?.pnl ?? (stats as any)?.total_pnl ?? 0
+  const bankroll = activeStats?.bankroll ?? (stats as any)?.bankroll ?? 0
+  const winRate = activeStats?.win_rate ?? (stats as any)?.win_rate ?? 0
+  const totalTrades = activeStats?.trades ?? (stats as any)?.total_trades ?? 0
   const avgTradeSize = trades.length > 0 ? trades.reduce((s: number, t: any) => s + (t.size ?? 0), 0) / trades.length : 0
 
   return (
