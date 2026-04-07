@@ -595,7 +595,7 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/run-scan")
-async def run_scan(db: Session = Depends(get_db)):
+async def run_scan(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     from backend.core.scheduler import run_manual_scan, log_event
 
     state = db.query(BotState).first()
@@ -1310,6 +1310,57 @@ def _get_grouped_settings() -> dict:
         "security": security,
         "system": system,
     }
+
+
+class AdminLoginBody(BaseModel):
+    password: str
+
+
+@app.get("/api/admin/auth-required")
+async def auth_required_endpoint():
+    """Returns whether admin authentication is configured."""
+    return {"auth_required": bool(settings.ADMIN_API_KEY)}
+
+
+@app.post("/api/admin/login")
+async def admin_login(body: AdminLoginBody):
+    """Verify admin password. Returns success; client stores the password as bearer token."""
+    if not settings.ADMIN_API_KEY:
+        return {"success": True, "auth_required": False}
+    if body.password != settings.ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid password")
+    return {"success": True, "auth_required": True}
+
+
+class ChangePasswordBody(BaseModel):
+    new_password: str
+
+
+@app.post("/api/admin/change-password")
+async def change_admin_password(body: ChangePasswordBody, _: None = Depends(require_admin)):
+    """Change the admin password (ADMIN_API_KEY). Persists to .env and hot-reloads."""
+    new_pw = body.new_password.strip()
+    if not new_pw:
+        raise HTTPException(status_code=400, detail="Password cannot be empty")
+
+    env_path = ".env"
+    env_lines: dict[str, str] = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_lines[k.strip()] = v.strip()
+
+    env_lines["ADMIN_API_KEY"] = new_pw
+    with open(env_path, "w") as f:
+        for k, v in env_lines.items():
+            f.write(f"{k}={v}\n")
+
+    settings.ADMIN_API_KEY = new_pw
+    logger.info("Admin password changed")
+    return {"status": "ok", "message": "Password updated — please re-login"}
 
 
 @app.get("/api/admin/settings")

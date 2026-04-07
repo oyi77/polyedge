@@ -65,34 +65,34 @@ export async function fetchStats(): Promise<BotStats> {
 }
 
 export async function runScan(): Promise<{ total_signals: number; actionable_signals: number }> {
-  const { data } = await api.post('/run-scan')
+  const { data } = await adminApi.post('/run-scan')
   return data
 }
 
 export async function simulateTrade(ticker: string): Promise<{ trade_id: number; size: number }> {
-  const { data } = await api.post('/simulate-trade', null, {
+  const { data } = await adminApi.post('/simulate-trade', null, {
     params: { signal_ticker: ticker }
   })
   return data
 }
 
 export async function startBot(): Promise<{ status: string; is_running: boolean }> {
-  const { data } = await api.post('/bot/start')
+  const { data } = await adminApi.post('/bot/start')
   return data
 }
 
 export async function stopBot(): Promise<{ status: string; is_running: boolean }> {
-  const { data } = await api.post('/bot/stop')
+  const { data } = await adminApi.post('/bot/stop')
   return data
 }
 
 export async function settleTradesApi(): Promise<{ settled_count: number }> {
-  const { data } = await api.post('/settle-trades')
+  const { data } = await adminApi.post('/settle-trades')
   return data
 }
 
 export async function resetBot(): Promise<{ status: string; trades_deleted: number; new_bankroll: number }> {
-  const { data } = await api.post('/bot/reset')
+  const { data } = await adminApi.post('/bot/reset')
   return data
 }
 
@@ -103,6 +103,11 @@ export async function fetchWeatherForecasts(): Promise<WeatherForecast[]> {
 
 export async function fetchWeatherSignals(): Promise<WeatherSignal[]> {
   const { data } = await api.get<WeatherSignal[]>('/weather/signals')
+  return data
+}
+
+export async function changeAdminPassword(newPassword: string): Promise<{ status: string; message: string }> {
+  const { data } = await adminApi.post('/admin/change-password', { new_password: newPassword })
   return data
 }
 

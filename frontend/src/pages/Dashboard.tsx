@@ -1,9 +1,11 @@
 import { useState, useEffect, Suspense, lazy } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Link } from 'react-router-dom'
 import { fetchDashboard, runScan, simulateTrade, startBot, stopBot } from '../api'
 import { StatsCards } from '../components/StatsCards'
+import { LoginModal } from '../components/LoginModal'
+import { useAuth } from '../hooks/useAuth'
 import { SignalsTable } from '../components/SignalsTable'
 import { TradesTable } from '../components/TradesTable'
 import { EquityChart } from '../components/EquityChart'
@@ -73,6 +75,8 @@ function RefreshBar({ interval }: { interval: number }) {
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
+  const { isAuthenticated, authRequired, login, logout } = useAuth()
+  const [showLogin, setShowLogin] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['dashboard'],
@@ -208,15 +212,44 @@ export default function Dashboard() {
         <StatsCards stats={stats} />
 
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => scanMutation.mutate()}
-            disabled={scanMutation.isPending}
-            className="px-2.5 py-1 bg-neutral-900 border border-neutral-700 hover:border-neutral-600 text-neutral-300 text-[10px] uppercase tracking-wider transition-colors disabled:opacity-50 whitespace-nowrap"
-          >
-            {scanMutation.isPending ? 'Scanning...' : 'Scan'}
-          </button>
+          {authRequired && (
+            isAuthenticated ? (
+              <button
+                onClick={logout}
+                className="px-2 py-1 text-[9px] text-neutral-600 border border-neutral-800 hover:border-neutral-700 hover:text-neutral-400 uppercase tracking-wider transition-colors"
+              >
+                Logout
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowLogin(true)}
+                className="px-2 py-1 text-[9px] text-neutral-500 border border-neutral-700 hover:border-green-500/40 hover:text-green-400 uppercase tracking-wider transition-colors"
+              >
+                Login
+              </button>
+            )
+          )}
+          {(!authRequired || isAuthenticated) && (
+            <button
+              onClick={() => scanMutation.mutate()}
+              disabled={scanMutation.isPending}
+              className="px-2.5 py-1 bg-neutral-900 border border-neutral-700 hover:border-neutral-600 text-neutral-300 text-[10px] uppercase tracking-wider transition-colors disabled:opacity-50 whitespace-nowrap"
+            >
+              {scanMutation.isPending ? 'Scanning...' : 'Scan'}
+            </button>
+          )}
           <LiveClock />
         </div>
+
+        <AnimatePresence>
+          {showLogin && (
+            <LoginModal
+              login={login}
+              onSuccess={() => setShowLogin(false)}
+              onCancel={() => setShowLogin(false)}
+            />
+          )}
+        </AnimatePresence>
       </motion.header>
 
       {/* ===== MAIN GRID ===== */}
@@ -243,9 +276,16 @@ export default function Dashboard() {
           <div className="border-b border-neutral-800" style={{ height: '28%', minHeight: '120px' }}>
             <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
               <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Equity</span>
-              <span className={`text-[10px] tabular-nums ${stats.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(0)}
-              </span>
+              {(() => {
+                const activePnl = stats.mode === 'live' && stats.live ? stats.live.pnl
+                  : stats.paper ? stats.paper.pnl
+                  : stats.total_pnl
+                return (
+                  <span className={`text-[10px] tabular-nums ${activePnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    {activePnl >= 0 ? '+' : ''}${activePnl.toFixed(0)}
+                  </span>
+                )
+              })()}
             </div>
             <div className="h-[calc(100%-24px)] p-1">
               <EquityChart data={equityCurve} initialBankroll={stats.bankroll - stats.total_pnl} />
@@ -433,7 +473,7 @@ export default function Dashboard() {
         </span>
         <div className="flex items-center gap-3">
           <RefreshBar interval={10000} />
-          <span className="text-[10px] text-neutral-700 font-mono">BTC 5-min + Weather Temp</span>
+          <span className="text-[10px] text-neutral-700 font-mono">Copy · Weather · Kalshi · BTC Oracle · BTC 5m</span>
           <div className="flex items-center gap-1">
             <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
             <span className="text-[10px] text-neutral-600 font-mono">Connected</span>

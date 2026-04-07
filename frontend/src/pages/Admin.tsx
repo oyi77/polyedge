@@ -4,10 +4,12 @@ import { NavBar } from '../components/NavBar'
 import { SettingsEditor } from '../components/admin/SettingsEditor'
 import { SystemStatus } from '../components/admin/SystemStatus'
 import { CopyTraderMonitor } from '../components/admin/CopyTraderMonitor'
+import { useAuth } from '../hooks/useAuth'
 import {
   getAdminApiKey,
   setAdminApiKey,
   updateCredentials,
+  changeAdminPassword,
   fetchStrategies,
   updateStrategy,
   runStrategyNow,
@@ -19,6 +21,55 @@ import {
   updateWalletConfig,
   deleteWalletConfig,
 } from '../api'
+
+function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!password.trim()) return
+    setLoading(true)
+    setError('')
+    try {
+      await login(password)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid password')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="h-screen bg-black flex flex-col overflow-hidden font-mono">
+      <NavBar title="Admin Dashboard" />
+      <div className="flex-1 flex items-center justify-center">
+        <div className="w-80 border border-neutral-800 bg-neutral-950 p-6">
+          <div className="text-[9px] text-neutral-600 uppercase tracking-[0.3em] mb-5">Admin Access Required</div>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="Admin password"
+              autoFocus
+              className="w-full bg-black border border-neutral-800 text-neutral-200 text-xs px-3 py-2 focus:outline-none focus:border-green-500/40 font-mono placeholder-neutral-700"
+            />
+            {error && <p className="text-[10px] text-red-400">{error}</p>}
+            <button
+              type="submit"
+              disabled={loading || !password.trim()}
+              className="px-3 py-1.5 bg-green-500/10 border border-green-500/30 text-green-400 text-[10px] uppercase tracking-wider hover:bg-green-500/20 transition-colors disabled:opacity-40"
+            >
+              {loading ? 'Verifying...' : 'Login'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const TABS = ['Settings', 'System', 'Copy Trader', 'Telegram', 'Credentials', 'Strategies', 'Market Watch', 'Wallet Config'] as const
 type Tab = typeof TABS[number]
@@ -439,6 +490,77 @@ function CredentialsTab() {
           <div className="flex gap-3"><span className="text-red-400">live</span><span className="text-neutral-600">— Private Key + API Key + Secret + Passphrase, mainnet</span></div>
         </div>
       </div>
+      <AdminPasswordSection />
+    </div>
+  )
+}
+
+function AdminPasswordSection() {
+  const { authRequired, logout } = useAuth()
+  const [newPw, setNewPw] = useState('')
+  const [confirmPw, setConfirmPw] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null)
+
+  if (!authRequired) return null
+
+  const handleSave = async () => {
+    if (!newPw.trim()) return
+    if (newPw !== confirmPw) {
+      setStatus({ ok: false, message: 'Passwords do not match' })
+      return
+    }
+    setSaving(true)
+    setStatus(null)
+    try {
+      const result = await changeAdminPassword(newPw)
+      setStatus({ ok: true, message: result.message })
+      setNewPw('')
+      setConfirmPw('')
+      setTimeout(() => logout(), 1500)
+    } catch {
+      setStatus({ ok: false, message: 'Failed to change password' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border border-neutral-800 bg-neutral-900/20 p-4">
+      <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Change Admin Password</div>
+      <p className="text-[11px] text-neutral-600 mb-4 leading-relaxed">
+        Updates <span className="text-neutral-400 font-mono">ADMIN_API_KEY</span> in <span className="text-neutral-400 font-mono">.env</span>. You will be logged out after saving.
+      </p>
+      <div className="space-y-3">
+        <input
+          type="password"
+          value={newPw}
+          onChange={e => setNewPw(e.target.value)}
+          placeholder="New password"
+          className="w-full bg-transparent border border-neutral-800 text-neutral-300 text-[10px] px-2 py-1 font-mono focus:border-neutral-600 focus:outline-none placeholder:text-neutral-700"
+        />
+        <input
+          type="password"
+          value={confirmPw}
+          onChange={e => setConfirmPw(e.target.value)}
+          placeholder="Confirm new password"
+          className="w-full bg-transparent border border-neutral-800 text-neutral-300 text-[10px] px-2 py-1 font-mono focus:border-neutral-600 focus:outline-none placeholder:text-neutral-700"
+        />
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <button
+          onClick={handleSave}
+          disabled={saving || !newPw.trim() || !confirmPw.trim()}
+          className="px-3 py-1.5 bg-neutral-800 border border-neutral-700 text-neutral-300 text-[10px] uppercase tracking-wider hover:border-neutral-500 transition-colors disabled:opacity-40"
+        >
+          {saving ? 'Saving...' : 'Change Password'}
+        </button>
+        {status && (
+          <span className={`text-[10px] font-mono ${status.ok ? 'text-green-500' : 'text-red-500'}`}>
+            {status.message}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -505,11 +627,27 @@ function ApiKeyBar() {
 
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<Tab>('Settings')
+  const { isAuthenticated, authRequired, login, logout } = useAuth()
+
+  if (authRequired && !isAuthenticated) {
+    return <AdminLoginGate login={login} />
+  }
 
   return (
     <div className="h-screen bg-black text-neutral-200 flex flex-col overflow-hidden font-mono">
       <NavBar title="Admin Dashboard" />
-      <ApiKeyBar />
+      {authRequired ? (
+        <div className="shrink-0 flex items-center justify-end px-4 py-1.5 border-b border-neutral-800 bg-neutral-950">
+          <button
+            onClick={logout}
+            className="text-[9px] text-neutral-600 hover:text-neutral-400 uppercase tracking-wider transition-colors"
+          >
+            Logout
+          </button>
+        </div>
+      ) : (
+        <ApiKeyBar />
+      )}
 
       {/* Tab Bar */}
       <div className="shrink-0 border-b border-neutral-800 px-4 flex items-center gap-0">
