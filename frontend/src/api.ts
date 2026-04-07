@@ -379,3 +379,16 @@ export async function fetchHealth(): Promise<{ strategies: StrategyHealth[]; bot
   const { data } = await api.get('/health')
   return data
 }
+
+// ── AI Suggest ────────────────────────────────────────────────────────────────
+
+export async function fetchAISuggest(): Promise<{
+  status: string
+  suggestions: Record<string, unknown>
+  analysis: Record<string, unknown>
+  ai_provider: string
+  raw_response?: string
+}> {
+  const { data } = await adminApi.get('/admin/ai/suggest')
+  return data
+}

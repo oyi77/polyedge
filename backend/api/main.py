@@ -1314,9 +1314,13 @@ def _get_grouped_settings() -> dict:
         "WEIGHT_SMA": indicators,
         "WEIGHT_MARKET_SKEW": indicators,
         "GROQ_MODEL": ai,
+        "AI_PROVIDER": ai,
+        "AI_BASE_URL": ai,
+        "AI_MODEL": ai,
         "AI_LOG_ALL_CALLS": ai,
         "AI_DAILY_BUDGET_USD": ai,
         "GROQ_API_KEY": api_keys,
+        "AI_API_KEY": api_keys,
         "POLYMARKET_API_KEY": api_keys,
         "POLYMARKET_PRIVATE_KEY": api_keys,
         "POLYMARKET_API_SECRET": api_keys,
@@ -2142,6 +2146,194 @@ async def get_decision(decision_id: int, db: Session = Depends(get_db)):
         "reason": row.reason,
         "outcome": row.outcome,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@app.get("/api/admin/ai/suggest")
+async def ai_suggest_params(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Use AI to analyze recent performance and suggest parameter improvements."""
+    import json as _json
+
+    # 1. Query last 100 trades
+    trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(100).all()
+
+    # 2. Query last 100 decisions
+    decisions = db.query(DecisionLog).order_by(DecisionLog.created_at.desc()).limit(100).all()
+
+    # 3. Compute stats
+    total_trades = len(trades)
+    settled_trades = [t for t in trades if t.result in ("win", "loss")]
+    wins = [t for t in settled_trades if t.result == "win"]
+    losses = [t for t in settled_trades if t.result == "loss"]
+    win_rate = len(wins) / len(settled_trades) if settled_trades else 0.0
+    total_pnl = sum(t.pnl or 0.0 for t in trades)
+
+    avg_win_edge = sum(t.edge_at_entry or 0.0 for t in wins) / len(wins) if wins else 0.0
+    avg_loss_edge = sum(t.edge_at_entry or 0.0 for t in losses) / len(losses) if losses else 0.0
+
+    strategy_counts: dict = {}
+    for t in trades:
+        s = t.strategy or "unknown"
+        strategy_counts[s] = strategy_counts.get(s, 0) + 1
+    top_strategy = max(strategy_counts, key=lambda k: strategy_counts[k]) if strategy_counts else "unknown"
+
+    # 4. Current settings
+    kelly = settings.KELLY_FRACTION
+    edge = settings.MIN_EDGE_THRESHOLD
+    max_size = settings.MAX_TRADE_SIZE
+    daily_limit = settings.DAILY_LOSS_LIMIT
+
+    analysis = {
+        "win_rate": win_rate,
+        "total_trades": total_trades,
+        "pnl": total_pnl,
+        "avg_win_edge": avg_win_edge,
+        "avg_loss_edge": avg_loss_edge,
+        "top_strategy": top_strategy,
+    }
+
+    # 5. Build the optimizer prompt (shared by all providers)
+    import re as _re
+
+    def _build_prompt() -> str:
+        return f"""You are a trading parameter optimizer. Analyze this trading bot's performance data and suggest parameter adjustments.
+
+Current parameters:
+- Kelly Fraction: {kelly}
+- Min Edge Threshold: {edge}
+- Max Trade Size: {max_size}
+- Daily Loss Limit: {daily_limit}
+
+Recent performance (last {total_trades} trades):
+- Win rate: {win_rate:.1%}
+- Total PNL: ${total_pnl:.2f}
+- Avg edge of winning trades: {avg_win_edge:.3f}
+- Avg edge of losing trades: {avg_loss_edge:.3f}
+- Most active strategy: {top_strategy}
+
+Provide specific numerical suggestions in JSON format:
+{{
+  "kelly_fraction": <number>,
+  "min_edge_threshold": <number>,
+  "max_trade_size": <number>,
+  "daily_loss_limit": <number>,
+  "reasoning": "<2-3 sentence explanation>",
+  "confidence": "<low|medium|high>"
+}}"""
+
+    def _parse_suggestions(raw: str) -> dict:
+        json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        if json_match:
+            return _json.loads(json_match.group())
+        return _json.loads(raw)
+
+    ai_provider = getattr(settings, "AI_PROVIDER", "groq")
+
+    # --- OmniRoute / Custom (OpenAI-compatible) ---
+    if ai_provider in ("omniroute", "custom"):
+        from backend.ai.custom import get_custom_client
+        custom = get_custom_client()
+        if custom:
+            try:
+                prompt = _build_prompt()
+                suggestions, raw = custom.suggest_params(prompt)
+                return {
+                    "status": "ok",
+                    "suggestions": suggestions,
+                    "analysis": analysis,
+                    "ai_provider": f"{ai_provider}/{custom.model}",
+                    "raw_response": raw,
+                }
+            except Exception as e:
+                logger.warning(f"{ai_provider} AI suggest failed: {e}")
+
+    # --- Groq ---
+    if ai_provider == "groq" or (ai_provider in ("omniroute", "custom") and not get_custom_client()):
+        groq_key = getattr(settings, "GROQ_API_KEY", None)
+        if groq_key:
+            try:
+                from groq import Groq
+                model = getattr(settings, "AI_MODEL", None) or "llama-3.1-70b-versatile"
+                client = Groq(api_key=groq_key)
+                prompt = _build_prompt()
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=400,
+                    temperature=0.2,
+                )
+                raw = response.choices[0].message.content.strip()
+                suggestions = _parse_suggestions(raw)
+                return {
+                    "status": "ok",
+                    "suggestions": suggestions,
+                    "analysis": analysis,
+                    "ai_provider": f"groq/{model}",
+                    "raw_response": raw,
+                }
+            except Exception as e:
+                logger.warning(f"Groq AI suggest failed: {e}")
+
+    # --- Claude ---
+    if ai_provider == "claude":
+        claude_key = getattr(settings, "ANTHROPIC_API_KEY", None)
+        if claude_key:
+            try:
+                import anthropic
+                model = getattr(settings, "AI_MODEL", None) or "claude-3-5-haiku-20241022"
+                client = anthropic.Anthropic(api_key=claude_key)
+                prompt = _build_prompt()
+                message = client.messages.create(
+                    model=model,
+                    max_tokens=400,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw = message.content[0].text.strip()
+                suggestions = _parse_suggestions(raw)
+                return {
+                    "status": "ok",
+                    "suggestions": suggestions,
+                    "analysis": analysis,
+                    "ai_provider": f"claude/{model}",
+                    "raw_response": raw,
+                }
+            except Exception as e:
+                logger.warning(f"Claude AI suggest failed: {e}")
+
+    # Math-based fallback
+    suggested_kelly = kelly
+    suggested_edge = edge
+    suggested_max_size = max_size
+    suggested_daily_limit = daily_limit
+    confidence = "low"
+    reasoning = "AI provider unavailable. Suggestions based on performance math."
+
+    if total_trades >= 10:
+        if win_rate > 0.6:
+            suggested_kelly = min(kelly * 1.1, 0.25)
+            suggested_max_size = min(max_size * 1.1, 150.0)
+            confidence = "medium"
+            reasoning = f"Win rate of {win_rate:.1%} is strong. Slightly increasing Kelly and max trade size."
+        elif win_rate < 0.4:
+            suggested_kelly = max(kelly * 0.8, 0.05)
+            suggested_edge = min(edge * 1.2, 0.10)
+            suggested_max_size = max(max_size * 0.8, 25.0)
+            confidence = "medium"
+            reasoning = f"Win rate of {win_rate:.1%} is weak. Reducing position sizing and raising edge threshold."
+
+    return {
+        "status": "ok",
+        "suggestions": {
+            "kelly_fraction": round(suggested_kelly, 4),
+            "min_edge_threshold": round(suggested_edge, 4),
+            "max_trade_size": round(suggested_max_size, 2),
+            "daily_loss_limit": round(suggested_daily_limit, 2),
+            "reasoning": reasoning,
+            "confidence": confidence,
+        },
+        "analysis": analysis,
+        "ai_provider": "unavailable",
+        "raw_response": "",
     }
 
 

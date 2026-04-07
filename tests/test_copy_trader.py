@@ -225,14 +225,14 @@ class TestWalletWatcher:
         mock_http.get = mock_get
         watcher = WalletWatcher(mock_http)
 
-        # Poll 1: seed (tx1 BUY seen, entry_sizes not tracked by watcher since it's the seed)
-        await watcher.poll("0xwallet")
+        # Mock _get_entry_size to return 100.0 for the BUY
+        from unittest.mock import patch
+        with patch.object(watcher, '_get_entry_size', return_value=100.0):
+            # Poll 1: seed (tx1 BUY seen)
+            await watcher.poll("0xwallet")
 
-        # Manually set entry size — simulates that we tracked the BUY via a prior live cycle
-        watcher._entry_sizes["0xwallet"]["c1:YES"] = 100.0
-
-        # Poll 2: SELL 60 appears → cumulative=60 >= 50% of 100 → exit signal
-        buys, exits = await watcher.poll("0xwallet")
+            # Poll 2: SELL 60 appears → cumulative=60 >= 50% of 100 → exit signal
+            buys, exits = await watcher.poll("0xwallet")
         assert len(exits) == 1
         assert exits[0].side == "SELL"
         assert exits[0].condition_id == "c1"
@@ -241,6 +241,7 @@ class TestWalletWatcher:
     async def test_no_exit_below_fifty_percent(self):
         """No exit signal when SELL is less than 50% of original entry."""
         from backend.strategies.copy_trader import WalletWatcher
+        from unittest.mock import patch
 
         mock_http = AsyncMock()
 
@@ -269,8 +270,14 @@ class TestWalletWatcher:
 
         mock_http.get = mock_get
         watcher = WalletWatcher(mock_http)
-        await watcher.poll("0xwallet")
-        watcher._entry_sizes["0xwallet"]["c1:YES"] = 100.0
+
+        # Mock _get_entry_size to return 100.0 for the BUY
+        with patch.object(watcher, '_get_entry_size', return_value=100.0):
+            await watcher.poll("0xwallet")
+
+            # Poll 2: SELL 40 appears → cumulative=40 < 50% of 100 → no exit signal
+            buys, exits = await watcher.poll("0xwallet")
+            assert len(exits) == 0
 
         buys, exits = await watcher.poll("0xwallet")
         assert len(exits) == 0, "Should not exit on 40% sell"

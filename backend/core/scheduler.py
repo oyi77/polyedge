@@ -10,12 +10,19 @@ import logging
 from backend.config import settings
 from backend.models.database import SessionLocal, Trade, BotState, Signal
 from backend.core.signals import scan_for_signals
+from backend.queue.worker import Worker
+from backend.queue.sqlite_queue import AsyncSQLiteQueue
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trading_bot")
 
 # Global scheduler instance
 scheduler: Optional[AsyncIOScheduler] = None
+
+# Global queue and worker instances
+queue: Optional[AsyncSQLiteQueue] = None
+worker: Optional[Worker] = None
+worker_task: Optional[asyncio.Task] = None
 
 # Event log for terminal display (in-memory, last 200 events)
 event_log: List[dict] = []
@@ -274,6 +281,9 @@ async def scan_and_trade_job():
                     }
                 )
 
+                from backend.bot.notifier import notify_btc_signal
+                notify_btc_signal(signal, trade)
+
             state.last_run = datetime.utcnow()
             db.commit()
 
@@ -469,9 +479,11 @@ async def settlement_job():
                     "pnl": total_pnl
                 })
 
+                from backend.bot.notifier import notify_trade_settled
                 for trade in settled:
                     result_prefix = "+" if trade.pnl and trade.pnl > 0 else ""
                     log_event("data", f"  {trade.event_slug}: {trade.result.upper()} {result_prefix}${trade.pnl:.2f}")
+                    notify_trade_settled(trade)
             else:
                 log_event("info", "No trades ready for settlement")
 
@@ -621,7 +633,7 @@ def _load_strategy_jobs() -> None:
 
 def start_scheduler():
     """Start the background scheduler for BTC 5-min trading."""
-    global scheduler
+    global scheduler, queue, worker, worker_task
 
     if scheduler is not None and scheduler.running:
         log_event("warning", "Scheduler already running")
@@ -682,16 +694,51 @@ def start_scheduler():
         max_instances=1,
     )
 
+    # Start the scheduler
     scheduler.start()
     for job in scheduler.get_jobs():
         logger.info(f"scheduler job registered: id={job.id} next_run={job.next_run_time}")
     logger.info(f"scheduler started: jobs={[j.id for j in scheduler.get_jobs()]}")
-    log_event("success", "BTC 5-min trading scheduler started", {
-        "scan_interval": f"{scan_seconds}s",
-        "settlement_interval": f"{settle_seconds}s",
-        "min_edge": f"{settings.MIN_EDGE_THRESHOLD:.0%}",
-        "weather_enabled": settings.WEATHER_ENABLED,
-    })
+
+    # Initialize queue worker if enabled
+    if settings.JOB_WORKER_ENABLED:
+        logger.info("JOB_WORKER_ENABLED=True - initializing queue worker")
+
+        # Create queue and worker instances
+        queue = AsyncSQLiteQueue(max_workers=settings.DB_EXECUTOR_MAX_WORKERS)
+        worker = Worker(queue, max_concurrent=settings.MAX_CONCURRENT_JOBS)
+
+        # Remove APScheduler jobs to prevent double-execution
+        # The worker will process jobs from the queue instead
+        jobs_to_remove = ["market_scan", "settlement_check", "weather_scan"]
+        for job_id in jobs_to_remove:
+            try:
+                scheduler.remove_job(job_id)
+                logger.info(f"Removed APScheduler job '{job_id}' - worker will handle via queue")
+            except Exception as e:
+                logger.warning(f"Could not remove job '{job_id}': {e}")
+
+        # Start worker in background
+        worker_task = asyncio.create_task(worker.start())
+        logger.info("Queue worker started in background")
+
+        log_event("success", "BTC 5-min trading scheduler started with queue worker", {
+            "worker_enabled": True,
+            "scan_interval": f"{scan_seconds}s",
+            "settlement_interval": f"{settle_seconds}s",
+            "min_edge": f"{settings.MIN_EDGE_THRESHOLD:.0%}",
+            "weather_enabled": settings.WEATHER_ENABLED,
+            "max_concurrent_jobs": settings.MAX_CONCURRENT_JOBS,
+        })
+    else:
+        logger.info("JOB_WORKER_ENABLED=False - using APScheduler for job execution")
+        log_event("success", "BTC 5-min trading scheduler started", {
+            "worker_enabled": False,
+            "scan_interval": f"{scan_seconds}s",
+            "settlement_interval": f"{settle_seconds}s",
+            "min_edge": f"{settings.MIN_EDGE_THRESHOLD:.0%}",
+            "weather_enabled": settings.WEATHER_ENABLED,
+        })
 
     # Load registry-driven strategy jobs from DB
     try:
@@ -702,12 +749,26 @@ def start_scheduler():
 
 def stop_scheduler():
     """Stop the background scheduler."""
-    global scheduler
+    global scheduler, worker, queue
 
     if scheduler is None or not scheduler.running:
         log_event("info", "Scheduler not running")
         return
 
+    # Stop worker if running
+    if worker is not None:
+        logger.info("Stopping queue worker...")
+        worker.stop()
+        worker = None
+        logger.info("Queue worker stopped")
+
+        # Shutdown queue
+        if queue is not None:
+            queue.shutdown()
+            queue = None
+            logger.info("Queue shutdown complete")
+
+    # Shutdown scheduler
     scheduler.shutdown(wait=False)
     scheduler = None
     log_event("info", "Scheduler stopped")

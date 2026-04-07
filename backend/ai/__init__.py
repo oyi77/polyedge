@@ -2,6 +2,7 @@
 from .base import AIAnalysis, AIProvider
 from .claude import ClaudeAnalyzer
 from .groq import GroqClassifier
+from .custom import CustomAIClient, get_custom_client
 from .logger import AICallLogger
 
 __all__ = [
@@ -9,5 +10,7 @@ __all__ = [
     'AIProvider',
     'ClaudeAnalyzer',
     'GroqClassifier',
-    'AICallLogger'
+    'CustomAIClient',
+    'get_custom_client',
+    'AICallLogger',
 ]

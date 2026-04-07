@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchSystemStatus, startBot, stopBot } from '../../api'
+import { fetchSystemStatus, startBot, stopBot, switchTradingMode } from '../../api'
 
 const MODE_BADGES: Record<string, { label: string; className: string }> = {
   paper: { label: 'Paper', className: 'bg-amber-500/10 text-amber-400 border-amber-500/20' },
@@ -7,8 +8,15 @@ const MODE_BADGES: Record<string, { label: string; className: string }> = {
   live: { label: 'Live', className: 'bg-red-500/10 text-red-400 border-red-500/20' },
 }
 
+const MODES = [
+  { key: 'paper', label: 'Paper', desc: 'Simulated trades, real market data', credKey: 'creds_paper' as const, missingKey: null },
+  { key: 'testnet', label: 'Testnet', desc: 'Real orders on Amoy testnet', credKey: 'creds_testnet' as const, missingKey: 'missing_for_testnet' as const },
+  { key: 'live', label: 'Live', desc: 'Real money on Polygon mainnet', credKey: 'creds_live' as const, missingKey: 'missing_for_live' as const },
+] as const
+
 export function SystemStatus() {
   const queryClient = useQueryClient()
+  const [modeError, setModeError] = useState<string | null>(null)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['admin-system'],
@@ -32,6 +40,17 @@ export function SystemStatus() {
     },
   })
 
+  const modeMutation = useMutation({
+    mutationFn: switchTradingMode,
+    onSuccess: () => {
+      setModeError(null)
+      queryClient.invalidateQueries({ queryKey: ['admin-system'] })
+    },
+    onError: (err: Error) => {
+      setModeError(err.message || 'Failed to switch mode')
+    },
+  })
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -52,10 +71,55 @@ export function SystemStatus() {
 
   return (
     <div className="space-y-4">
-      {/* Mode + Bot Status */}
+      {/* Mode Switcher */}
+      <div className="border border-neutral-800 bg-neutral-900/20 p-4">
+        <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-3">Trading Mode</div>
+        <div className="grid grid-cols-3 gap-2">
+          {MODES.map(m => {
+            const ready = data[m.credKey]
+            const missing = m.missingKey ? data[m.missingKey] : []
+            const active = data.trading_mode === m.key
+            return (
+              <button
+                key={m.key}
+                disabled={modeMutation.isPending || active}
+                onClick={() => modeMutation.mutate(m.key as 'paper' | 'testnet' | 'live')}
+                title={missing.length > 0 ? `Missing: ${missing.join(', ')}` : m.desc}
+                className={`relative p-2.5 border text-left transition-colors disabled:cursor-not-allowed ${
+                  active
+                    ? `${MODE_BADGES[m.key].className} border-current`
+                    : 'border-neutral-700 text-neutral-400 hover:border-neutral-500 hover:text-neutral-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider">{m.label}</span>
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ready ? 'bg-green-500' : 'bg-red-500/60'}`} />
+                </div>
+                <div className="text-[9px] text-neutral-600 leading-tight">{m.desc}</div>
+                {!ready && missing.length > 0 && (
+                  <div className="text-[8px] text-red-500/70 mt-1 truncate">
+                    Need: {missing.map(k => k.replace('POLYMARKET_', '')).join(', ')}
+                  </div>
+                )}
+                {active && (
+                  <div className="absolute top-1 right-1 w-1 h-1 rounded-full bg-current opacity-60" />
+                )}
+              </button>
+            )
+          })}
+        </div>
+        {modeError && (
+          <div className="mt-2 text-[10px] text-red-400">{modeError}</div>
+        )}
+        {modeMutation.isPending && (
+          <div className="mt-2 text-[10px] text-neutral-500">Switching mode...</div>
+        )}
+      </div>
+
+      {/* Bot Status */}
       <div className="grid grid-cols-2 gap-3">
         <div className="border border-neutral-800 bg-neutral-900/20 p-4">
-          <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-2">Trading Mode</div>
+          <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-2">Active Mode</div>
           <span className={`px-2 py-1 text-xs font-bold uppercase border ${modeBadge.className}`}>
             {modeBadge.label}
           </span>

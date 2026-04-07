@@ -102,6 +102,11 @@ class PolyEdgeBot:
         self._app.add_handler(CommandHandler("settings", self._cmd_settings))
         self._app.add_handler(CommandHandler("mode", self._cmd_mode))
         self._app.add_handler(CommandHandler("calibration", self._cmd_calibration))
+        self._app.add_handler(CommandHandler("scan", self._cmd_scan))
+        self._app.add_handler(CommandHandler("trades", self._cmd_trades))
+        self._app.add_handler(CommandHandler("bankroll", self._cmd_bankroll))
+        self._app.add_handler(CommandHandler("settle", self._cmd_settle))
+        self._app.add_handler(CommandHandler("pnl", self._cmd_pnl))
         self._app.add_handler(CallbackQueryHandler(self._handle_callback))
 
         # Start polling in background
@@ -238,6 +243,101 @@ class PolyEdgeBot:
         )
         await self.alert_all_admins(text)
 
+    async def send_btc_signal(self, signal, trade=None) -> None:
+        """Send BTC market signal alert."""
+        if not self._bot or self._paused:
+            return
+        try:
+            from backend.config import settings
+            edge_pct = abs(signal.edge) * 100
+            direction = signal.direction.upper()
+            entry = signal.entry_price if hasattr(signal, 'entry_price') else getattr(signal, 'market_probability', 0)
+            size_str = f"${trade.size:.2f}" if trade else f"${signal.suggested_size:.2f}" if hasattr(signal, 'suggested_size') else "—"
+            mode = settings.TRADING_MODE.upper()
+            mode_emoji = {"PAPER": "🟠", "TESTNET": "🟡", "LIVE": "🔴"}.get(mode, "⚪")
+            executed = "✅ TRADE PLACED" if trade else "📊 SIGNAL (no trade)"
+            text = (
+                f"<b>BTC SIGNAL {mode_emoji} {mode}</b>\n"
+                f"\n"
+                f"<b>{executed}</b>\n"
+                f"Market: <i>{getattr(signal, 'market_ticker', 'N/A')}</i>\n"
+                f"\n"
+                f"Direction:  <b>{direction}</b>\n"
+                f"Entry:      {entry:.3f}\n"
+                f"Model prob: {getattr(signal, 'model_probability', 0):.1%}\n"
+                f"Market:     {getattr(signal, 'market_probability', 0):.1%}\n"
+                f"<b>Edge:       +{edge_pct:.1f}%</b>\n"
+                f"Size:       <b>{size_str}</b>\n"
+                + (f"Order ID:   <code>{trade.clob_order_id}</code>\n" if trade and getattr(trade, 'clob_order_id', None) else "")
+            )
+            await self.alert_all_admins(text)
+        except Exception as e:
+            logger.error(f"send_btc_signal error: {e}")
+
+    async def send_trade_opened(self, trade) -> None:
+        """Notify when any trade is opened."""
+        if not self._bot:
+            return
+        try:
+            from backend.config import settings
+            mode = settings.TRADING_MODE.upper()
+            mode_emoji = {"PAPER": "🟠", "TESTNET": "🟡", "LIVE": "🔴"}.get(mode, "⚪")
+            text = (
+                f"<b>📈 TRADE OPENED {mode_emoji}</b>\n"
+                f"\n"
+                f"Market:     <i>{trade.market_ticker}</i>\n"
+                f"Direction:  <b>{trade.direction.upper()}</b>\n"
+                f"Entry:      {trade.entry_price:.3f}\n"
+                f"Size:       <b>${trade.size:.2f}</b>\n"
+                f"Strategy:   {trade.strategy or 'manual'}\n"
+                + (f"Order:      <code>{trade.clob_order_id}</code>\n" if getattr(trade, 'clob_order_id', None) else "")
+            )
+            await self.alert_all_admins(text)
+        except Exception as e:
+            logger.error(f"send_trade_opened error: {e}")
+
+    async def send_trade_settled(self, trade) -> None:
+        """Notify when a trade settles."""
+        if not self._bot:
+            return
+        try:
+            result = getattr(trade, 'result', None) or 'unknown'
+            pnl = getattr(trade, 'pnl', None)
+            if result == 'win':
+                emoji = "✅ WIN"
+            elif result == 'loss':
+                emoji = "❌ LOSS"
+            else:
+                emoji = "⏳ SETTLED"
+            pnl_str = f"+${pnl:.2f}" if pnl and pnl > 0 else f"-${abs(pnl):.2f}" if pnl else "—"
+            text = (
+                f"<b>{emoji}</b>\n"
+                f"\n"
+                f"Market:  <i>{trade.market_ticker}</i>\n"
+                f"Side:    {trade.direction.upper()} @ {trade.entry_price:.3f}\n"
+                f"Size:    ${trade.size:.2f}\n"
+                f"<b>PnL:     {pnl_str}</b>\n"
+            )
+            await self.alert_all_admins(text)
+        except Exception as e:
+            logger.error(f"send_trade_settled error: {e}")
+
+    async def send_scan_summary(self, total: int, actionable: int, placed: int) -> None:
+        """Send scan summary when actionable signals are found."""
+        if not self._bot:
+            return
+        try:
+            text = (
+                f"<b>🔍 SCAN COMPLETE</b>\n"
+                f"\n"
+                f"Markets scanned: {total}\n"
+                f"Actionable:      <b>{actionable}</b>\n"
+                f"Trades placed:   <b>{placed}</b>"
+            )
+            await self.alert_all_admins(text)
+        except Exception as e:
+            logger.error(f"send_scan_summary error: {e}")
+
     # =========================================================================
     # Callback handler (inline keyboard buttons)
     # =========================================================================
@@ -289,9 +389,14 @@ class PolyEdgeBot:
             f"Commands:\n"
             f"/status — system status\n"
             f"/positions — open positions\n"
+            f"/trades [n] — recent trades with PnL\n"
+            f"/bankroll — bankroll and equity\n"
+            f"/pnl — P&L breakdown\n"
             f"/leaderboard — tracked traders\n"
-            f"/pause — pause scanning\n"
-            f"/resume — resume scanning\n"
+            f"/scan — trigger BTC scan now (admin)\n"
+            f"/settle — run settlement check (admin)\n"
+            f"/pause — pause scanning (admin)\n"
+            f"/resume — resume scanning (admin)\n"
             f"/settings — current config\n"
             f"/calibration — weather calibration report\n"
             f"/mode paper|testnet|live — switch mode (admin)",
@@ -414,6 +519,126 @@ class PolyEdgeBot:
             from backend.core.calibration import get_calibration_report
             report = get_calibration_report()
             await update.message.reply_text(f"<pre>{report}</pre>", parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
+    async def _cmd_scan(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
+        """Trigger an immediate BTC scan."""
+        if not self._is_admin(update):
+            await update.message.reply_text("❌ Admin only.")
+            return
+        await update.message.reply_text("🔍 Running BTC scan...")
+        try:
+            from backend.core.scheduler import scan_and_trade_job
+            await scan_and_trade_job()
+            await update.message.reply_text("✅ Scan complete. Check /positions for results.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Scan error: {e}")
+
+    async def _cmd_trades(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
+        """Show recent trades with PnL."""
+        try:
+            n = 10
+            if context.args:
+                try:
+                    n = int(context.args[0])
+                except ValueError:
+                    pass
+            from backend.models.database import SessionLocal, Trade
+            db = SessionLocal()
+            trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(n).all()
+            db.close()
+            if not trades:
+                await update.message.reply_text("📊 <b>Recent Trades</b>\n\nNo trades found.", parse_mode=ParseMode.HTML)
+                return
+            lines = [f"📊 <b>Recent Trades (last {len(trades)})</b>\n"]
+            total_pnl = 0.0
+            for t in trades:
+                pnl = t.pnl or 0.0
+                total_pnl += pnl
+                status = {"win": "✅", "loss": "❌", None: "⏳"}.get(t.result, "⏳")
+                pnl_str = f" {'+' if pnl >= 0 else ''}{pnl:.2f}" if t.result else ""
+                lines.append(
+                    f"{status} <b>{t.direction.upper()}</b> {t.market_type or 'btc'} "
+                    f"${t.size:.0f} @ {t.entry_price:.2%}"
+                    f"{pnl_str}"
+                )
+            lines.append(f"\n<b>Total PnL: {'+' if total_pnl >= 0 else ''}{total_pnl:.2f}</b>")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
+    async def _cmd_bankroll(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
+        """Show current bankroll and equity."""
+        try:
+            from backend.models.database import SessionLocal, Trade
+            from backend.config import settings
+            db = SessionLocal()
+            pending = db.query(Trade).filter(Trade.settled == False).all()
+            settled = db.query(Trade).filter(Trade.settled == True).all()
+            db.close()
+            total_pnl = sum(t.pnl or 0.0 for t in settled)
+            exposure = sum(t.size for t in pending)
+            equity = settings.INITIAL_BANKROLL + total_pnl
+            mode = settings.TRADING_MODE.upper()
+            mode_emoji = {"PAPER": "🟠", "TESTNET": "🟡", "LIVE": "🔴"}.get(mode, "⚪")
+            await update.message.reply_text(
+                f"<b>💰 Bankroll {mode_emoji}</b>\n"
+                f"\n"
+                f"Starting:   ${settings.INITIAL_BANKROLL:,.2f}\n"
+                f"Total PnL:  {'+' if total_pnl >= 0 else ''}{total_pnl:,.2f}\n"
+                f"<b>Equity:     ${equity:,.2f}</b>\n"
+                f"\n"
+                f"Open pos:   {len(pending)}\n"
+                f"Exposure:   ${exposure:,.2f}\n"
+                f"Settled:    {len(settled)} trades",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
+    async def _cmd_settle(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
+        """Trigger manual settlement check."""
+        if not self._is_admin(update):
+            await update.message.reply_text("❌ Admin only.")
+            return
+        await update.message.reply_text("⚙️ Running settlement check...")
+        try:
+            from backend.core.scheduler import settlement_check_job
+            await settlement_check_job()
+            await update.message.reply_text("✅ Settlement check complete.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Settlement error: {e}")
+
+    async def _cmd_pnl(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
+        """Show P&L breakdown."""
+        try:
+            from backend.models.database import SessionLocal, Trade
+            db = SessionLocal()
+            all_trades = db.query(Trade).filter(Trade.settled == True).all()
+            db.close()
+            if not all_trades:
+                await update.message.reply_text("📊 No settled trades yet.")
+                return
+            wins = [t for t in all_trades if t.result == 'win']
+            losses = [t for t in all_trades if t.result == 'loss']
+            total_pnl = sum(t.pnl or 0.0 for t in all_trades)
+            win_pnl = sum(t.pnl or 0.0 for t in wins)
+            loss_pnl = sum(t.pnl or 0.0 for t in losses)
+            win_rate = len(wins) / len(all_trades) * 100 if all_trades else 0
+            avg_win = win_pnl / len(wins) if wins else 0
+            avg_loss = loss_pnl / len(losses) if losses else 0
+            await update.message.reply_text(
+                f"<b>📊 P&L Report</b>\n"
+                f"\n"
+                f"Trades:    {len(all_trades)} settled\n"
+                f"Win rate:  {win_rate:.0f}% ({len(wins)}W / {len(losses)}L)\n"
+                f"\n"
+                f"Wins:      +${win_pnl:.2f} (avg +${avg_win:.2f})\n"
+                f"Losses:     ${loss_pnl:.2f} (avg ${avg_loss:.2f})\n"
+                f"<b>Net P&L:   {'+' if total_pnl >= 0 else ''}{total_pnl:.2f}</b>",
+                parse_mode=ParseMode.HTML,
+            )
         except Exception as e:
             await update.message.reply_text(f"Error: {e}")
 

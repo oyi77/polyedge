@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/home/openclaw/projects/polyedge/frontend/src/api/index.ts\",\"limit\":100}",
+  "error": "File does not exist. Note: your current working directory is /home/openclaw/projects/polyedge/frontend.",
+  "timestamp": "2026-04-07T08:20:15.809Z",
+  "retry_count": 1
+}

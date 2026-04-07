@@ -21,3 +21,18 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: polyedge
+      POSTGRES_PASSWORD: polyedge
+      POSTGRES_DB: polyedge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

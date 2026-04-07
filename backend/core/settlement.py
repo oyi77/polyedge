@@ -1,4 +1,5 @@
 """Trade settlement logic for BTC 5-min and weather markets using Polymarket API."""
+
 import asyncio
 import json
 import logging
@@ -10,7 +11,13 @@ import httpx
 from cachetools import TTLCache
 from sqlalchemy.orm import Session
 
-from backend.models.database import Trade, BotState, Signal, SettlementEvent, TradeContext
+from backend.models.database import (
+    Trade,
+    BotState,
+    Signal,
+    SettlementEvent,
+    TradeContext,
+)
 
 logger = logging.getLogger("trading_bot")
 
@@ -18,7 +25,9 @@ logger = logging.getLogger("trading_bot")
 _market_404_counts: TTLCache = TTLCache(maxsize=1000, ttl=3600)
 
 
-async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] = None) -> Tuple[bool, Optional[float]]:
+async def fetch_polymarket_resolution(
+    market_id: str, event_slug: Optional[str] = None
+) -> Tuple[bool, Optional[float]]:
     """
     Fetch actual market resolution from Polymarket API.
 
@@ -33,7 +42,7 @@ async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] 
             if event_slug:
                 response = await client.get(
                     "https://gamma-api.polymarket.com/events",
-                    params={"slug": event_slug}
+                    params={"slug": event_slug},
                 )
                 response.raise_for_status()
                 events = response.json()
@@ -69,13 +78,9 @@ async def _search_market_in_events(market_id: str) -> Tuple[bool, Optional[float
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             for closed in [True, False]:
-                params = {
-                    "closed": str(closed).lower(),
-                    "limit": 200
-                }
+                params = {"closed": str(closed).lower(), "limit": 200}
                 response = await client.get(
-                    "https://gamma-api.polymarket.com/events",
-                    params=params
+                    "https://gamma-api.polymarket.com/events", params=params
                 )
                 response.raise_for_status()
                 events = response.json()
@@ -162,15 +167,16 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     return round(pnl, 2)
 
 
-async def check_market_settlement(trade: Trade) -> Tuple[bool, Optional[float], Optional[float]]:
+async def check_market_settlement(
+    trade: Trade,
+) -> Tuple[bool, Optional[float], Optional[float]]:
     """
     Check if a trade's market has settled.
 
     Returns: (is_settled, settlement_value, pnl)
     """
     is_resolved, settlement_value = await fetch_polymarket_resolution(
-        trade.market_ticker,
-        event_slug=trade.event_slug
+        trade.market_ticker, event_slug=trade.event_slug
     )
 
     if not is_resolved or settlement_value is None:
@@ -182,21 +188,27 @@ async def check_market_settlement(trade: Trade) -> Tuple[bool, Optional[float], 
     outcome = "UP" if settlement_value == 1.0 else "DOWN"
     result = "WIN" if mapped_dir == outcome else "LOSS"
 
-    logger.info(f"Trade {trade.id} settled: {mapped_dir} @ {trade.entry_price:.0%} -> "
-                f"{result} P&L: ${pnl:+.2f}")
+    logger.info(
+        f"Trade {trade.id} settled: {mapped_dir} @ {trade.entry_price:.0%} -> "
+        f"{result} P&L: ${pnl:+.2f}"
+    )
 
     return True, settlement_value, pnl
 
 
-async def check_weather_settlement(trade: Trade) -> Tuple[bool, Optional[float], Optional[float]]:
+async def check_weather_settlement(
+    trade: Trade,
+) -> Tuple[bool, Optional[float], Optional[float]]:
     """
     Check if a weather trade's market has settled.
     Routes to the correct platform's resolution method.
     """
-    platform = getattr(trade, 'platform', 'polymarket') or 'polymarket'
+    platform = getattr(trade, "platform", "polymarket") or "polymarket"
 
     if platform == "kalshi":
-        is_resolved, settlement_value = await _fetch_kalshi_resolution(trade.market_ticker)
+        is_resolved, settlement_value = await _fetch_kalshi_resolution(
+            trade.market_ticker
+        )
     else:
         is_resolved, settlement_value = await fetch_polymarket_resolution(
             trade.market_ticker,
@@ -253,18 +265,20 @@ async def _resolve_markets(
     trade_slugs: dict mapping ticker -> event_slug (may be None).
     trade_platforms: dict mapping ticker -> platform string.
     """
+
     async def _resolve_one(ticker: str, is_weather: bool):
         platform = trade_platforms.get(ticker, "polymarket") or "polymarket"
         if is_weather and platform == "kalshi":
             result = await _fetch_kalshi_resolution(ticker)
         else:
-            result = await fetch_polymarket_resolution(ticker, event_slug=trade_slugs.get(ticker))
+            result = await fetch_polymarket_resolution(
+                ticker, event_slug=trade_slugs.get(ticker)
+            )
         return ticker, result
 
-    tasks = (
-        [_resolve_one(t, False) for t in normal_tickers] +
-        [_resolve_one(t, True) for t in weather_tickers]
-    )
+    tasks = [_resolve_one(t, False) for t in normal_tickers] + [
+        _resolve_one(t, True) for t in weather_tickers
+    ]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
     resolutions = {}
@@ -284,7 +298,7 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
     Deduplicates API calls: each unique market_ticker is resolved once.
     """
     try:
-        pending = db.query(Trade).filter(Trade.settled == False).all()
+        pending = db.query(Trade).filter(not Trade.settled).all()
     except Exception as e:
         logger.error(f"Failed to query pending trades: {e}")
         return []
@@ -293,6 +307,24 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
         logger.info("No pending trades to settle")
         return []
 
+    # Mark stale trades (unsettled for >7 days) as expired
+    from datetime import timedelta
+
+    now = datetime.utcnow()
+    stale_threshold = now - timedelta(days=7)
+
+    expired_count = 0
+    for trade in pending:
+        if trade.timestamp and trade.timestamp < stale_threshold:
+            trade.settled = True
+            trade.result = "expired"
+            trade.settlement_time = now
+            expired_count += 1
+
+    if expired_count > 0:
+        db.commit()
+        logger.info(f"Marked {expired_count} stale trades as expired")
+
     # Separate weather vs normal trades and collect unique tickers
     normal_tickers: set = set()
     weather_tickers: set = set()
@@ -300,10 +332,12 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
     trade_platforms: dict = {}
 
     for trade in pending:
-        market_type = getattr(trade, 'market_type', 'btc') or 'btc'
+        market_type = getattr(trade, "market_type", "btc") or "btc"
         ticker = trade.market_ticker
-        trade_slugs[ticker] = getattr(trade, 'event_slug', None)
-        trade_platforms[ticker] = getattr(trade, 'platform', 'polymarket') or 'polymarket'
+        trade_slugs[ticker] = getattr(trade, "event_slug", None)
+        trade_platforms[ticker] = (
+            getattr(trade, "platform", "polymarket") or "polymarket"
+        )
         if market_type == "weather":
             weather_tickers.add(ticker)
         else:
@@ -315,7 +349,9 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
         f"(saved {len(pending) - len(unique_tickers)} API calls)"
     )
 
-    resolutions = await _resolve_markets(normal_tickers, weather_tickers, trade_slugs, trade_platforms)
+    resolutions = await _resolve_markets(
+        normal_tickers, weather_tickers, trade_slugs, trade_platforms
+    )
 
     def _settlement_from_resolution(trade) -> tuple:
         ticker = trade.market_ticker
@@ -325,7 +361,7 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
         if not is_resolved or settlement_value is None:
             return False, None, None
         pnl = calculate_pnl(trade, settlement_value)
-        market_type = getattr(trade, 'market_type', 'btc') or 'btc'
+        market_type = getattr(trade, "market_type", "btc") or "btc"
         if market_type != "weather":
             mapped_dir = "UP" if trade.direction in ("up", "yes") else "DOWN"
             outcome = "UP" if settlement_value == 1.0 else "DOWN"
@@ -358,52 +394,75 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             settled_trades.append(trade)
             try:
                 from backend.api.main import _broadcast_event
-                _broadcast_event("trade_settled", {
-                    "trade_id": trade.id,
-                    "market_ticker": trade.market_ticker,
-                    "result": trade.result,
-                    "pnl": trade.pnl,
-                    "mode": getattr(trade, 'trading_mode', 'paper'),
-                })
+
+                _broadcast_event(
+                    "trade_settled",
+                    {
+                        "trade_id": trade.id,
+                        "market_ticker": trade.market_ticker,
+                        "result": trade.result,
+                        "pnl": trade.pnl,
+                        "mode": getattr(trade, "trading_mode", "paper"),
+                    },
+                )
             except Exception:
                 pass
-            platform = getattr(trade, 'platform', 'polymarket') or 'polymarket'
+            platform = getattr(trade, "platform", "polymarket") or "polymarket"
             resolved_outcome = "up" if settlement_value == 1.0 else "down"
-            db.add(SettlementEvent(
-                trade_id=trade.id,
-                market_ticker=trade.market_ticker,
-                resolved_outcome=resolved_outcome,
-                pnl=pnl,
-                source=platform,
-            ))
+            db.add(
+                SettlementEvent(
+                    trade_id=trade.id,
+                    market_ticker=trade.market_ticker,
+                    resolved_outcome=resolved_outcome,
+                    pnl=pnl,
+                    source=platform,
+                )
+            )
             # Backfill DecisionLog outcome for this trade
             try:
                 from backend.models.database import DecisionLog
-                outcome = "WIN" if trade.result == "win" else ("LOSS" if trade.result == "loss" else "PUSH")
+
+                outcome = (
+                    "WIN"
+                    if trade.result == "win"
+                    else ("LOSS" if trade.result == "loss" else "PUSH")
+                )
                 # Try to get strategy from TradeContext
-                trade_ctx = db.query(TradeContext).filter(TradeContext.trade_id == trade.id).first()
+                trade_ctx = (
+                    db.query(TradeContext)
+                    .filter(TradeContext.trade_id == trade.id)
+                    .first()
+                )
                 dl_query = db.query(DecisionLog).filter(
                     DecisionLog.market_ticker == trade.market_ticker,
                     DecisionLog.outcome == None,
                     DecisionLog.decision == "BUY",
                 )
                 if trade_ctx and trade_ctx.strategy:
-                    dl_query = dl_query.filter(DecisionLog.strategy == trade_ctx.strategy)
+                    dl_query = dl_query.filter(
+                        DecisionLog.strategy == trade_ctx.strategy
+                    )
                 decisions = dl_query.all()
                 for decision in decisions:
                     decision.outcome = outcome
             except Exception as e:
-                logger.debug(f"DecisionLog outcome backfill failed for {trade.market_ticker}: {e}")
+                logger.debug(
+                    f"DecisionLog outcome backfill failed for {trade.market_ticker}: {e}"
+                )
 
             if trade.signal_id:
-                linked_signal = db.query(Signal).filter(Signal.id == trade.signal_id).first()
+                linked_signal = (
+                    db.query(Signal).filter(Signal.id == trade.signal_id).first()
+                )
                 if linked_signal:
                     actual_outcome = "up" if settlement_value == 1.0 else "down"
                     linked_signal.actual_outcome = actual_outcome
-                    linked_signal.outcome_correct = (linked_signal.direction == actual_outcome)
+                    linked_signal.outcome_correct = (
+                        linked_signal.direction == actual_outcome
+                    )
                     linked_signal.settlement_value = settlement_value
                     linked_signal.settled_at = datetime.utcnow()
-                    market_type = getattr(trade, 'market_type', 'btc') or 'btc'
+                    market_type = getattr(trade, "market_type", "btc") or "btc"
                     if market_type == "weather" and linked_signal.sources:
                         _try_calibrate_weather(linked_signal, settlement_value)
 
@@ -421,7 +480,9 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
     return settled_trades
 
 
-async def update_bot_state_with_settlements(db: Session, settled_trades: List[Trade]) -> None:
+async def update_bot_state_with_settlements(
+    db: Session, settled_trades: List[Trade]
+) -> None:
     """Update bot state with P&L from settled trades."""
     if not settled_trades:
         return
@@ -434,8 +495,8 @@ async def update_bot_state_with_settlements(db: Session, settled_trades: List[Tr
 
         for trade in settled_trades:
             if trade.pnl is not None:
-                trading_mode = getattr(trade, 'trading_mode', 'paper') or 'paper'
-                if trading_mode == 'paper':
+                trading_mode = getattr(trade, "trading_mode", "paper") or "paper"
+                if trading_mode == "paper":
                     state.paper_pnl = (state.paper_pnl or 0.0) + trade.pnl
                     state.paper_bankroll = (state.paper_bankroll or 10000.0) + trade.pnl
                     state.paper_trades = (state.paper_trades or 0) + 1
@@ -448,20 +509,54 @@ async def update_bot_state_with_settlements(db: Session, settled_trades: List[Tr
                         state.winning_trades += 1
 
         db.commit()
-        logger.info(f"Updated bot state: Bankroll ${state.bankroll:.2f}, P&L ${state.total_pnl:+.2f}")
+        logger.info(
+            f"Updated bot state: Bankroll ${state.bankroll:.2f}, P&L ${state.total_pnl:+.2f}"
+        )
     except Exception as e:
         logger.error(f"Failed to update bot state: {e}")
         db.rollback()
 
 
-def _try_calibrate_weather(signal, settlement_value: float) -> None:
-    """
-    Feed a settled weather signal back into the Welford sigma calibrator.
+async def _get_actual_temp_from_openmeteo(
+    city_key: str, target_date: str
+) -> Optional[float]:
+    try:
+        from backend.data.weather import CITY_CONFIG
 
-    City key is stored as "city:<key>" in Signal.sources by weather_signals.py.
-    Ensemble mean and threshold are parsed from the reasoning string.
-    Proxy actual temp is ±1°F from threshold based on settlement outcome.
-    """
+        cfg = CITY_CONFIG.get(city_key, {})
+        lat = cfg.get("lat")
+        lon = cfg.get("lon")
+        if not lat or not lon:
+            return None
+
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://archive-api.open-meteo.com/v1/archive",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "start_date": target_date,
+                    "end_date": target_date,
+                    "daily": "temperature_2m_max"
+                    if cfg.get("metric") != "low"
+                    else "temperature_2m_min",
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            daily = data.get("daily", {})
+            temps = daily.get("temperature_2m_max") or daily.get("temperature_2m_min")
+            if temps and len(temps) > 0:
+                return float(temps[0])
+    except Exception:
+        pass
+    return None
+
+
+def _try_calibrate_weather(signal, settlement_value: float) -> None:
     try:
         from backend.core.calibration import update_calibration
 
@@ -481,16 +576,42 @@ def _try_calibrate_weather(signal, settlement_value: float) -> None:
         m2 = re.search(r"(?:above|below)\s*([\d.]+)F", signal.reasoning)
         threshold_f = float(m2.group(1)) if m2 else forecast_temp_f
 
-        direction_above = "above" in (signal.reasoning or "").lower().split("|")[0]
-        if settlement_value == 1.0:
-            actual_temp_f = threshold_f + 1.0 if direction_above else threshold_f - 1.0
-        else:
-            actual_temp_f = threshold_f - 1.0 if direction_above else threshold_f + 1.0
+        target_date_match = re.search(
+            r"on\s+(\d{4}-\d{2}-\d{2})", signal.reasoning or ""
+        )
+        actual_temp_f = None
 
-        update_calibration(city_key, source="gefs",
-                           forecast_temp_f=forecast_temp_f,
-                           actual_temp_f=actual_temp_f)
-        logger.debug(f"Calibration updated: {city_key} forecast={forecast_temp_f:.1f} actual≈{actual_temp_f:.1f}")
+        if target_date_match:
+            target_date = target_date_match.group(1)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                actual_temp_f = loop.run_until_complete(
+                    _get_actual_temp_from_openmeteo(city_key, target_date)
+                )
+            finally:
+                loop.close()
+
+        if actual_temp_f is None:
+            direction_above = "above" in (signal.reasoning or "").lower().split("|")[0]
+            if settlement_value == 1.0:
+                actual_temp_f = (
+                    threshold_f + 1.0 if direction_above else threshold_f - 1.0
+                )
+            else:
+                actual_temp_f = (
+                    threshold_f - 1.0 if direction_above else threshold_f + 1.0
+                )
+
+        update_calibration(
+            city_key,
+            source="gefs",
+            forecast_temp_f=forecast_temp_f,
+            actual_temp_f=actual_temp_f,
+        )
+        logger.debug(
+            f"Calibration updated: {city_key} forecast={forecast_temp_f:.1f} actual≈{actual_temp_f:.1f}"
+        )
 
     except Exception as e:
         logger.debug(f"Calibration update skipped (best-effort): {e}")

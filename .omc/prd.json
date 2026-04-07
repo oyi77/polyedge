@@ -1,47 +1,275 @@
 {
-  "project": "PolyEdge — trading mode support",
+  "title": "Redis and Job Queue Integration",
+  "description": "Add SQLite-backed job queue with Redis upgrade path to PolyEdge trading bot. Solves critical scheduler vulnerability where jobs are lost on process crashes. Phase 1: SQLite queue (8h). Phase 2: Redis + arq (6h). Total: 14h.",
   "stories": [
     {
-      "id": "US-001",
-      "title": "Fix asyncio.get_event_loop() deprecation in copy_trader.py",
+      "id": "RQ-001",
+      "title": "Create JobQueue database model",
       "passes": true,
-      "evidence": "Both occurrences replaced with asyncio.get_running_loop(). 98 tests pass."
+      "priority": 1,
+      "acceptanceCriteria": [
+        "JobQueue table exists in backend/models/database.py with all fields: id, job_type, idempotency_key, priority, status, payload, retry_count, max_retries, scheduled_at, started_at, completed_at, error_message, created_at",
+        "Index idx_job_queue_status_priority exists on (status, priority)",
+        "UniqueConstraint uq_job_idempotency exists on (job_type, idempotency_key)",
+        "python -c \"from backend.models.database import JobQueue; print(JobQueue.__tablename__)\" outputs 'job_queue'",
+        "Table creation tested via Base.metadata.create_all()"
+      ]
     },
     {
-      "id": "US-002",
-      "title": "Add backend/__main__.py entry point",
+      "id": "RQ-002",
+      "title": "Create abstract queue and cache interfaces",
       "passes": true,
-      "evidence": "backend/__main__.py created. python -c 'import backend.__main__' succeeds. 98 tests pass."
+      "priority": 2,
+      "acceptanceCriteria": [
+        "backend/queue/abstract.py exists with AbstractQueue class",
+        "AbstractQueue defines enqueue(), dequeue(), complete(), fail(), get_pending_count()",
+        "backend/queue/abstract.py exists with AbstractCache class",
+        "AbstractCache defines get(), set(), delete(), exists(), flush()",
+        "Factory functions create_queue() and create_cache() implemented",
+        "Interfaces documented with clear type hints"
+      ]
     },
     {
-      "id": "US-003",
-      "title": "Wire update_calibration() into weather trade settlement",
+      "id": "RQ-003",
+      "title": "Implement AsyncSQLiteQueue with thread pool",
       "passes": true,
-      "evidence": "_try_calibrate_weather() added to settlement.py. city:<key> stored in Signal.sources by weather_signals.py. Function wrapped in try/except, never raises. 98 tests pass."
+      "priority": 3,
+      "acceptanceCriteria": [
+        "backend/queue/sqlite_queue.py implements AsyncSQLiteQueue extending AbstractQueue",
+        "ThreadPoolExecutor(max_workers=4) created as _db_executor for sync DB operations",
+        "run_in_thread() wrapper executes sync DB calls in thread pool",
+        "enqueue() inserts job record with status='pending', scheduled_at=now",
+        "dequeue() fetches next pending job ordered by priority (CASE statement)",
+        "dequeue() updates job status='processing', started_at=now",
+        "complete() updates job status='completed', completed_at=now",
+        "fail() updates job status='failed', error_message set, retry_count incremented",
+        "get_pending_count() returns count of jobs with status='pending'",
+        "All methods are async and properly await thread pool operations"
+      ]
     },
     {
-      "id": "US-004",
-      "title": "Replace SIMULATION_MODE bool with TradingMode enum (paper/testnet/live)",
+      "id": "RQ-004",
+      "title": "Add job timeout mechanism",
       "passes": true,
-      "evidence": "TRADING_MODE: str = 'paper' added to config.py. SIMULATION_MODE kept as computed @property (TRADING_MODE != 'live'). PolymarketCLOB now takes mode='paper'|'testnet'|'live'. backward-compat simulation kwarg preserved. 98 tests pass."
+      "priority": 4,
+      "acceptanceCriteria": [
+        "JOB_TIMEOUT_SECONDS config added to backend/config.py (default=300)",
+        "Worker loop wraps dispatch_job() in asyncio.wait_for(timeout=settings.JOB_TIMEOUT_SECONDS)",
+        "TimeoutError caught and logged when job exceeds timeout",
+        "Job marked as failed with timeout error message",
+        "Worker continues processing next job after timeout (no slot exhaustion)",
+        "Test verifies hung job times out and worker continues"
+      ]
     },
     {
-      "id": "US-005",
-      "title": "EIP-712 order signing for testnet and live modes",
+      "id": "RQ-005",
+      "title": "Implement job handlers for market scan and settlement",
       "passes": true,
-      "evidence": "_sign_order_eip712() added to PolymarketCLOB using eth_account encode_typed_data. ORDER_STRUCT_TYPES defined with Polymarket CTF Exchange fields. Chain ID and contract address derived from mode (137/mainnet, 80002/Amoy). 98 tests pass."
+      "priority": 5,
+      "acceptanceCriteria": [
+        "backend/queue/handlers.py created with market_scan() function",
+        "backend/queue/handlers.py created with settlement_check() function",
+        "backend/queue/handlers.py created with signal_generation() function",
+        "Each handler imports and uses existing scheduler functions (scan_and_trade_job, etc.)",
+        "Handlers properly handle exceptions and return results",
+        "Handlers are importable and don't block on startup"
+      ]
     },
     {
-      "id": "US-006",
-      "title": "Add trading_mode column to Trade model with schema migration",
+      "id": "RQ-006",
+      "title": "Implement worker loop with graceful shutdown",
       "passes": true,
-      "evidence": "trading_mode column added to Trade. paper_bankroll, paper_pnl, paper_trades, paper_wins added to BotState. ensure_schema() migrates all new columns. 98 tests pass."
+      "priority": 6,
+      "acceptanceCriteria": [
+        "backend/queue/worker.py created with Worker class",
+        "Worker._in_flight_jobs Set[int] tracks active job IDs",
+        "Worker.start() calls dequeue() in loop with max_concurrent=1 limit",
+        "Worker.start() dispatches jobs to handlers from backend/queue/handlers.py",
+        "Worker.stop() sets _running=False and waits for in-flight jobs (max 30s)",
+        "Worker.stop() calls _db_executor.shutdown(wait=True) for cleanup",
+        "MAX_CONCURRENT_JOBS config respected (default=1)",
+        "Worker logs job lifecycle events (start, complete, fail, timeout)"
+      ]
     },
     {
-      "id": "US-007",
-      "title": "Runtime mode switching via Telegram /mode command",
-      "passes": true,
-      "evidence": "/mode paper|testnet|live now calls on_mode_switch callback which updates settings.TRADING_MODE and clob.mode at runtime. /status shows mode with emoji (🟠/🟡/🔴). on_mode_switch wired in Orchestrator.start(). 98 tests pass."
+      "id": "RQ-007",
+      "title": "Integrate queue worker with scheduler",
+      "passes": false,
+      "priority": 7,
+      "acceptanceCriteria": [
+        "JOB_WORKER_ENABLED config added to backend/config.py (default=False)",
+        "backend/core/scheduler.py modified to check settings.JOB_WORKER_ENABLED",
+        "When JOB_WORKER_ENABLED=True: scheduler.remove_job() called for existing APScheduler jobs",
+        "start_scheduler() starts worker when JOB_WORKER_ENABLED=True",
+        "APScheduler kept only as timer (no direct job execution when worker enabled)",
+        "No double-execution of jobs (verified via logs)",
+        "Worker process starts successfully with scheduler"
+      ]
+    },
+    {
+      "id": "RQ-008",
+      "title": "Configure SQLite WAL mode for concurrent access",
+      "passes": false,
+      "priority": 8,
+      "acceptanceCriteria": [
+        "configure_sqlite_wal() function added to backend/models/database.py",
+        "SQLAlchemy event listener sets PRAGMA journal_mode=WAL on connect",
+        "PRAGMA busy_timeout=5000 set for better concurrency",
+        "PRAGMA synchronous=NORMAL set for queue workloads",
+        "WAL mode verified via sqlite3 job_queue.db \"PRAGMA journal_mode\" (outputs 'wal')",
+        "Multiple concurrent reads tested without blocking"
+      ]
+    },
+    {
+      "id": "RQ-009",
+      "title": "Create job queue migration script",
+      "passes": false,
+      "priority": 9,
+      "acceptanceCriteria": [
+        "backend/queue/migrate_jobs.py created with migrate_apjobs_to_queue() function",
+        "Script reads existing APScheduler jobs from scheduler state",
+        "Script enqueues each job to JobQueue table via AsyncSQLiteQueue",
+        "Script logs migration progress (jobs migrated, failures)",
+        "Migration script executable via python -m backend.queue.migrate_jobs",
+        "Existing APScheduler jobs successfully migrated to persistent queue"
+      ]
+    },
+    {
+      "id": "RQ-010",
+      "title": "Test crash recovery and job persistence",
+      "passes": false,
+      "priority": 10,
+      "acceptanceCriteria": [
+        "backend/tests/test_queue/test_crash_recovery.py created",
+        "Test enqueues 10 jobs, kills process after 3 complete",
+        "Test restarts and verifies remaining 7 jobs execute",
+        "Test verifies job_queue table shows all 10 jobs completed",
+        "Test passes with kill -9 signal simulation",
+        "Jobs survive process crash with data integrity intact"
+      ]
+    },
+    {
+      "id": "RQ-011",
+      "title": "Test job timeout and graceful shutdown",
+      "passes": false,
+      "priority": 11,
+      "acceptanceCriteria": [
+        "backend/tests/test_queue/test_worker.py created",
+        "Test creates job that sleeps 400s (>300s timeout)",
+        "Test verifies job times out and marked as failed",
+        "Test verifies worker continues processing after timeout",
+        "Test starts 5 long-running jobs and sends SIGTERM",
+        "Test verifies worker waits for jobs (max 30s) before shutdown",
+        "Test verifies _db_executor.shutdown(wait=True) called",
+        "All worker tests pass"
+      ]
+    },
+    {
+      "id": "RQ-012",
+      "title": "Test queue operations and idempotency",
+      "passes": false,
+      "priority": 12,
+      "acceptanceCriteria": [
+        "backend/tests/test_queue/test_sqlite_queue.py created",
+        "Test verifies enqueue() creates job record with correct fields",
+        "Test verifies dequeue() returns jobs in priority order (critical > high > medium > low)",
+        "Test verifies idempotency constraint prevents duplicate jobs",
+        "Test verifies complete() and fail() update job status correctly",
+        "Test verifies retry_count increments on failure",
+        "Test verifies get_pending_count() returns accurate count",
+        "All queue tests pass with >95% coverage"
+      ]
+    },
+    {
+      "id": "RQ-013",
+      "title": "Update Phase 1 plan with job queue work",
+      "passes": false,
+      "priority": 13,
+      "acceptanceCriteria": [
+        "phase-1-production-readiness.md updated to include job queue in Step 2",
+        "Revised Phase 1 effort: 5.5h → 8h (added SQLite queue + tests)",
+        "Job queue acceptance criteria added to Phase 1 plan",
+        "Plan references redis-and-job-queue-integration.md for details",
+        "grep -q 'job queue' phase-1-production-readiness.md returns 0"
+      ]
+    },
+    {
+      "id": "RQ-014",
+      "title": "Phase 2: Implement Redis cache with circuit breaker",
+      "passes": false,
+      "priority": 14,
+      "acceptanceCriteria": [
+        "backend/cache/redis_cache.py implements RedisCache extending AbstractCache",
+        "Redis connection pooling configured with redis.asyncio",
+        "CircuitBreaker class implements threshold=3, timeout=60 pattern",
+        "Circuit breaker tracks failures and opens after threshold",
+        "Circuit breaker falls back to SQLite when Redis unavailable",
+        "Redis cache get/set/delete operations use circuit breaker",
+        "CACHE_URL='redis://localhost:6379/0' config works",
+        "Test verifies cache falls back to SQLite on Redis failure"
+      ]
+    },
+    {
+      "id": "RQ-015",
+      "title": "Phase 2: Implement arq-based Redis queue",
+      "passes": false,
+      "priority": 15,
+      "acceptanceCriteria": [
+        "backend/queue/redis_queue.py implements RedisQueue via arq library",
+        "arq installed in requirements.txt",
+        "arq worker configured with max_jobs=1, job_timeout=300s",
+        "RedisQueue implements AbstractQueue interface (drop-in replacement)",
+        "Jobs can be enqueued to Redis and processed by arq workers",
+        "arq worker processes jobs from backend/queue/handlers.py",
+        "Test verifies Redis queue processes jobs correctly",
+        "Migration from SQLite to Redis tested"
+      ]
+    },
+    {
+      "id": "RQ-016",
+      "title": "Phase 2: Add queue latency monitoring",
+      "passes": false,
+      "priority": 16,
+      "acceptanceCriteria": [
+        "backend/monitoring/queue_metrics.py created",
+        "Queue latency p50, p95, p99 tracked and logged",
+        "Queue depth metric monitored (get_pending_count())",
+        "Job timeout rate tracked (timeouts / total jobs)",
+        "Error rate by job type tracked",
+        "Metrics logged or exposed for monitoring",
+        "Test verifies latency metrics collected accurately"
+      ]
+    },
+    {
+      "id": "RQ-017",
+      "title": "Phase 2: Create SQLite to Redis migration tool",
+      "passes": false,
+      "priority": 17,
+      "acceptanceCriteria": [
+        "backend/queue/migrate_to_redis.py created",
+        "Migration script drains SQLite queue before switching",
+        "Jobs migrate from SQLite to Redis without data loss",
+        "Hot migration supported (Redis worker takes over)",
+        "Rollback to SQLite tested and works",
+        "Migration can be reversed if needed",
+        "Test verifies migration completes successfully"
+      ]
+    },
+    {
+      "id": "RQ-018",
+      "title": "Update documentation with job queue architecture",
+      "passes": false,
+      "priority": 18,
+      "acceptanceCriteria": [
+        "README.md updated with job queue architecture section",
+        "README.md explains Phase 1 (SQLite) and Phase 2 (Redis) approach",
+        "README.md documents JOB_WORKER_ENABLED configuration",
+        "README.md documents crash recovery behavior",
+        "docs/architecture/adr-001-job-queue.md created with decision record",
+        "ADR documents SQLite-first decision and alternatives considered",
+        "ADR includes: Decision, Drivers, Alternatives, Why Chosen, Consequences, Follow-ups",
+        "Documentation verified for accuracy"
+      ]
     }
   ]
 }

@@ -1,0 +1,437 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775496582625,
+  "projectRoot": "/home/openclaw/projects/polyedge",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "requirements.txt"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pip",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "tests"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "backend": {
+      "path": "backend",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775496582616,
+      "keyFiles": [
+        "__init__.py",
+        "config.py"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1775496582619,
+      "keyFiles": [
+        "dashboard.png"
+      ]
+    },
+    "frontend": {
+      "path": "frontend",
+      "purpose": null,
+      "fileCount": 10,
+      "lastAccessed": 1775496582620,
+      "keyFiles": [
+        "index.html",
+        "package-lock.json",
+        "package.json",
+        "postcss.config.js",
+        "tailwind.config.js"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 4,
+      "lastAccessed": 1775496582620,
+      "keyFiles": [
+        "__init__.py",
+        "conftest.py",
+        "test_copy_trader.py",
+        "test_signal_engine.py"
+      ]
+    },
+    "backend/api": {
+      "path": "backend/api",
+      "purpose": "API routes",
+      "fileCount": 2,
+      "lastAccessed": 1775496582622,
+      "keyFiles": [
+        "__init__.py",
+        "main.py"
+      ]
+    },
+    "backend/data": {
+      "path": "backend/data",
+      "purpose": "Data files",
+      "fileCount": 9,
+      "lastAccessed": 1775496582623,
+      "keyFiles": [
+        "__init__.py",
+        "btc_markets.py",
+        "crypto.py"
+      ]
+    },
+    "backend/models": {
+      "path": "backend/models",
+      "purpose": "Data models",
+      "fileCount": 2,
+      "lastAccessed": 1775496582623,
+      "keyFiles": [
+        "__init__.py",
+        "database.py"
+      ]
+    },
+    "frontend/src": {
+      "path": "frontend/src",
+      "purpose": "Source code",
+      "fileCount": 7,
+      "lastAccessed": 1775496582624,
+      "keyFiles": [
+        "App.tsx",
+        "api.ts",
+        "index.css"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "backend/api/main.py",
+      "accessCount": 172,
+      "lastAccessed": 1775555573072,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/pages/Admin.tsx",
+      "accessCount": 61,
+      "lastAccessed": 1775555572907,
+      "type": "file"
+    },
+    {
+      "path": "backend/core/scheduler.py",
+      "accessCount": 54,
+      "lastAccessed": 1775559586582,
+      "type": "file"
+    },
+    {
+      "path": "backend/models/database.py",
+      "accessCount": 52,
+      "lastAccessed": 1775559133574,
+      "type": "file"
+    },
+    {
+      "path": "backend/core/settlement.py",
+      "accessCount": 42,
+      "lastAccessed": 1775555560507,
+      "type": "file"
+    },
+    {
+      "path": "backend/data/polymarket_clob.py",
+      "accessCount": 37,
+      "lastAccessed": 1775533394359,
+      "type": "file"
+    },
+    {
+      "path": "backend/core/orchestrator.py",
+      "accessCount": 35,
+      "lastAccessed": 1775552412423,
+      "type": "file"
+    },
+    {
+      "path": "backend/config.py",
+      "accessCount": 28,
+      "lastAccessed": 1775559531693,
+      "type": "file"
+    },
+    {
+      "path": "backend/strategies/copy_trader.py",
+      "accessCount": 25,
+      "lastAccessed": 1775555432698,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/api.ts",
+      "accessCount": 24,
+      "lastAccessed": 1775551218017,
+      "type": "file"
+    },
+    {
+      "path": "backend",
+      "accessCount": 20,
+      "lastAccessed": 1775559338825,
+      "type": "directory"
+    },
+    {
+      "path": "frontend/src/pages/Dashboard.tsx",
+      "accessCount": 19,
+      "lastAccessed": 1775551819821,
+      "type": "file"
+    },
+    {
+      "path": "backend/core/weather_signals.py",
+      "accessCount": 18,
+      "lastAccessed": 1775549308400,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 18,
+      "lastAccessed": 1775559527187,
+      "type": "directory"
+    },
+    {
+      "path": "backend/bot/telegram_bot.py",
+      "accessCount": 15,
+      "lastAccessed": 1775552403966,
+      "type": "file"
+    },
+    {
+      "path": "ecosystem.config.js",
+      "accessCount": 13,
+      "lastAccessed": 1775555569078,
+      "type": "file"
+    },
+    {
+      "path": "backend/core/signals.py",
+      "accessCount": 12,
+      "lastAccessed": 1775549323039,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/App.tsx",
+      "accessCount": 11,
+      "lastAccessed": 1775544173251,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/components/admin/SystemStatus.tsx",
+      "accessCount": 11,
+      "lastAccessed": 1775549646529,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/components/NavBar.tsx",
+      "accessCount": 7,
+      "lastAccessed": 1775537933582,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src",
+      "accessCount": 7,
+      "lastAccessed": 1775549655205,
+      "type": "directory"
+    },
+    {
+      "path": "frontend/src/types.ts",
+      "accessCount": 7,
+      "lastAccessed": 1775551813482,
+      "type": "file"
+    },
+    {
+      "path": "backend/data/ws_client.py",
+      "accessCount": 6,
+      "lastAccessed": 1775502672487,
+      "type": "file"
+    },
+    {
+      "path": "backend/data/weather.py",
+      "accessCount": 5,
+      "lastAccessed": 1775531384836,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_clob.py",
+      "accessCount": 5,
+      "lastAccessed": 1775533400256,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_admin_api.py",
+      "accessCount": 4,
+      "lastAccessed": 1775503721696,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/pages/Landing.tsx",
+      "accessCount": 4,
+      "lastAccessed": 1775545336057,
+      "type": "file"
+    },
+    {
+      "path": "backend/__main__.py",
+      "accessCount": 3,
+      "lastAccessed": 1775499477144,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/components/admin/SettingsEditor.tsx",
+      "accessCount": 3,
+      "lastAccessed": 1775504766693,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/components/Terminal.tsx",
+      "accessCount": 3,
+      "lastAccessed": 1775529092575,
+      "type": "file"
+    },
+    {
+      "path": "backend/core/calibration.py",
+      "accessCount": 3,
+      "lastAccessed": 1775531383325,
+      "type": "file"
+    },
+    {
+      "path": ".env.example",
+      "accessCount": 3,
+      "lastAccessed": 1775533369135,
+      "type": "file"
+    },
+    {
+      "path": "frontend/package.json",
+      "accessCount": 3,
+      "lastAccessed": 1775538078990,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_copy_trader_http.py",
+      "accessCount": 2,
+      "lastAccessed": 1775496938291,
+      "type": "file"
+    },
+    {
+      "path": "backend/api/__init__.py",
+      "accessCount": 2,
+      "lastAccessed": 1775497096478,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_signal_engine.py",
+      "accessCount": 2,
+      "lastAccessed": 1775497235346,
+      "type": "file"
+    },
+    {
+      "path": "backend/models/__init__.py",
+      "accessCount": 2,
+      "lastAccessed": 1775497236062,
+      "type": "file"
+    },
+    {
+      "path": "docker-compose.yml",
+      "accessCount": 2,
+      "lastAccessed": 1775501923109,
+      "type": "file"
+    },
+    {
+      "path": "Dockerfile",
+      "accessCount": 2,
+      "lastAccessed": 1775501923658,
+      "type": "file"
+    },
+    {
+      "path": "tests/conftest.py",
+      "accessCount": 2,
+      "lastAccessed": 1775503569081,
+      "type": "file"
+    },
+    {
+      "path": "frontend/vite.config.ts",
+      "accessCount": 2,
+      "lastAccessed": 1775507945119,
+      "type": "file"
+    },
+    {
+      "path": ".env",
+      "accessCount": 2,
+      "lastAccessed": 1775533369031,
+      "type": "file"
+    },
+    {
+      "path": "frontend/tsconfig.json",
+      "accessCount": 2,
+      "lastAccessed": 1775538048502,
+      "type": "file"
+    },
+    {
+      "path": "frontend",
+      "accessCount": 2,
+      "lastAccessed": 1775540298826,
+      "type": "directory"
+    },
+    {
+      "path": "tests/test_ws_client.py",
+      "accessCount": 1,
+      "lastAccessed": 1775496785812,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/main.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1775501427545,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/components/admin/CopyTraderMonitor.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1775501632738,
+      "type": "file"
+    },
+    {
+      "path": "requirements.txt",
+      "accessCount": 1,
+      "lastAccessed": 1775501923646,
+      "type": "file"
+    },
+    {
+      "path": "tests",
+      "accessCount": 1,
+      "lastAccessed": 1775501950247,
+      "type": "directory"
+    },
+    {
+      "path": "tests/test_settlement.py",
+      "accessCount": 1,
+      "lastAccessed": 1775503618041,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

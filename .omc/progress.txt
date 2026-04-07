@@ -1,0 +1,120 @@
+## PolyEdge Bulletproof — Ralph Session Progress
+
+### Root Cause: 0 PNL Despite 73 Trades
+Paper trades correctly update BotState.paper_pnl (not total_pnl).
+/api/stats was only returning total_pnl → always 0 for paper-only runs.
+Fix: Added paper/live objects + pnl_source fallback recalculation from DB.
+Result: paper.pnl=$277.62, win_rate=54.8% now visible.
+
+### Files Changed — Backend
+- backend/core/settlement.py: TTLCache for _market_404_counts, SettlementEvent insertion, market dedup via _resolve_markets()
+- backend/core/scheduler.py: Structured job logging, reschedule_jobs() function
+- backend/api/main.py: BotStats extended (paper/live/mode/pnl_source), get_stats() fallback, bot start/stop 409, copy-trader status with errors[], /api/copy-trader/positions, /api/settlements endpoints, settings calls reschedule_jobs()
+- backend/models/database.py: CopyTraderEntry model, SettlementEvent model, ensure_schema() extended
+- backend/strategies/copy_trader.py: _entry_sizes replaced with DB reads/writes
+
+### Files Changed — Frontend
+- frontend/src/api.ts: fetchCopyTraderStatus (status/errors fields), fetchCopyTraderPositions(), fetchSettlements(), CopyTraderPosition/SettlementEvent interfaces
+- frontend/src/types.ts: BotStats extended with paper/live/mode/pnl_source
+- frontend/src/App.tsx: /whale-tracker and /settlements lazy routes
+- frontend/src/components/NavBar.tsx: Whale Tracker and Settlements nav links
+- frontend/src/pages/Dashboard.tsx: Paper/Live PNL mode cards
+- frontend/src/pages/WhaleTracker.tsx: NEW — status banner, wallets, positions
+- frontend/src/pages/Settlements.tsx: NEW — settlement history table
+
+### Key Patterns Learned
+- Trading mode determines which BotState counter gets updated (paper_* vs total_*)
+- cachetools.TTLCache is available in the project environment
+- Gamma API: GET /markets?conditionId=... returns tokens[0]=YES, tokens[1]=NO
+- APScheduler's reschedule_job() updates trigger without restarting the scheduler
+- Frontend uses lazy() + Suspense for code-split page routes
+
+## Phase 2-6 Completion — Production-Grade Platform
+
+### All 32 PRD stories marked passes=true (architect 12/12 APPROVED)
+
+### Phase 1: Strategy Plugin Architecture
+- backend/strategies/base.py: BaseStrategy ABC, StrategyContext, MarketInfo, CycleResult, __init_subclass__ auto-registration
+- backend/strategies/registry.py: STRATEGY_REGISTRY, create_strategy, load_all_strategies
+- backend/strategies/copy_trader.py: CopyTraderStrategy(BaseStrategy) added
+- backend/strategies/weather_emos.py: NEW — EMOS calibration, Open-Meteo free API
+- backend/strategies/kalshi_arb.py: NEW — credentials-gated scaffold
+- backend/strategies/btc_oracle.py: NEW — CoinGecko latency arb
+- backend/strategies/btc_momentum.py: NEW — wraps existing scan_for_signals (experimental)
+
+### Phase 2: Data Models + APIs
+- backend/models/database.py: DecisionLog, MarketWatch, WalletConfig, StrategyConfig, TradeContext, Trade extended
+- backend/core/decisions.py: record_decision() helper
+- backend/core/market_scanner.py: paginated Gamma API fetcher (all ~2000 markets)
+- backend/api/main.py: /api/strategies CRUD, /api/markets/watch CRUD, /api/wallets/config CRUD, /api/wallets/leaderboard, /api/decisions, /api/admin/credentials
+
+### Phase 3-4: Market Scanner + Strategies
+- backend/data/btc_markets.py: now uses fetch_markets_by_keywords
+- backend/data/weather_markets.py: now uses fetch_markets_by_keywords
+- backend/core/scheduler.py: strategy_cycle_job dispatcher, registry-driven scheduling
+- backend/core/orchestrator.py: seeds 5 default StrategyConfig rows
+
+### Phase 5: Frontend
+- frontend/src/components/DataTable.tsx: T extends object, generic sortable/filterable/paginated table
+- frontend/src/hooks/useTableQuery.ts: sort/filter/page state management hook
+- frontend/src/pages/WhaleTracker.tsx: full leaderboard with DataTable, add-wallet form
+- frontend/src/pages/MarketIntel.tsx: NEW — strategy health, toggles, market watch CRUD
+- frontend/src/pages/DecisionLog.tsx: NEW — decision log with modal + JSONL export
+- frontend/src/pages/Admin.tsx: Strategies/MarketWatch/WalletConfig/Credentials tabs (8 total)
+- frontend/src/pages/Settlements.tsx: migrated to DataTable
+- frontend/src/components/NavBar.tsx: Market Intel + Decisions links added
+- frontend/src/App.tsx: /market-intel + /decisions routes added
+- frontend/src/api.ts: fetchCopyLeaderboard, fetchStrategies, updateStrategy, runStrategyNow, fetchMarketWatches, fetchWalletConfigs, fetchDecisions, fetchHealth, all new CRUD functions
+
+### Phase 6: Tests + Infra
+- backend/tests/: 51 tests (pytest + httpx), in-memory SQLite, StaticPool
+- frontend/src/test/: 27 tests (Vitest + Testing Library)
+- backend/core/heartbeat.py: update_heartbeat, watchdog_job, Telegram dedup alerts
+- ecosystem.config.js: PM2 hardening (max_restarts:50, exp backoff)
+- frontend/vite.config.ts: vitest/config import for test support
+
+### Key Patterns
+- DataTable requires T extends object (not Record<string,unknown>); internals cast via (row as Record<string,unknown>)[col.key]
+- Backend tests use StaticPool to share one SQLite connection across all sessions
+- Strategy watchdog checks lag > interval_seconds * 2 with 5-min alert dedup via _recent_alerts dict
+- decisionsExportUrl() returns direct URL for JSONL streaming download (ML training data)
+
+## Implementation Sprint 2026-04-07 — P0/P1/P2 Fixes Completed
+
+### P0 Critical Fixes (All Verified Already Implemented)
+- P0-1: Weather direction bug — verified already fixed (line 187 always BUY, line 188 picks price)
+- P0-2: _condition_to_token — already implemented (line 312-342 orchestrator.py)
+- P0-3: Admin API auth — already implemented (require_admin at line 88-94)
+- P0-4: .env newline injection — already fixed (line 1450 strips \n,\r,\x00)
+- P0-5: EIP-712 non-numeric token_id — already raises ValueError (line 253-254)
+
+### P1 Important Fixes
+- P1-1: CORS — already restricted (line 33 parses CORS_ORIGINS from config)
+- P1-2: Concurrent settlement — already implemented (asyncio.gather line 268)
+- P1-3: 404 cache — already implemented (TTLCache line 18)
+- P1-4: Parallel weather scans — already implemented (asyncio.gather line 207-213)
+- P1-5: Telegram /positions — already implemented (line 421-452)
+- P1-6: trading_mode in trades — already set (line 176, 384 in scheduler.py)
+- P1-7: Backfill trading_mode — already implemented (line 309 in database.py)
+- P1-8: Paper/Live P&L split — already implemented (line 437-448 in settlement.py)
+- P1-9: Copy trader bankroll — ENHANCED: added _fetch_actual_bankroll using Data API
+- P1-10: WebSocket max_retries — already implemented (line 55 max_consecutive_failures)
+- P1-11: Postgres + WAL — ADDED: postgres service to docker-compose.yml, WAL pragma
+- P1-12: clob_from_settings — already clean (direct getattr, no unnecessary guards)
+
+### P2 Nice-to-Have
+- P2-1: Dynamic mode badge — already implemented (line 1036-1043 Dashboard.tsx)
+- P2-2: Axios timeout — already implemented (line 10 api.ts 15000ms)
+- P2-3: ErrorBoundary — already exists (line 13-70 App.tsx)
+- P2-4: Test coverage — PENDING
+- P2-5: Weather calibration — ENHANCED: now fetches real historical temps from Open-Meteo
+- P2-6: Duplicate scheduler start — ADDED config note (needs env var in bot container)
+- P2-7: Copy signal dedup — ADDED: seen_condition_ids set in poll_once
+- P2-8: Market staleness timeout — ADDED: marks trades as expired after 7 days
+- P2-4: Test coverage — COMPLETED: test_settlement.py (16 tests), test_admin_api.py (12 tests), test_telegram_bot.py (5 tests)
+
+### Files Modified This Session
+- backend/strategies/copy_trader.py: _fetch_actual_bankroll method, copy signal dedup
+- backend/models/database.py: WAL pragma in ensure_schema
+- backend/core/settlement.py: _get_actual_temp_from_openmeteo, stale trade expiry
+- docker-compose.yml: added postgres service

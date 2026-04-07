@@ -1,0 +1,12 @@
+{
+  "active": true,
+  "iteration": 1,
+  "max_iterations": 100,
+  "started_at": "2026-04-07T02:46:17.647Z",
+  "prompt": "/ralph",
+  "session_id": "1604c36d-1200-46fb-af35-472cb09beb0a",
+  "project_path": "/home/openclaw/projects/polyedge/frontend",
+  "linked_ultrawork": true,
+  "awaiting_confirmation": true,
+  "last_checked_at": "2026-04-07T02:46:17.648Z"
+}

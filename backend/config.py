@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     # AI Model Configuration
     GROQ_MODEL: str = "llama-3.1-8b-instant"
 
+    # AI Provider Selection: groq, claude, omniroute, custom
+    AI_PROVIDER: str = "groq"
+
+    # Custom / OmniRoute provider settings (OpenAI-compatible API)
+    AI_BASE_URL: Optional[str] = None   # e.g. https://api.omniroute.ai/v1
+    AI_MODEL: Optional[str] = None      # overrides provider default
+    AI_API_KEY: Optional[str] = None    # API key for custom/omniroute providers
+
     # AI Feature Flags
     AI_LOG_ALL_CALLS: bool = True
     AI_DAILY_BUDGET_USD: float = 1.0
@@ -85,6 +93,17 @@ class Settings(BaseSettings):
     # Telegram bot
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_ADMIN_CHAT_IDS: str = ""  # comma-separated chat IDs
+
+    # Job Queue Settings
+    JOB_WORKER_ENABLED: bool = False  # Phase 1: disabled by default
+    JOB_QUEUE_URL: str = "sqlite:///./job_queue.db"  # or "redis://localhost:6379"
+    JOB_TIMEOUT_SECONDS: int = 300  # 5 minutes
+    MAX_CONCURRENT_JOBS: int = 1
+    DB_EXECUTOR_MAX_WORKERS: int = 4
+
+    # Cache Settings
+    CACHE_URL: str = "sqlite:///./cache.db"  # or "redis://localhost:6379/0"
+    CACHE_TTL_SECONDS: int = 300  # 5 minutes
 
     @property
     def SIMULATION_MODE(self) -> bool:

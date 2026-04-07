@@ -12,7 +12,9 @@ Data flow:
   Every 60s: poll /trades per wallet → detect new trades → mirror proportionally
   Exit tracking: cumulative SELL >= 50% of original entry → mirror exit
 """
+
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -36,7 +38,9 @@ class ScoredTrader:
     win_rate: float
     total_trades: int
     unique_markets: int
-    estimated_bankroll: float  # sum of open positions + recent pnl — manual override via config
+    estimated_bankroll: (
+        float  # sum of open positions + recent pnl — manual override via config
+    )
     score: float = 0.0
 
     @property
@@ -50,10 +54,10 @@ class ScoredTrader:
 class WalletTrade:
     wallet: str
     condition_id: str
-    outcome: str        # "YES" or "NO"
-    side: str           # "BUY" or "SELL"
+    outcome: str  # "YES" or "NO"
+    side: str  # "BUY" or "SELL"
     price: float
-    size: float         # USDC
+    size: float  # USDC
     timestamp: str
     tx_hash: str = ""
     title: str = ""
@@ -65,7 +69,7 @@ class CopySignal:
     source_trade: WalletTrade
     our_side: str
     our_outcome: str
-    our_size: float           # Kelly-proportioned USDC size
+    our_size: float  # Kelly-proportioned USDC size
     market_price: float
     trader_score: float
     reasoning: str
@@ -85,10 +89,52 @@ class LeaderboardScorer:
     def __init__(self, http: httpx.AsyncClient):
         self._http = http
 
-    async def fetch_and_score(self, top_n: int = 50) -> list[ScoredTrader]:
-        """Fetch leaderboard and return top_n scored traders."""
+    async def _fetch_actual_bankroll(self, wallet: str) -> Optional[float]:
         try:
-            resp = await self._http.get(f"{DATA_HOST}/leaderboard", params={"window": "30d"})
+            resp = await self._http.get(
+                f"{DATA_HOST}/positions",
+                params={"user": wallet},
+                timeout=10.0,
+            )
+            if resp.status_code != 200:
+                return None
+            positions = resp.json()
+            if not positions:
+                return None
+
+            total_value = 0.0
+            for pos in positions:
+                value = pos.get("assetValue") or pos.get("value") or pos.get("size")
+                if value:
+                    try:
+                        total_value += abs(float(value))
+                    except (ValueError, TypeError):
+                        pass
+
+            realized_pnl = 0.0
+            if positions and len(positions) > 0:
+                for pos in positions:
+                    pnl = (
+                        pos.get("realizedPnl")
+                        or pos.get("realizedPnl24h")
+                        or pos.get("pnl")
+                    )
+                    if pnl:
+                        try:
+                            realized_pnl += float(pnl)
+                        except (ValueError, TypeError):
+                            pass
+
+            return total_value + realized_pnl if total_value > 0 else None
+        except Exception as e:
+            logger.debug(f"Failed to fetch positions for {wallet[:10]}...: {e}")
+            return None
+
+    async def fetch_and_score(self, top_n: int = 50) -> list[ScoredTrader]:
+        try:
+            resp = await self._http.get(
+                f"{DATA_HOST}/leaderboard", params={"window": "30d"}
+            )
             resp.raise_for_status()
             entries = resp.json()
         except Exception as e:
@@ -98,7 +144,6 @@ class LeaderboardScorer:
         if not entries:
             return []
 
-        # Normalise raw values for scoring
         profits = [float(e.get("profit", 0)) for e in entries]
 
         max_profit = max(profits) if profits else 1.0
@@ -110,8 +155,13 @@ class LeaderboardScorer:
             win_rate = float(e.get("pnlPercentage", 0)) / 100
             trades = int(e.get("tradesCount", 0))
 
-            # Estimate bankroll: open position values from Data API (best effort)
-            est_bankroll = max(abs(profit) * 5, 1000.0)  # rough: assume profit is ~20% of bankroll
+            wallet = e.get("proxyWallet", e.get("address", ""))
+
+            actual_bankroll = await self._fetch_actual_bankroll(wallet)
+            if actual_bankroll and actual_bankroll >= 100:
+                est_bankroll = actual_bankroll
+            else:
+                est_bankroll = max(abs(profit) * 5, 1000.0)
 
             trader = ScoredTrader(
                 wallet=e.get("proxyWallet", e.get("address", "")),
@@ -119,7 +169,9 @@ class LeaderboardScorer:
                 profit_30d=profit,
                 win_rate=max(0.0, min(1.0, win_rate)),
                 total_trades=trades,
-                unique_markets=int(e.get("marketsTraded", trades)),  # fallback to trades
+                unique_markets=int(
+                    e.get("marketsTraded", trades)
+                ),  # fallback to trades
                 estimated_bankroll=est_bankroll,
             )
 
@@ -142,9 +194,10 @@ class LeaderboardScorer:
             traders.append(trader)
 
         traders.sort(key=lambda t: t.score, reverse=True)
-        logger.info(f"Scored {len(traders)} traders. Top: {traders[0].pseudonym} score={traders[0].score:.1f}")
+        logger.info(
+            f"Scored {len(traders)} traders. Top: {traders[0].pseudonym} score={traders[0].score:.1f}"
+        )
         return traders
-
 
 
 class WalletWatcher:
@@ -162,12 +215,16 @@ class WalletWatcher:
         try:
             db = SessionLocal()
             condition_id, side = pos_key.split(":", 1)
-            entry = db.query(CopyTraderEntry).filter_by(
-                wallet=wallet, condition_id=condition_id, side=side
-            ).first()
+            entry = (
+                db.query(CopyTraderEntry)
+                .filter_by(wallet=wallet, condition_id=condition_id, side=side)
+                .first()
+            )
             return entry.size if entry else 0.0
         except Exception as e:
-            logger.warning(f"DB read error for entry size ({wallet[:10]}, {pos_key}): {e}")
+            logger.warning(
+                f"DB read error for entry size ({wallet[:10]}, {pos_key}): {e}"
+            )
             return 0.0
         finally:
             db.close()
@@ -177,9 +234,11 @@ class WalletWatcher:
         try:
             db = SessionLocal()
             condition_id, side = pos_key.split(":", 1)
-            entry = db.query(CopyTraderEntry).filter_by(
-                wallet=wallet, condition_id=condition_id, side=side
-            ).first()
+            entry = (
+                db.query(CopyTraderEntry)
+                .filter_by(wallet=wallet, condition_id=condition_id, side=side)
+                .first()
+            )
             if entry:
                 entry.size += delta
             else:
@@ -194,13 +253,17 @@ class WalletWatcher:
             db.refresh(entry)
             return entry.size
         except Exception as e:
-            logger.warning(f"DB upsert error for entry size ({wallet[:10]}, {pos_key}): {e}")
+            logger.warning(
+                f"DB upsert error for entry size ({wallet[:10]}, {pos_key}): {e}"
+            )
             db.rollback()
             return 0.0
         finally:
             db.close()
 
-    async def poll(self, wallet: str, limit: int = 100) -> tuple[list[WalletTrade], list[WalletTrade]]:
+    async def poll(
+        self, wallet: str, limit: int = 100
+    ) -> tuple[list[WalletTrade], list[WalletTrade]]:
         """
         Poll wallet trades. Returns (new_buys, new_exits).
         new_exits: trades where cumulative SELL >= 50% of original entry.
@@ -274,7 +337,7 @@ class WalletWatcher:
                     logger.info(
                         f"Exit signal from {wallet[:10]}...: SELL {outcome} "
                         f"cumulative={cumulative_sell:.2f}/{orig_entry:.2f} "
-                        f"({cumulative_sell/orig_entry:.0%}) | {trade.title[:40]}"
+                        f"({cumulative_sell / orig_entry:.0%}) | {trade.title[:40]}"
                     )
 
         return new_buys, new_exits
@@ -289,7 +352,9 @@ class CopyTrader:
     - Generates CopySignal for each new trade within risk limits
     """
 
-    def __init__(self, bankroll: float = 1000.0, max_wallets: int = 10, min_score: float = 60.0):
+    def __init__(
+        self, bankroll: float = 1000.0, max_wallets: int = 10, min_score: float = 60.0
+    ):
         self.bankroll = bankroll
         self.max_wallets = max_wallets
         self.min_score = min_score
@@ -318,18 +383,20 @@ class CopyTrader:
     async def _refresh_leaderboard(self):
         """Refresh tracked wallets from leaderboard."""
         scored = await self._scorer.fetch_and_score(top_n=50)
-        self._tracked = [t for t in scored if t.score >= self.min_score][: self.max_wallets]
+        self._tracked = [t for t in scored if t.score >= self.min_score][
+            : self.max_wallets
+        ]
         self._last_refresh = asyncio.get_running_loop().time()
         logger.info(f"Tracking {len(self._tracked)} wallets after leaderboard refresh")
 
     async def poll_once(self) -> list[CopySignal]:
         """Poll all tracked wallets once. Returns new copy signals."""
-        # Refresh leaderboard every 6 hours
         now = asyncio.get_running_loop().time()
         if now - self._last_refresh > 21600:
             await self._refresh_leaderboard()
 
         signals: list[CopySignal] = []
+        seen_condition_ids: set = set()
 
         for trader in self._tracked:
             if not trader.wallet:
@@ -338,6 +405,9 @@ class CopyTrader:
                 new_buys, new_exits = await self._watcher.poll(trader.wallet)
 
                 for trade in new_buys:
+                    if trade.condition_id in seen_condition_ids:
+                        continue
+                    seen_condition_ids.add(trade.condition_id)
                     signal = self._mirror_buy(trader, trade)
                     if signal:
                         signals.append(signal)
@@ -352,7 +422,9 @@ class CopyTrader:
 
         return signals
 
-    def _mirror_buy(self, trader: ScoredTrader, trade: WalletTrade) -> Optional[CopySignal]:
+    def _mirror_buy(
+        self, trader: ScoredTrader, trade: WalletTrade
+    ) -> Optional[CopySignal]:
         """Create a proportional buy signal from a trader's buy trade."""
         if trader.estimated_bankroll <= 0:
             return None
@@ -386,7 +458,9 @@ class CopyTrader:
             reasoning=reasoning,
         )
 
-    def _mirror_exit(self, trader: ScoredTrader, trade: WalletTrade) -> Optional[CopySignal]:
+    def _mirror_exit(
+        self, trader: ScoredTrader, trade: WalletTrade
+    ) -> Optional[CopySignal]:
         """Create an exit signal from a trader's sell trade."""
         reasoning = (
             f"EXIT signal from {trader.pseudonym} (score={trader.score:.0f}) | "
@@ -410,7 +484,9 @@ class CopyTrader:
         Main polling loop. Calls on_signal(signals) for each batch of new signals.
         Run this as an asyncio task.
         """
-        logger.info(f"Copy trader loop started — polling {len(self._tracked)} wallets every {poll_interval}s")
+        logger.info(
+            f"Copy trader loop started — polling {len(self._tracked)} wallets every {poll_interval}s"
+        )
         while self._running:
             try:
                 signals = await self.poll_once()
@@ -444,7 +520,9 @@ class CopyTraderStrategy(BaseStrategy):
 
     def __init__(self, max_wallets: int = 20, min_score: float = 60.0):
         super().__init__()
-        self._engine = CopyTrader(bankroll=10000, max_wallets=max_wallets, min_score=min_score)
+        self._engine = CopyTrader(
+            bankroll=10000, max_wallets=max_wallets, min_score=min_score
+        )
         self._task: asyncio.Task | None = None
 
     async def market_filter(self, markets):
@@ -455,7 +533,6 @@ class CopyTraderStrategy(BaseStrategy):
         Return union of: leaderboard top-N + enabled WalletConfig rows.
         WalletConfig rows are always included (user-curated, may not score well).
         """
-        import json
         from backend.models.database import WalletConfig
 
         max_wallets = ctx.params.get("max_wallets", 20)
@@ -463,7 +540,10 @@ class CopyTraderStrategy(BaseStrategy):
 
         # 1. Get user-configured wallets
         user_wallets = [
-            w.address for w in ctx.db.query(WalletConfig).filter(WalletConfig.enabled == True).all()
+            w.address
+            for w in ctx.db.query(WalletConfig)
+            .filter(WalletConfig.enabled == True)
+            .all()
         ]
 
         # 2. Get leaderboard top wallets
@@ -484,10 +564,9 @@ class CopyTraderStrategy(BaseStrategy):
                 seen.add(w)
                 result.append(w)
 
-        return result[:max_wallets * 2]  # cap at 2x to avoid runaway
+        return result[: max_wallets * 2]  # cap at 2x to avoid runaway
 
     async def run_cycle(self, ctx):
-        import json
         from backend.models.database import DecisionLog
 
         max_wallets = ctx.params.get("max_wallets", 20)
@@ -509,23 +588,31 @@ class CopyTraderStrategy(BaseStrategy):
             for wallet in wallet_pool:
                 decision = "FOLLOW" if wallet in signaled_wallets else "SKIP"
                 # Find matching signal for scoring breakdown if present
-                wallet_signals = [s for s in (signals or []) if s.source_wallet == wallet]
+                wallet_signals = [
+                    s for s in (signals or []) if s.source_wallet == wallet
+                ]
                 if wallet_signals:
-                    signal_data = json.dumps({
-                        "trader_score": wallet_signals[0].trader_score,
-                        "signals_count": len(wallet_signals),
-                        "outcomes": [s.our_side for s in wallet_signals],
-                    })
+                    signal_data = json.dumps(
+                        {
+                            "trader_score": wallet_signals[0].trader_score,
+                            "signals_count": len(wallet_signals),
+                            "outcomes": [s.our_side for s in wallet_signals],
+                        }
+                    )
                     reason = wallet_signals[0].reasoning
                 else:
-                    signal_data = json.dumps({"min_score": min_score, "max_wallets": max_wallets})
+                    signal_data = json.dumps(
+                        {"min_score": min_score, "max_wallets": max_wallets}
+                    )
                     reason = f"No new trades detected for wallet {wallet[:10]}..."
 
                 log_row = DecisionLog(
                     strategy=self.name,
                     market_ticker=wallet[:42],  # wallet address as identifier
                     decision=decision,
-                    confidence=wallet_signals[0].trader_score / 100.0 if wallet_signals else None,
+                    confidence=wallet_signals[0].trader_score / 100.0
+                    if wallet_signals
+                    else None,
                     signal_data=signal_data,
                     reason=reason,
                 )

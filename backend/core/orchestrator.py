@@ -57,6 +57,8 @@ class Orchestrator:
             self._bot.on_resume = self._on_resume
             self._bot.on_mode_switch = self.on_mode_switch
             await self._bot.start()
+            from backend.bot.notifier import set_bot
+            set_bot(self._bot)
 
         # 3. Seed strategy configs and load registry
         from backend.strategies.registry import load_all_strategies

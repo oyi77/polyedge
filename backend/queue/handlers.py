@@ -1,0 +1,149 @@
+"""Job handlers for queue execution.
+
+These functions wrap existing scheduler logic for use with RQ workers.
+Each handler is async-friendly and returns structured results.
+"""
+import logging
+from typing import Dict, Any
+
+logger = logging.getLogger("trading_bot")
+
+
+async def market_scan(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handler for market scanning job.
+
+    Wraps the existing scan_and_trade_job logic from scheduler.py.
+    Can be called from async worker context.
+
+    Args:
+        payload: Dict containing optional job parameters
+
+    Returns:
+        Dict with keys:
+            - success (bool): Whether the job completed successfully
+            - message (str): Human-readable result message
+            - data (dict): Additional job data (signals found, trades executed, etc.)
+            - error (str, optional): Error message if success=False
+    """
+    try:
+        from backend.core.scheduler import scan_and_trade_job
+
+        # Execute the market scan logic
+        await scan_and_trade_job()
+
+        return {
+            "success": True,
+            "message": "Market scan completed successfully",
+            "data": {
+                "job_type": "market_scan",
+                "params": payload
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"market_scan handler error: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Market scan failed: {str(e)}",
+            "data": {
+                "job_type": "market_scan",
+                "params": payload
+            }
+        }
+
+
+async def settlement_check(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handler for trade settlement job.
+
+    Wraps the existing settlement_job logic from scheduler.py.
+    Can be called from async worker context.
+
+    Args:
+        payload: Dict containing optional job parameters
+
+    Returns:
+        Dict with keys:
+            - success (bool): Whether the job completed successfully
+            - message (str): Human-readable result message
+            - data (dict): Settlement data (trades settled, P&L, etc.)
+            - error (str, optional): Error message if success=False
+    """
+    try:
+        from backend.core.scheduler import settlement_job
+
+        # Execute the settlement logic
+        await settlement_job()
+
+        return {
+            "success": True,
+            "message": "Settlement check completed successfully",
+            "data": {
+                "job_type": "settlement_check",
+                "params": payload
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"settlement_check handler error: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Settlement check failed: {str(e)}",
+            "data": {
+                "job_type": "settlement_check",
+                "params": payload
+            }
+        }
+
+
+async def signal_generation(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handler for signal generation job.
+
+    Wraps signal scanning logic from the core signals module.
+    Can be called from async worker context.
+
+    Args:
+        payload: Dict containing optional job parameters (e.g., market_type, strategy)
+
+    Returns:
+        Dict with keys:
+            - success (bool): Whether the job completed successfully
+            - message (str): Human-readable result message
+            - data (dict): Signal generation data (signals found, etc.)
+            - error (str, optional): Error message if success=False
+    """
+    try:
+        from backend.core.signals import scan_for_signals
+
+        # Execute signal generation logic
+        signals = await scan_for_signals()
+
+        # Extract signal stats
+        actionable = [s for s in signals if s.passes_threshold]
+
+        return {
+            "success": True,
+            "message": f"Signal generation completed: {len(signals)} signals, {len(actionable)} actionable",
+            "data": {
+                "job_type": "signal_generation",
+                "total_signals": len(signals),
+                "actionable_signals": len(actionable),
+                "params": payload
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"signal_generation handler error: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Signal generation failed: {str(e)}",
+            "data": {
+                "job_type": "signal_generation",
+                "params": payload
+            }
+        }
