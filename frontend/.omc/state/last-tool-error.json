@@ -1,7 +1,7 @@
 {
-  "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/home/openclaw/projects/polyedge/frontend/src/api/index.ts\",\"limit\":100}",
-  "error": "File does not exist. Note: your current working directory is /home/openclaw/projects/polyedge/frontend.",
-  "timestamp": "2026-04-07T08:20:15.809Z",
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"python -m pytest backend/tests/ -q 2>&1 | tail -3 && cd frontend && npm run test -- --run 2>&1 | tail -6\",\"description\":\"Post-deslop regression check\"}",
+  "error": "Exit code 1\n\n\nno tests ran in 0.00s\n(eval):cd:1: no such file or directory: frontend\n[rerun: b20]",
+  "timestamp": "2026-04-07T14:22:11.241Z",
   "retry_count": 1
 }
