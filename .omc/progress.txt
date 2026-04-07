@@ -118,3 +118,39 @@ Result: paper.pnl=$277.62, win_rate=54.8% now visible.
 - backend/models/database.py: WAL pragma in ensure_schema
 - backend/core/settlement.py: _get_actual_temp_from_openmeteo, stale trade expiry
 - docker-compose.yml: added postgres service
+
+## Sisyphus Polyedge Transformation — Ralph Session 2026-04-07
+### Outcome
+All 32 stories in .omc/prd.json marked passes:true.
+
+### Phase 1 — Job Queue (RQ-001..RQ-018)
+- backend/queue/{abstract,sqlite_queue,worker,handlers,sqlite_cache,redis_queue,arq_settings,migrate_jobs,migrate_to_redis}.py
+- backend/cache/{__init__,redis_cache}.py — CircuitBreaker + Redis fallback to SQLite
+- backend/monitoring/queue_metrics.py — JobTimer + percentile tracking wired into Worker
+- backend/models/database.py — JobQueue model + configure_sqlite_wal() event listener (WAL/busy_timeout/synchronous)
+- backend/core/scheduler.py — JOB_WORKER_ENABLED branch, removes APScheduler jobs, starts worker task
+- backend/tests/test_queue/ — 13 RQ tests (sqlite_queue, worker, crash_recovery) + redis_cache/redis_queue/queue_metrics/migrate_to_redis tests
+- README.md "Job Queue Architecture" section + docs/architecture/adr-001-job-queue.md
+- .omc/plans/phase-1-production-readiness.md updated with job queue deliverables
+
+### Phase 2-5 — PolyEdge Production Transformation (PE-001..PE-014)
+- backend/data/polygon_listener.py — Polygon WS subscriber, threshold filter, WhaleTransaction persistence
+- backend/data/feed_aggregator.py — RSS aggregator with per-feed error isolation + dedup
+- backend/ai/sentiment_analyzer.py + backend/ai/base.py get_ai_client() factory
+- backend/core/whale_scoring.py + whale_discovery.py — formula score = win_rate*0.35 + roi*0.30 + size*0.20 + freq*0.15
+- backend/core/risk_manager.py — MAX_POSITION_FRACTION/MAX_TOTAL_EXPOSURE_FRACTION/SLIPPAGE_TOLERANCE + daily loss circuit
+- backend/core/auto_trader.py + PendingApproval model + AUTO_APPROVE_MIN_CONFIDENCE gating
+- backend/core/arbitrage_detector.py — yes_no_arb, cross_market, scan_all w/ fee accounting
+- backend/ai/prediction_engine.py — baseline logistic + extract_features; backend/ai/training/ stubs (data_collector, feature_engineering, model_trainer, model_evaluator)
+- backend/api/main.py — 5 new Phase 2 endpoints: /api/whales/transactions, /api/arbitrage/opportunities, /api/news/feed, /api/predictions/{id}, /api/auto-trader/approve/{id}
+- backend/core/orchestrator.py init_phase2_modules() + scheduler.py news_feed_scan_job + arbitrage_scan_job + feature flags
+- frontend/src/hooks/useWebSocket.ts — exponential backoff reconnect, JSON parsing
+- frontend/src/components/{LiveMarketView,OpportunityScanner,WhaleActivityFeed}.tsx
+- frontend/src/pages/TradingTerminal.tsx + lazy route + NavBar link
+- frontend/public/manifest.json + frontend/src/sw.ts + main.tsx PROD-only registration
+
+### Verification
+- Backend: python -m pytest backend/tests/ -q -> 132 passed
+- Frontend: npm run test -- --run -> 33 passed (8 files)
+- Frontend build: npm run build -> exit 0
+- python -c "from backend.api.main import app; print(len(app.routes))" -> 66 routes

@@ -256,6 +256,44 @@ kalshi-trading-bot/
 └── README.md
 ```
 
+## Job Queue Architecture
+
+### Why a Queue
+
+APScheduler stores scheduled jobs in memory. A process crash silently drops all pending market scans and settlement checks. A persistent job queue ensures every job survives restarts and is retried if a worker dies mid-execution.
+
+### Phase 1 — SQLite (default)
+
+Jobs are stored in the `job_queue` table with SQLite WAL mode enabled for safe concurrent reads. `AsyncSQLiteQueue` uses a thread-pool executor to avoid blocking the async event loop. A `Worker` loop polls the queue, dispatches handlers, and enforces per-job timeouts.
+
+On worker startup, any jobs stuck in `processing` state older than `JOB_TIMEOUT_SECONDS` are reset to `pending` — this is the crash recovery mechanism.
+
+### Phase 2 — Redis (opt-in)
+
+Switch by setting `JOB_QUEUE_URL=redis://...`. The `RedisQueue` implementation uses [arq](https://arq-docs.helpmanual.io/) and satisfies the same `AbstractQueue` interface. No handler code changes required. Use `migrate_to_redis.py` to drain the SQLite queue into Redis before cutover.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JOB_WORKER_ENABLED` | `False` | Opt-in worker process. Set `True` in production. |
+| `JOB_QUEUE_URL` | `sqlite:///./job_queue.db` | Queue backend. Prefix `redis://` for Phase 2. |
+| `JOB_TIMEOUT_SECONDS` | `300` | Per-job timeout before worker marks job failed. |
+| `MAX_CONCURRENT_JOBS` | `1` | Worker concurrency limit. |
+| `CACHE_URL` | `sqlite:///./cache.db` | Cache backend (RedisCache in Phase 2). |
+
+### Crash recovery
+
+Jobs in `pending` or `processing` state persist across process restarts. On worker startup:
+1. Any `processing` job older than `JOB_TIMEOUT_SECONDS` is reset to `pending`.
+2. Normal poll loop picks up and re-executes those jobs.
+
+**At-least-once semantics:** a job may execute more than once if the worker crashes after starting the job but before marking it `completed`. All handlers (`market_scan`, `settlement_check`, `signal_generation`) are designed to be idempotent.
+
+See [`docs/architecture/adr-001-job-queue.md`](docs/architecture/adr-001-job-queue.md) for the full architecture decision record.
+
+---
+
 ## Disclaimer
 
 This is a **simulation tool** for educational purposes. It does not place real trades or use real money. Past performance in simulation does not guarantee future results. Prediction markets involve risk of loss.

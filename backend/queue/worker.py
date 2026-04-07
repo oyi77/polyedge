@@ -8,11 +8,13 @@ RQ-006: Worker implementation for job queue processing
 """
 import asyncio
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Set
 
 from backend.config import settings
 from backend.queue.abstract import AbstractQueue, Job
+from backend.monitoring.queue_metrics import get_queue_metrics, JobTimer
 
 
 logger = logging.getLogger("trading_bot")
@@ -71,9 +73,13 @@ class Worker:
         """
         self._running = True
         logger.info("Worker started")
+        _iter_count = 0
+        _last_snapshot_time = time.monotonic()
 
         try:
             while self._running:
+                _iter_count += 1
+
                 # Check concurrency limit
                 if len(self._in_flight_jobs) >= self._max_concurrent:
                     await asyncio.sleep(0.1)
@@ -82,9 +88,20 @@ class Worker:
                 # Try to dequeue a job
                 job = await self._queue.dequeue()
                 if job is None:
-                    # No jobs available, sleep briefly
+                    # No jobs available — update depth and sleep briefly
+                    get_queue_metrics().update_depth(await self._queue.get_pending_count())
                     await asyncio.sleep(0.5)
                     continue
+
+                # Periodically update depth (every 10 iterations)
+                if _iter_count % 10 == 0:
+                    get_queue_metrics().update_depth(await self._queue.get_pending_count())
+
+                # Log snapshot once per minute
+                _now = time.monotonic()
+                if _now - _last_snapshot_time >= 60:
+                    get_queue_metrics().log_snapshot()
+                    _last_snapshot_time = _now
 
                 # Track job as in-flight
                 job_id = int(job.job_id)
@@ -113,39 +130,44 @@ class Worker:
         """
         job_id = int(job.job_id)
 
-        try:
-            # Execute job with timeout
-            result = await asyncio.wait_for(
-                self.dispatch_job(job),
-                timeout=settings.JOB_TIMEOUT_SECONDS
-            )
-
-            # Check if handler reported success
-            if result.get("success", False):
-                await self._queue.complete(job_id)
-                logger.info(
-                    f"Job {job_id} completed: {result.get('message', 'No message')}"
+        with JobTimer(job.job_type) as timer:
+            try:
+                # Execute job with timeout
+                result = await asyncio.wait_for(
+                    self.dispatch_job(job),
+                    timeout=settings.JOB_TIMEOUT_SECONDS
                 )
-            else:
-                error_msg = result.get("error", "Unknown error")
+
+                # Check if handler reported success
+                if result.get("success", False):
+                    timer.status = "success"
+                    await self._queue.complete(job_id)
+                    logger.info(
+                        f"Job {job_id} completed: {result.get('message', 'No message')}"
+                    )
+                else:
+                    timer.status = "error"
+                    error_msg = result.get("error", "Unknown error")
+                    await self._queue.fail(job_id, error_msg)
+                    logger.error(f"Job {job_id} failed: {error_msg}")
+
+            except asyncio.TimeoutError:
+                timer.status = "timeout"
+                error_msg = (
+                    f"Job timed out after {settings.JOB_TIMEOUT_SECONDS} seconds"
+                )
                 await self._queue.fail(job_id, error_msg)
-                logger.error(f"Job {job_id} failed: {error_msg}")
+                logger.error(f"Job {job_id} timeout: {error_msg}")
 
-        except asyncio.TimeoutError:
-            error_msg = (
-                f"Job timed out after {settings.JOB_TIMEOUT_SECONDS} seconds"
-            )
-            await self._queue.fail(job_id, error_msg)
-            logger.error(f"Job {job_id} timeout: {error_msg}")
+            except Exception as e:
+                timer.status = "error"
+                error_msg = f"Job execution error: {str(e)}"
+                await self._queue.fail(job_id, error_msg)
+                logger.error(f"Job {job_id} error: {error_msg}", exc_info=True)
 
-        except Exception as e:
-            error_msg = f"Job execution error: {str(e)}"
-            await self._queue.fail(job_id, error_msg)
-            logger.error(f"Job {job_id} error: {error_msg}", exc_info=True)
-
-        finally:
-            # Always remove from in-flight tracking
-            self._in_flight_jobs.discard(job_id)
+            finally:
+                # Always remove from in-flight tracking
+                self._in_flight_jobs.discard(job_id)
 
     async def dispatch_job(self, job: Job) -> dict:
         """

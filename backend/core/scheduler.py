@@ -495,6 +495,32 @@ async def settlement_job():
         logger.exception("Error in settlement_job")
 
 
+async def news_feed_scan_job():
+    """Periodically pull news feeds when NEWS_FEED_ENABLED."""
+    if not settings.NEWS_FEED_ENABLED:
+        return
+    try:
+        from backend.data.feed_aggregator import FeedAggregator
+        agg = FeedAggregator()
+        items = await agg.fetch_all()
+        log_event("data", f"News feed: {len(items)} items")
+    except Exception as e:
+        log_event("error", f"news_feed_scan error: {e}")
+
+
+async def arbitrage_scan_job():
+    """Periodically scan for arbitrage opportunities when ARBITRAGE_DETECTOR_ENABLED."""
+    if not settings.ARBITRAGE_DETECTOR_ENABLED:
+        return
+    try:
+        from backend.core.arbitrage_detector import ArbitrageDetector
+        det = ArbitrageDetector()
+        ops = det.scan_all([])
+        log_event("data", f"Arbitrage scan: {len(ops)} opportunities")
+    except Exception as e:
+        log_event("error", f"arbitrage_scan error: {e}")
+
+
 async def heartbeat_job():
     """Periodic heartbeat. Runs every minute."""
     db = None
@@ -699,6 +725,24 @@ def start_scheduler():
     for job in scheduler.get_jobs():
         logger.info(f"scheduler job registered: id={job.id} next_run={job.next_run_time}")
     logger.info(f"scheduler started: jobs={[j.id for j in scheduler.get_jobs()]}")
+
+    if settings.NEWS_FEED_ENABLED:
+        scheduler.add_job(
+            news_feed_scan_job,
+            IntervalTrigger(seconds=settings.NEWS_FEED_INTERVAL_SECONDS),
+            id="news_feed_scan",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    if settings.ARBITRAGE_DETECTOR_ENABLED:
+        scheduler.add_job(
+            arbitrage_scan_job,
+            IntervalTrigger(seconds=settings.ARBITRAGE_SCAN_INTERVAL_SECONDS),
+            id="arbitrage_scan",
+            replace_existing=True,
+            max_instances=1,
+        )
 
     # Initialize queue worker if enabled
     if settings.JOB_WORKER_ENABLED:

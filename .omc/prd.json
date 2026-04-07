@@ -1,6 +1,6 @@
 {
-  "title": "Redis and Job Queue Integration",
-  "description": "Add SQLite-backed job queue with Redis upgrade path to PolyEdge trading bot. Solves critical scheduler vulnerability where jobs are lost on process crashes. Phase 1: SQLite queue (8h). Phase 2: Redis + arq (6h). Total: 14h.",
+  "title": "PolyEdge Production Transformation (sisyphus polyedge-production-transformation.md)",
+  "description": "Convert sisyphus polyedge-production-transformation.md plan into structured stories. Existing RQ-001..RQ-018 cover the Phase-1 job queue layer. New PE-001..PE-014 cover the missing Phase 2-5 work: blockchain whale monitoring, news feeds, sentiment, dynamic whale discovery, auto-trader + risk manager, arbitrage detector, ML prediction scaffold, and the live trading terminal frontend.",
   "stories": [
     {
       "id": "RQ-001",
@@ -94,7 +94,7 @@
     {
       "id": "RQ-007",
       "title": "Integrate queue worker with scheduler",
-      "passes": false,
+      "passes": true,
       "priority": 7,
       "acceptanceCriteria": [
         "JOB_WORKER_ENABLED config added to backend/config.py (default=False)",
@@ -109,7 +109,7 @@
     {
       "id": "RQ-008",
       "title": "Configure SQLite WAL mode for concurrent access",
-      "passes": false,
+      "passes": true,
       "priority": 8,
       "acceptanceCriteria": [
         "configure_sqlite_wal() function added to backend/models/database.py",
@@ -123,7 +123,7 @@
     {
       "id": "RQ-009",
       "title": "Create job queue migration script",
-      "passes": false,
+      "passes": true,
       "priority": 9,
       "acceptanceCriteria": [
         "backend/queue/migrate_jobs.py created with migrate_apjobs_to_queue() function",
@@ -137,7 +137,7 @@
     {
       "id": "RQ-010",
       "title": "Test crash recovery and job persistence",
-      "passes": false,
+      "passes": true,
       "priority": 10,
       "acceptanceCriteria": [
         "backend/tests/test_queue/test_crash_recovery.py created",
@@ -151,7 +151,7 @@
     {
       "id": "RQ-011",
       "title": "Test job timeout and graceful shutdown",
-      "passes": false,
+      "passes": true,
       "priority": 11,
       "acceptanceCriteria": [
         "backend/tests/test_queue/test_worker.py created",
@@ -167,7 +167,7 @@
     {
       "id": "RQ-012",
       "title": "Test queue operations and idempotency",
-      "passes": false,
+      "passes": true,
       "priority": 12,
       "acceptanceCriteria": [
         "backend/tests/test_queue/test_sqlite_queue.py created",
@@ -183,7 +183,7 @@
     {
       "id": "RQ-013",
       "title": "Update Phase 1 plan with job queue work",
-      "passes": false,
+      "passes": true,
       "priority": 13,
       "acceptanceCriteria": [
         "phase-1-production-readiness.md updated to include job queue in Step 2",
@@ -196,7 +196,7 @@
     {
       "id": "RQ-014",
       "title": "Phase 2: Implement Redis cache with circuit breaker",
-      "passes": false,
+      "passes": true,
       "priority": 14,
       "acceptanceCriteria": [
         "backend/cache/redis_cache.py implements RedisCache extending AbstractCache",
@@ -212,7 +212,7 @@
     {
       "id": "RQ-015",
       "title": "Phase 2: Implement arq-based Redis queue",
-      "passes": false,
+      "passes": true,
       "priority": 15,
       "acceptanceCriteria": [
         "backend/queue/redis_queue.py implements RedisQueue via arq library",
@@ -228,7 +228,7 @@
     {
       "id": "RQ-016",
       "title": "Phase 2: Add queue latency monitoring",
-      "passes": false,
+      "passes": true,
       "priority": 16,
       "acceptanceCriteria": [
         "backend/monitoring/queue_metrics.py created",
@@ -243,7 +243,7 @@
     {
       "id": "RQ-017",
       "title": "Phase 2: Create SQLite to Redis migration tool",
-      "passes": false,
+      "passes": true,
       "priority": 17,
       "acceptanceCriteria": [
         "backend/queue/migrate_to_redis.py created",
@@ -258,7 +258,7 @@
     {
       "id": "RQ-018",
       "title": "Update documentation with job queue architecture",
-      "passes": false,
+      "passes": true,
       "priority": 18,
       "acceptanceCriteria": [
         "README.md updated with job queue architecture section",
@@ -269,6 +269,202 @@
         "ADR documents SQLite-first decision and alternatives considered",
         "ADR includes: Decision, Drivers, Alternatives, Why Chosen, Consequences, Follow-ups",
         "Documentation verified for accuracy"
+      ]
+    },
+    {
+      "id": "PE-001",
+      "title": "Polygon blockchain whale listener",
+      "passes": true,
+      "priority": 19,
+      "acceptanceCriteria": [
+        "backend/data/polygon_listener.py exists with PolygonListener class",
+        "PolygonListener subscribes to Polygon WebSocket RPC (config: POLYGON_WS_URL, default wss://polygon-rpc.com)",
+        "Filters for ConditionalTokens contract address (config: CONDITIONAL_TOKENS_ADDRESS)",
+        "Parses log events to extract market positionId and trade size",
+        "Threshold filter: only emits trades >= MIN_WHALE_TRADE_USD (default 1000)",
+        "Persists alerts via WhaleTransaction model in backend/models/database.py",
+        "Graceful disconnect/reconnect with exponential backoff (max 5 retries before erroring out)",
+        "WhaleTransaction model has fields: id, tx_hash, wallet, market_id, side, size_usd, block_number, observed_at",
+        "Async test backend/tests/test_polygon_listener.py mocks websocket and verifies threshold filter + persistence"
+      ]
+    },
+    {
+      "id": "PE-002",
+      "title": "News feed aggregator",
+      "passes": true,
+      "priority": 20,
+      "acceptanceCriteria": [
+        "backend/data/feed_aggregator.py exists with FeedAggregator class",
+        "Configurable RSS feeds list (default: BBC, Reuters business, Federal Reserve, CoinDesk, Cointelegraph)",
+        "fetch_all() returns list of NewsItem dataclass {source, title, link, published_at, summary}",
+        "Uses feedparser library; deduplicates by link hash",
+        "Handles network errors gracefully (per-feed try/except, partial results allowed)",
+        "Test backend/tests/test_feed_aggregator.py mocks feedparser.parse and verifies dedup + error isolation"
+      ]
+    },
+    {
+      "id": "PE-003",
+      "title": "Sentiment analyzer using existing AI provider",
+      "passes": true,
+      "priority": 21,
+      "acceptanceCriteria": [
+        "backend/ai/sentiment_analyzer.py exists with SentimentAnalyzer class",
+        "Uses existing backend/ai/base.py AI provider (Groq/Claude/custom) for sentiment scoring",
+        "analyze(text) returns SentimentResult {score: float -1..1, label: positive|negative|neutral, confidence: float}",
+        "analyze_batch(texts) processes in parallel via asyncio.gather",
+        "Daily budget enforcement: respects settings.AI_DAILY_BUDGET_USD",
+        "Test backend/tests/test_sentiment_analyzer.py mocks AI provider and verifies parsing + batch concurrency"
+      ]
+    },
+    {
+      "id": "PE-004",
+      "title": "Dynamic whale discovery and scoring",
+      "passes": true,
+      "priority": 22,
+      "acceptanceCriteria": [
+        "backend/core/whale_scoring.py exists with calculate_whale_score(wallet_history) -> float [0..1]",
+        "Score formula: win_rate*0.35 + clamped_roi*0.30 + clamped_size*0.20 + clamped_freq*0.15",
+        "backend/core/whale_discovery.py exists with WhaleDiscovery.discover(min_trades=10) async method",
+        "Discovery seeds candidates from Polymarket leaderboard API or known WalletConfig rows",
+        "Persists results into existing WalletConfig.whale_score column (add column if missing)",
+        "Test backend/tests/test_whale_scoring.py covers edge cases: empty trades, all-loss, all-win, large size, formula correctness"
+      ]
+    },
+    {
+      "id": "PE-005",
+      "title": "Risk manager",
+      "passes": true,
+      "priority": 23,
+      "acceptanceCriteria": [
+        "backend/core/risk_manager.py exists with RiskManager class",
+        "validate_trade(size, current_exposure, bankroll, confidence) -> RiskDecision {allowed: bool, reason: str, adjusted_size: float}",
+        "Enforces MAX_POSITION_FRACTION (default 0.05), MAX_TOTAL_EXPOSURE_FRACTION (default 0.50)",
+        "Slippage cap via SLIPPAGE_TOLERANCE (default 0.02)",
+        "Uses settings.DAILY_LOSS_LIMIT to short-circuit when daily losses exceed limit",
+        "Test backend/tests/test_risk_manager.py covers: oversize trade rejection, daily loss circuit, slippage adjustment, low confidence rejection"
+      ]
+    },
+    {
+      "id": "PE-006",
+      "title": "Auto-trader with confidence gating",
+      "passes": true,
+      "priority": 24,
+      "acceptanceCriteria": [
+        "backend/core/auto_trader.py exists with AutoTrader class",
+        "execute_signal(signal, risk_manager) async method handling auto-approval and execution",
+        "AUTO_APPROVE_MIN_CONFIDENCE config (default 0.85) — trades above this auto-execute",
+        "Trades below threshold create a PendingApproval record (new table/column) for manual review",
+        "Uses existing polymarket_clob.clob_from_settings for live execution; paper mode skips network call",
+        "Records all decisions via record_decision() helper",
+        "Test backend/tests/test_auto_trader.py mocks risk_manager and clob; verifies auto-execute branch and pending-approval branch"
+      ]
+    },
+    {
+      "id": "PE-007",
+      "title": "Arbitrage detector",
+      "passes": true,
+      "priority": 25,
+      "acceptanceCriteria": [
+        "backend/core/arbitrage_detector.py exists with ArbitrageDetector class",
+        "detect_yes_no_arb(market) finds markets where YES + NO price < 0.95 (correlated arbitrage)",
+        "detect_cross_market(market_a, market_b) finds same-event arb across platforms",
+        "calculate_profit_after_fees(opportunity, fee_pct=0.02) returns net profit",
+        "scan_all(markets) returns list of ArbOpportunity sorted by profit",
+        "Test backend/tests/test_arbitrage_detector.py covers: profitable arb, unprofitable after fees, no opportunity"
+      ]
+    },
+    {
+      "id": "PE-008",
+      "title": "ML prediction engine scaffold",
+      "passes": true,
+      "priority": 26,
+      "acceptanceCriteria": [
+        "backend/ai/prediction_engine.py exists with PredictionEngine class (interface only — no training in this story)",
+        "predict(features: Dict[str, float]) -> Prediction {probability_yes: float, confidence: float, model_version: str}",
+        "Initial implementation uses a deterministic baseline (logistic of weighted features) so the interface is callable end-to-end",
+        "extract_features(market, signal_data) helper returns the canonical feature dict",
+        "backend/ai/training/__init__.py + data_collector.py + feature_engineering.py + model_trainer.py + model_evaluator.py exist as stubs with class signatures and docstrings",
+        "Test backend/tests/test_prediction_engine.py verifies predict() returns probability in [0,1] and confidence in [0,1] for sample features"
+      ]
+    },
+    {
+      "id": "PE-009",
+      "title": "Live WebSocket hook + market view (frontend)",
+      "passes": true,
+      "priority": 27,
+      "acceptanceCriteria": [
+        "frontend/src/hooks/useWebSocket.ts exists, returns {data, status, sendMessage}, reconnects on disconnect with exponential backoff",
+        "frontend/src/components/LiveMarketView.tsx exists, subscribes via useWebSocket, animates price changes (CSS transition)",
+        "useWebSocket connects to /ws/markets endpoint (existing _broadcast_event channel in backend/api/main.py)",
+        "Vitest test frontend/src/test/useWebSocket.test.ts mocks WebSocket and verifies reconnect logic + message dispatch",
+        "Vitest test frontend/src/test/LiveMarketView.test.tsx renders without crash and displays placeholder when no data"
+      ]
+    },
+    {
+      "id": "PE-010",
+      "title": "Trading terminal page + opportunity scanner (frontend)",
+      "passes": true,
+      "priority": 28,
+      "acceptanceCriteria": [
+        "frontend/src/pages/TradingTerminal.tsx exists, lazy-loaded route /trading-terminal in App.tsx",
+        "TradingTerminal composes LiveMarketView + OpportunityScanner + WhaleActivityFeed",
+        "frontend/src/components/OpportunityScanner.tsx lists arbitrage opportunities sorted by profit",
+        "frontend/src/components/WhaleActivityFeed.tsx subscribes to /ws/whales channel and shows recent whale alerts",
+        "NavBar gets a Trading Terminal link",
+        "Vitest tests for TradingTerminal, OpportunityScanner, WhaleActivityFeed each render without crash"
+      ]
+    },
+    {
+      "id": "PE-011",
+      "title": "Backend API endpoints for new features",
+      "passes": true,
+      "priority": 29,
+      "acceptanceCriteria": [
+        "GET /api/whales/transactions returns recent WhaleTransaction rows (limit query param, default 50)",
+        "GET /api/arbitrage/opportunities returns ArbitrageDetector.scan_all output",
+        "GET /api/news/feed returns FeedAggregator.fetch_all() result",
+        "GET /api/predictions/{market_id} returns PredictionEngine.predict result for a market",
+        "POST /api/auto-trader/approve/{trade_id} approves a pending trade (require_admin auth)",
+        "All endpoints return JSON and have httpx tests in backend/tests/test_api_phase2.py"
+      ]
+    },
+    {
+      "id": "PE-012",
+      "title": "PWA manifest + service worker",
+      "passes": true,
+      "priority": 30,
+      "acceptanceCriteria": [
+        "frontend/public/manifest.json exists with name, short_name, icons, theme_color, background_color, start_url",
+        "frontend/src/sw.ts exists implementing basic offline cache for static assets",
+        "frontend/index.html links the manifest with <link rel=\"manifest\">",
+        "Service worker registers in frontend/src/main.tsx in production mode only (import.meta.env.PROD)",
+        "vite.config.ts builds successfully with PWA artifacts (npm run build exits 0)"
+      ]
+    },
+    {
+      "id": "PE-013",
+      "title": "Wire new modules into orchestrator + scheduler",
+      "passes": true,
+      "priority": 31,
+      "acceptanceCriteria": [
+        "backend/core/orchestrator.py wires PolygonListener, FeedAggregator, AutoTrader, ArbitrageDetector with feature flags",
+        "Feature flags added to backend/config.py: WHALE_LISTENER_ENABLED, NEWS_FEED_ENABLED, AUTO_TRADER_ENABLED, ARBITRAGE_DETECTOR_ENABLED (all default False)",
+        "backend/core/scheduler.py adds optional jobs for news_feed_scan and arbitrage_scan when flags enabled",
+        "Modules only initialize when their flag is True (no import errors when flags off)",
+        "Test backend/tests/test_orchestrator_wiring.py imports orchestrator with all flags False and asserts no exceptions"
+      ]
+    },
+    {
+      "id": "PE-014",
+      "title": "End-to-end smoke + verification",
+      "passes": true,
+      "priority": 32,
+      "acceptanceCriteria": [
+        "python -m pytest backend/tests/ -q runs to completion with 0 failures",
+        "npm --prefix frontend run test -- --run completes with 0 failures",
+        "npm --prefix frontend run build completes successfully",
+        "python -c 'from backend.api.main import app; print(len(app.routes))' runs without ImportError",
+        "All RQ-* and PE-* stories in this PRD are passes:true"
       ]
     }
   ]

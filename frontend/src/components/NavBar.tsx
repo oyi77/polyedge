@@ -61,6 +61,14 @@ export function NavBar({ title }: { title: string }) {
         >
           Decisions
         </Link>
+        <Link
+          to="/trading-terminal"
+          className={`text-[10px] uppercase tracking-wider transition-colors ${
+            location.pathname === '/trading-terminal' ? 'text-green-500' : 'text-neutral-500 hover:text-green-500'
+          }`}
+        >
+          Trading Terminal
+        </Link>
       </div>
     </nav>
   )

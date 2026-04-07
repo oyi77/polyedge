@@ -2791,6 +2791,82 @@ async def websocket_events(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
+# ============================================================================
+# Phase 2 endpoints — whales, arbitrage, news, predictions, auto-trader
+# ============================================================================
+
+@app.get("/api/whales/transactions")
+async def get_whale_transactions(limit: int = 50):
+    from backend.models.database import WhaleTransaction
+    db = SessionLocal()
+    try:
+        rows = db.query(WhaleTransaction).order_by(WhaleTransaction.observed_at.desc()).limit(min(limit, 500)).all()
+        return [
+            {
+                "id": r.id, "tx_hash": r.tx_hash, "wallet": r.wallet,
+                "market_id": r.market_id, "side": r.side, "size_usd": r.size_usd,
+                "block_number": r.block_number,
+                "observed_at": r.observed_at.isoformat() if r.observed_at else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/api/arbitrage/opportunities")
+async def get_arbitrage_opportunities():
+    from backend.core.arbitrage_detector import ArbitrageDetector
+    # Pull a small sample of recent markets — full integration in PE-013
+    detector = ArbitrageDetector()
+    return {"opportunities": [op.__dict__ for op in detector.scan_all([])]}
+
+
+@app.get("/api/news/feed")
+async def get_news_feed():
+    try:
+        from backend.data.feed_aggregator import FeedAggregator
+        agg = FeedAggregator()
+        items = await agg.fetch_all()
+        return [
+            {
+                "source": i.source, "title": i.title, "link": i.link,
+                "published_at": i.published_at.isoformat() if i.published_at else None,
+                "summary": i.summary,
+            }
+            for i in items[:100]
+        ]
+    except Exception as e:
+        return {"error": str(e), "items": []}
+
+
+@app.get("/api/predictions/{market_id}")
+async def get_prediction(market_id: str):
+    from backend.ai.prediction_engine import PredictionEngine
+    engine = PredictionEngine()
+    # Stub features — PE-013 will wire real market data
+    features = engine.extract_features({"volume": 0}, {})
+    pred = engine.predict(features)
+    return {"market_id": market_id, "prediction": pred.__dict__}
+
+
+@app.post("/api/auto-trader/approve/{trade_id}")
+async def approve_pending_trade(trade_id: int, _admin=Depends(require_admin)):
+    from backend.models.database import PendingApproval
+    db = SessionLocal()
+    try:
+        row = db.query(PendingApproval).filter(PendingApproval.id == trade_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="not found")
+        row.status = "approved"
+        from datetime import datetime as _dt
+        row.decided_at = _dt.utcnow()
+        db.commit()
+        return {"id": row.id, "status": row.status}
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     import uvicorn
 

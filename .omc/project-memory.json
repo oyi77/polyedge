@@ -134,8 +134,8 @@
   "hotPaths": [
     {
       "path": "backend/api/main.py",
-      "accessCount": 172,
-      "lastAccessed": 1775555573072,
+      "accessCount": 181,
+      "lastAccessed": 1775570995827,
       "type": "file"
     },
     {
@@ -145,15 +145,15 @@
       "type": "file"
     },
     {
-      "path": "backend/core/scheduler.py",
-      "accessCount": 54,
-      "lastAccessed": 1775559586582,
+      "path": "backend/models/database.py",
+      "accessCount": 61,
+      "lastAccessed": 1775570928010,
       "type": "file"
     },
     {
-      "path": "backend/models/database.py",
-      "accessCount": 52,
-      "lastAccessed": 1775559133574,
+      "path": "backend/core/scheduler.py",
+      "accessCount": 57,
+      "lastAccessed": 1775571378250,
       "type": "file"
     },
     {
@@ -163,21 +163,21 @@
       "type": "file"
     },
     {
+      "path": "backend/core/orchestrator.py",
+      "accessCount": 38,
+      "lastAccessed": 1775571398423,
+      "type": "file"
+    },
+    {
       "path": "backend/data/polymarket_clob.py",
       "accessCount": 37,
       "lastAccessed": 1775533394359,
       "type": "file"
     },
     {
-      "path": "backend/core/orchestrator.py",
-      "accessCount": 35,
-      "lastAccessed": 1775552412423,
-      "type": "file"
-    },
-    {
       "path": "backend/config.py",
-      "accessCount": 28,
-      "lastAccessed": 1775559531693,
+      "accessCount": 37,
+      "lastAccessed": 1775571364718,
       "type": "file"
     },
     {
@@ -199,6 +199,12 @@
       "type": "directory"
     },
     {
+      "path": "",
+      "accessCount": 20,
+      "lastAccessed": 1775570832177,
+      "type": "directory"
+    },
+    {
       "path": "frontend/src/pages/Dashboard.tsx",
       "accessCount": 19,
       "lastAccessed": 1775551819821,
@@ -211,15 +217,15 @@
       "type": "file"
     },
     {
-      "path": "",
-      "accessCount": 18,
-      "lastAccessed": 1775559527187,
-      "type": "directory"
-    },
-    {
       "path": "backend/bot/telegram_bot.py",
       "accessCount": 15,
       "lastAccessed": 1775552403966,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/App.tsx",
+      "accessCount": 14,
+      "lastAccessed": 1775571079278,
       "type": "file"
     },
     {
@@ -235,12 +241,6 @@
       "type": "file"
     },
     {
-      "path": "frontend/src/App.tsx",
-      "accessCount": 11,
-      "lastAccessed": 1775544173251,
-      "type": "file"
-    },
-    {
       "path": "frontend/src/components/admin/SystemStatus.tsx",
       "accessCount": 11,
       "lastAccessed": 1775549646529,
@@ -248,8 +248,8 @@
     },
     {
       "path": "frontend/src/components/NavBar.tsx",
-      "accessCount": 7,
-      "lastAccessed": 1775537933582,
+      "accessCount": 9,
+      "lastAccessed": 1775571074356,
       "type": "file"
     },
     {
@@ -268,6 +268,12 @@
       "path": "backend/data/ws_client.py",
       "accessCount": 6,
       "lastAccessed": 1775502672487,
+      "type": "file"
+    },
+    {
+      "path": "requirements.txt",
+      "accessCount": 6,
+      "lastAccessed": 1775570737591,
       "type": "file"
     },
     {
@@ -328,6 +334,12 @@
       "path": "frontend/package.json",
       "accessCount": 3,
       "lastAccessed": 1775538078990,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/main.tsx",
+      "accessCount": 3,
+      "lastAccessed": 1775571112419,
       "type": "file"
     },
     {
@@ -403,21 +415,9 @@
       "type": "file"
     },
     {
-      "path": "frontend/src/main.tsx",
-      "accessCount": 1,
-      "lastAccessed": 1775501427545,
-      "type": "file"
-    },
-    {
       "path": "frontend/src/components/admin/CopyTraderMonitor.tsx",
       "accessCount": 1,
       "lastAccessed": 1775501632738,
-      "type": "file"
-    },
-    {
-      "path": "requirements.txt",
-      "accessCount": 1,
-      "lastAccessed": 1775501923646,
       "type": "file"
     },
     {

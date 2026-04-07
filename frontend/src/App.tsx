@@ -9,6 +9,7 @@ const WhaleTracker = lazy(() => import('./pages/WhaleTracker'))
 const Settlements = lazy(() => import('./pages/Settlements'))
 const MarketIntel = lazy(() => import('./pages/MarketIntel'))
 const DecisionLog = lazy(() => import('./pages/DecisionLog'))
+const TradingTerminal = lazy(() => import('./pages/TradingTerminal'))
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="/settlements" element={<Suspense fallback={null}><Settlements /></Suspense>} />
           <Route path="/market-intel" element={<Suspense fallback={null}><MarketIntel /></Suspense>} />
           <Route path="/decisions" element={<Suspense fallback={null}><DecisionLog /></Suspense>} />
+          <Route path="/trading-terminal" element={<Suspense fallback={null}><TradingTerminal /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

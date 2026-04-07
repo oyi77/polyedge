@@ -375,5 +375,42 @@ async def main() -> None:
     logger.info("PolyEdge stopped.")
 
 
+def init_phase2_modules() -> dict:
+    """Initialize Phase 2 modules based on feature flags. Returns dict of active instances."""
+    from backend.config import settings
+    active: dict = {}
+
+    if getattr(settings, "WHALE_LISTENER_ENABLED", False):
+        try:
+            from backend.data.polygon_listener import PolygonListener
+            active["whale_listener"] = PolygonListener()
+        except Exception as e:
+            logger.warning(f"PolygonListener init failed: {e}")
+
+    if getattr(settings, "NEWS_FEED_ENABLED", False):
+        try:
+            from backend.data.feed_aggregator import FeedAggregator
+            active["news_feed"] = FeedAggregator()
+        except Exception as e:
+            logger.warning(f"FeedAggregator init failed: {e}")
+
+    if getattr(settings, "AUTO_TRADER_ENABLED", False):
+        try:
+            from backend.core.auto_trader import AutoTrader
+            from backend.core.risk_manager import RiskManager
+            active["auto_trader"] = AutoTrader(RiskManager())
+        except Exception as e:
+            logger.warning(f"AutoTrader init failed: {e}")
+
+    if getattr(settings, "ARBITRAGE_DETECTOR_ENABLED", False):
+        try:
+            from backend.core.arbitrage_detector import ArbitrageDetector
+            active["arbitrage"] = ArbitrageDetector()
+        except Exception as e:
+            logger.warning(f"ArbitrageDetector init failed: {e}")
+
+    return active
+
+
 if __name__ == "__main__":
     asyncio.run(main())

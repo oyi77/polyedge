@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
 )
+from sqlalchemy import event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import inspect
@@ -28,6 +29,24 @@ engine = create_engine(
     if "sqlite" in settings.DATABASE_URL
     else {},
 )
+
+
+def configure_sqlite_wal(engine_obj):
+    """Register a connect listener that enables WAL mode for SQLite connections."""
+    if engine_obj.url.get_dialect().name != "sqlite":
+        return
+
+    @event.listens_for(engine_obj, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
+
+configure_sqlite_wal(engine)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -254,6 +273,7 @@ class WalletConfig(Base):
     enabled = Column(Boolean, default=True)
     notes = Column(Text, nullable=True)
     added_at = Column(DateTime, default=datetime.utcnow)
+    whale_score = Column(Float, nullable=True)
 
 
 class StrategyConfig(Base):
@@ -304,6 +324,31 @@ class JobQueue(Base):
     )
 
 
+class WhaleTransaction(Base):
+    __tablename__ = "whale_transactions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tx_hash = Column(String, unique=True, index=True, nullable=False)
+    wallet = Column(String, index=True, nullable=False)
+    market_id = Column(String, index=True, nullable=True)
+    side = Column(String, nullable=True)  # buy/sell
+    size_usd = Column(Float, nullable=False)
+    block_number = Column(Integer, nullable=True)
+    observed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PendingApproval(Base):
+    __tablename__ = "pending_approvals"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(String, index=True, nullable=False)
+    direction = Column(String, nullable=False)
+    size = Column(Float, nullable=False)
+    confidence = Column(Float, nullable=False)
+    signal_data = Column(JSON, nullable=True)
+    status = Column(String, default="pending")  # pending|approved|rejected
+    created_at = Column(DateTime, default=datetime.utcnow)
+    decided_at = Column(DateTime, nullable=True)
+
+
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
@@ -313,14 +358,6 @@ def init_db():
 def ensure_schema():
     """Ensure newer schema fields exist even if migration wasn't run."""
     inspector = inspect(engine)
-
-    # Enable WAL mode for SQLite (better concurrent access)
-    if "sqlite" in settings.DATABASE_URL:
-        try:
-            with engine.connect() as conn:
-                conn.execute(text("PRAGMA journal_mode=WAL"))
-        except Exception:
-            pass
 
     try:
         columns = [col["name"] for col in inspector.get_columns("trades")]
@@ -428,6 +465,16 @@ def ensure_schema():
 
     # Ensure new tables exist (DecisionLog, MarketWatch, WalletConfig, StrategyConfig, TradeContext)
     Base.metadata.create_all(bind=engine)
+
+    # Add whale_score column to wallet_config if missing
+    try:
+        wallet_columns = {col["name"] for col in inspector.get_columns("wallet_config")}
+        if "whale_score" not in wallet_columns:
+            with engine.connect() as conn:
+                with conn.begin():
+                    conn.execute(text("ALTER TABLE wallet_config ADD COLUMN whale_score FLOAT"))
+    except Exception:
+        pass
 
     # Add new columns to trades table if missing
     inspector = inspect(engine)

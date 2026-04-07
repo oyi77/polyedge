@@ -94,12 +94,31 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_ADMIN_CHAT_IDS: str = ""  # comma-separated chat IDs
 
+    # Polygon blockchain listener
+    POLYGON_WS_URL: str = "wss://polygon-rpc.com"
+    CONDITIONAL_TOKENS_ADDRESS: str = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+    MIN_WHALE_TRADE_USD: float = 1000.0
+    WHALE_LISTENER_ENABLED: bool = False
+
     # Job Queue Settings
     JOB_WORKER_ENABLED: bool = False  # Phase 1: disabled by default
     JOB_QUEUE_URL: str = "sqlite:///./job_queue.db"  # or "redis://localhost:6379"
     JOB_TIMEOUT_SECONDS: int = 300  # 5 minutes
     MAX_CONCURRENT_JOBS: int = 1
     DB_EXECUTOR_MAX_WORKERS: int = 4
+
+    MAX_POSITION_FRACTION: float = 0.05
+    MAX_TOTAL_EXPOSURE_FRACTION: float = 0.50
+    SLIPPAGE_TOLERANCE: float = 0.02
+
+    AUTO_APPROVE_MIN_CONFIDENCE: float = 0.85
+    AUTO_TRADER_ENABLED: bool = False
+
+    # Phase 2 feature flags
+    NEWS_FEED_ENABLED: bool = False
+    ARBITRAGE_DETECTOR_ENABLED: bool = False
+    NEWS_FEED_INTERVAL_SECONDS: int = 600
+    ARBITRAGE_SCAN_INTERVAL_SECONDS: int = 120
 
     # Cache Settings
     CACHE_URL: str = "sqlite:///./cache.db"  # or "redis://localhost:6379/0"

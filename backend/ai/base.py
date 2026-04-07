@@ -94,6 +94,16 @@ class BaseAIClient(ABC):
         pass
 
 
+def get_ai_client() -> "BaseAIClient":
+    """Return the configured AI client based on settings."""
+    from backend.config import settings
+    provider = settings.AI_PROVIDER.lower()
+    if provider == "groq":
+        from backend.ai.groq import GroqClassifier
+        return GroqClassifier(api_key=settings.GROQ_API_KEY, model=settings.GROQ_MODEL)
+    raise ValueError(f"Unsupported AI provider: {provider}")
+
+
 def create_signal_prompt(signal_data: Dict[str, Any], context: Dict[str, Any] = None) -> str:
     """Create a prompt for signal analysis."""
     prompt = f"""Analyze this prediction market trading signal:

@@ -69,6 +69,17 @@ PolyEdge trading bot requires 3 production-readiness enhancements to reach 93% c
 - [ ] CI updated to require `--cov-fail-under=80` (from current 60 at line 46 of `.github/workflows/ci.yml`)
 - [ ] **RISK ACCEPTANCE STATEMENT:** "Tests are Step 2 (of 3) — late testing risk acknowledged. Mitigation: Hybrid TDD for Step 1 (write tests first). Remaining tests executed before deployment verification."
 
+### 4. Job Queue — SQLite Phase 1 (100% Testable)
+
+- [ ] JobQueue table created in backend/models/database.py
+- [ ] AsyncSQLiteQueue with thread pool implemented (RQ-003)
+- [ ] Worker with timeout + graceful shutdown (RQ-004, RQ-006)
+- [ ] SQLite WAL mode configured (RQ-008)
+- [ ] Migration script for APScheduler jobs (RQ-009)
+- [ ] Crash recovery test passing (RQ-010)
+- [ ] Worker timeout test passing (RQ-011)
+- [ ] Queue idempotency test passing (RQ-012)
+
 ### 3. Deployment Documentation (100% Testable)
 - [ ] `/home/openclaw/projects/polyedge/docs/api/` directory created
 - [ ] `/home/openclaw/projects/polyedge/docs/api/openapi.json` generated via FastAPI
@@ -213,7 +224,29 @@ sqlite3 tradingbot.db "EXPLAIN QUERY PLAN SELECT * FROM trades WHERE settled = 0
 
 ---
 
-### Step 2: Comprehensive API Tests (~2.5 hours)
+### Step 2: Job Queue (SQLite Phase 1) + Comprehensive API Tests (~4.5 hours)
+
+#### Job Queue Subsystem
+
+**Problem:** APScheduler stores scheduled jobs in memory — the job queue is not persistent. A process crash loses all pending work — market scans and settlement checks are silently dropped with no recovery path.
+
+**Fix:** A SQLite-backed `job_queue` table persists jobs across restarts. `AsyncSQLiteQueue` (implementing `AbstractQueue`) enqueues/dequeues jobs via a thread-pool executor. A `Worker` loop polls the queue, dispatches handlers (`market_scan`, `settlement_check`, `signal_generation`), enforces per-job timeouts, and resets stale `processing` jobs to `pending` on startup.
+
+**Opt-in flag:** `JOB_WORKER_ENABLED` (default `False`). Set to `True` in production to activate the worker process. Existing APScheduler paths remain unchanged until migration is complete.
+
+**Implementation files:**
+- `backend/models/database.py` — `JobQueue` table (id, job_type, payload, status, idempotency_key, retry_count, created_at, updated_at)
+- `backend/queue/abstract.py` — `AbstractQueue`, `AbstractCache` interfaces
+- `backend/queue/sqlite_queue.py` — `AsyncSQLiteQueue` with WAL mode + thread pool
+- `backend/queue/worker.py` — polling loop, timeout enforcement, graceful shutdown
+- `backend/queue/handlers.py` — `market_scan`, `settlement_check`, `signal_generation`
+- `backend/config.py` — `JOB_WORKER_ENABLED`, `JOB_QUEUE_URL`, `JOB_TIMEOUT_SECONDS` (300), `MAX_CONCURRENT_JOBS` (1), `CACHE_URL`, `DB_EXECUTOR_MAX_WORKERS` (4)
+
+**Detailed integration plan:** `.omc/plans/redis-and-job-queue-integration.md`
+
+---
+
+#### Comprehensive API Tests (~2.5 hours)
 
 **Hybrid TDD: Tests written FIRST for Step 1 (migrations). Remaining tests written here.**
 
@@ -872,7 +905,8 @@ grep -l "Hybrid TDD\|Risk Acceptance" docs/architecture/ADR-002-testing-coverage
 | 1. Alembic Migrations | 1.5 hours | None | +30 min for ensure_schema capture + index + TDD tests |
 | 2. Comprehensive Tests | 2.5 hours | Step 1 | +30 min for TDD tests for Step 1 + endpoint fix |
 | 3. Documentation | 1.5 hours | Steps 1-2 | ADRs for migrations and testing |
-| **Total** | **5.5 hours** | | Monitoring deferred to Phase 2 |
+| 2a. Job Queue (SQLite) | 2.5 hours | Step 1 | JobQueue table, AsyncSQLiteQueue, Worker, WAL, tests |
+| **Total** | **8 hours** | | Monitoring deferred to Phase 2 |
 
 ---
 
@@ -942,11 +976,11 @@ These are tracked for Phase 2 and Phase 3 per `IMPLEMENTATION_GAPS.md`.
 - Lower cognitive load per step
 
 **Cons:**
-- Longer time to first "complete" deliverable (5.5 hours total)
+- Longer time to first "complete" deliverable (8 hours total)
 - Cannot parallelize work across multiple developers
 - Tests for Steps 2-3 come after implementation (acknowledged risk, mitigated by deployment verification)
 
-**Effort:** 5.5 hours total (1.5 + 2.5 + 1.5)
+**Effort:** 8 hours total (1.5 + 2.5 + 2.5 + 1.5)
 
 **Risk Mitigation:** TDD for Step 1 catches critical infrastructure issues; deployment verification gates prevent production release until all tests pass.
 
@@ -983,7 +1017,7 @@ These are tracked for Phase 2 and Phase 3 per `IMPLEMENTATION_GAPS.md`.
 
 ### Selected Approach: Option A (Sequential Implementation with Hybrid TDD)
 
-Phase 1 will follow Option A's sequential approach with Hybrid TDD. The 5.5-hour investment is justified by:
+Phase 1 will follow Option A's sequential approach with Hybrid TDD. The 8-hour investment is justified by:
 1. Each step produces immediately valuable artifacts
 2. TDD for Step 1 catches critical issues (missing indexes, schema gaps) early
 3. Sequential execution minimizes coordination overhead for a single developer or small team
