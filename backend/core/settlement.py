@@ -10,7 +10,7 @@ import httpx
 from cachetools import TTLCache
 from sqlalchemy.orm import Session
 
-from backend.models.database import Trade, BotState, Signal, SettlementEvent
+from backend.models.database import Trade, BotState, Signal, SettlementEvent, TradeContext
 
 logger = logging.getLogger("trading_bot")
 
@@ -380,11 +380,18 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             try:
                 from backend.models.database import DecisionLog
                 outcome = "WIN" if trade.result == "win" else ("LOSS" if trade.result == "loss" else "PUSH")
-                db.query(DecisionLog).filter(
+                # Try to get strategy from TradeContext
+                trade_ctx = db.query(TradeContext).filter(TradeContext.trade_id == trade.id).first()
+                dl_query = db.query(DecisionLog).filter(
                     DecisionLog.market_ticker == trade.market_ticker,
                     DecisionLog.outcome == None,
                     DecisionLog.decision == "BUY",
-                ).update({"outcome": outcome})
+                )
+                if trade_ctx and trade_ctx.strategy:
+                    dl_query = dl_query.filter(DecisionLog.strategy == trade_ctx.strategy)
+                decisions = dl_query.all()
+                for decision in decisions:
+                    decision.outcome = outcome
             except Exception as e:
                 logger.debug(f"DecisionLog outcome backfill failed for {trade.market_ticker}: {e}")
 

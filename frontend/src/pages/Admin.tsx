@@ -461,7 +461,7 @@ function TelegramTab() {
         <button
           className="px-3 py-1.5 bg-neutral-800 border border-neutral-700 text-neutral-400 text-[10px] uppercase tracking-wider hover:border-neutral-600 transition-colors"
           onClick={() => {
-            fetch(`${import.meta.env.VITE_API_URL || ''}/api/admin/telegram-test`, { method: 'POST' })
+            fetch(`${import.meta.env.VITE_API_URL || ''}/api/admin/alerts/test`, { method: 'POST' })
               .catch(() => {})
           }}
         >

@@ -344,8 +344,9 @@ def ensure_schema():
     Base.metadata.create_all(bind=engine)
 
     # Add new columns to trades table if missing
+    inspector = inspect(engine)
+    existing_cols = {col['name'] for col in inspector.get_columns('trades')}
     with engine.connect() as conn:
-        existing_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(trades)")).fetchall()}
         for col_def in [
             "ALTER TABLE trades ADD COLUMN strategy TEXT",
             "ALTER TABLE trades ADD COLUMN signal_source TEXT",
@@ -353,8 +354,8 @@ def ensure_schema():
         ]:
             col_name = col_def.split("ADD COLUMN ")[1].split()[0]
             if col_name not in existing_cols:
-                conn.execute(text(col_def))
-        conn.commit()
+                with conn.begin():
+                    conn.execute(text(col_def))
 
 
 def get_db():

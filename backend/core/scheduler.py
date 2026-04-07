@@ -557,6 +557,28 @@ def start_scheduler():
         max_instances=1
     )
 
+    # BTC scan job
+    scheduler.add_job(
+        scan_and_trade_job,
+        IntervalTrigger(seconds=scan_seconds),
+        id="market_scan",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=60,
+    )
+
+    # Weather scan job (only if enabled)
+    if getattr(settings, 'WEATHER_ENABLED', True):
+        weather_seconds = getattr(settings, 'WEATHER_SCAN_INTERVAL_SECONDS', 600)
+        scheduler.add_job(
+            weather_scan_and_trade_job,
+            IntervalTrigger(seconds=weather_seconds),
+            id="weather_scan",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=120,
+        )
+
     # Watchdog: check strategy heartbeats every 30s
     from backend.core.heartbeat import watchdog_job
     scheduler.add_job(
@@ -605,6 +627,8 @@ def is_scheduler_running() -> bool:
 
 def reschedule_jobs() -> list[dict]:
     """Reschedule jobs with current settings values. Call after settings update."""
+    from apscheduler.jobstores.base import JobLookupError as _JobLookupError
+
     global scheduler
     if scheduler is None or not scheduler.running:
         return []
@@ -619,6 +643,8 @@ def reschedule_jobs() -> list[dict]:
         )
         job = scheduler.get_job("market_scan")
         results.append({"job_id": "market_scan", "next_run": str(job.next_run_time) if job else None})
+    except _JobLookupError:
+        logger.warning("market_scan job not registered, skipping reschedule")
     except Exception as e:
         logger.warning(f"Failed to reschedule market_scan: {e}")
 
@@ -630,6 +656,8 @@ def reschedule_jobs() -> list[dict]:
         )
         job = scheduler.get_job("settlement_check")
         results.append({"job_id": "settlement_check", "next_run": str(job.next_run_time) if job else None})
+    except _JobLookupError:
+        logger.warning("settlement_check job not registered, skipping reschedule")
     except Exception as e:
         logger.warning(f"Failed to reschedule settlement_check: {e}")
 
@@ -642,6 +670,8 @@ def reschedule_jobs() -> list[dict]:
             )
             job = scheduler.get_job("weather_scan")
             results.append({"job_id": "weather_scan", "next_run": str(job.next_run_time) if job else None})
+        except _JobLookupError:
+            logger.warning("weather_scan job not registered, skipping reschedule")
         except Exception as e:
             logger.warning(f"Failed to reschedule weather_scan: {e}")
 

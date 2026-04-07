@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'polyedge-api',
-      script: '/usr/bin/python',
+      script: 'python3',
       args: '-m uvicorn backend.api.main:app --host 0.0.0.0 --port 8100 --workers 1',
       cwd: '/home/openclaw/projects/polyedge',
       interpreter: 'none',
@@ -20,8 +20,8 @@ module.exports = {
     },
     {
       name: 'polyedge-frontend',
-      script: 'npx',
-      args: 'vite preview --host 0.0.0.0 --port 5174',
+      script: 'sh',
+      args: '-c "[ -d dist ] || npm run build && npx vite preview --host 0.0.0.0 --port 5174"',
       cwd: '/home/openclaw/projects/polyedge/frontend',
       interpreter: 'none',
       watch: false,
@@ -35,7 +35,7 @@ module.exports = {
     },
     {
       name: 'polyedge-bot',
-      script: '/usr/bin/python',
+      script: 'python3',
       args: '-m backend.core.orchestrator',
       cwd: '/home/openclaw/projects/polyedge',
       interpreter: 'none',

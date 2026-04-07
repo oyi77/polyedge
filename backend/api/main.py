@@ -162,6 +162,9 @@ class TradeResponse(BaseModel):
     settled: bool
     result: str
     pnl: Optional[float]
+    strategy: Optional[str] = None
+    signal_source: Optional[str] = None
+    confidence: Optional[float] = None
 
 
 class BotStats(BaseModel):
@@ -342,10 +345,12 @@ async def health_check(db: Session = Depends(get_db)):
     from backend.core.heartbeat import get_strategy_health
     healths = get_strategy_health(db)
     all_healthy = all(h["healthy"] or h["lag_seconds"] is None for h in healths)
+    bot_state = db.query(BotState).first()
     return {
         "status": "ok" if all_healthy else "degraded",
         "strategies": healths,
         "timestamp": datetime.utcnow().isoformat(),
+        "bot_running": bot_state.is_running if bot_state else False,
     }
 
 
@@ -1445,9 +1450,23 @@ async def update_credentials(body: CredentialsUpdate, _: None = Depends(require_
     has_api_passphrase = bool(settings.POLYMARKET_API_PASSPHRASE)
 
     logger.info(f"Credentials updated: {updated}")
+
+    # Restart polyedge-bot to pick up new credentials
+    import subprocess as _subprocess
+    try:
+        _subprocess.run(
+            ["pm2", "restart", "polyedge-bot"],
+            capture_output=True,
+            timeout=10,
+        )
+        logger.info("polyedge-bot restarted to apply new credentials")
+    except Exception as _e:
+        logger.warning(f"Could not restart polyedge-bot: {_e}")
+
     return {
         "status": "ok",
         "updated": updated,
+        "restarted_bot": True,
         "creds_paper": True,
         "creds_testnet": has_private_key,
         "creds_live": has_private_key and has_api_key and has_api_secret and has_api_passphrase,

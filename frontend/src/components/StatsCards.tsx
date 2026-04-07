@@ -7,8 +7,8 @@ interface Props {
 
 export function StatsCards({ stats }: Props) {
   // Use mode-specific stats when available (paper/live split)
-  const active = stats.mode === 'paper' && stats.paper ? stats.paper
-    : stats.mode === 'live' && stats.live ? stats.live
+  const active = stats.mode === 'live' && stats.live ? stats.live
+    : stats.paper ? stats.paper  // covers paper + testnet + undefined mode
     : null
 
   const pnl = active ? active.pnl : stats.total_pnl
