@@ -52,6 +52,9 @@ class Trade(Base):
     signal_source = Column(String, nullable=True)
     confidence = Column(Float, nullable=True)
 
+    # On-chain order tracking (testnet / live modes)
+    clob_order_id = Column(String, nullable=True)  # Order ID returned by Polymarket CLOB
+
 
 class BtcPriceSnapshot(Base):
     """Cached BTC prices for momentum calculation."""
@@ -351,6 +354,7 @@ def ensure_schema():
             "ALTER TABLE trades ADD COLUMN strategy TEXT",
             "ALTER TABLE trades ADD COLUMN signal_source TEXT",
             "ALTER TABLE trades ADD COLUMN confidence REAL",
+            "ALTER TABLE trades ADD COLUMN clob_order_id TEXT",
         ]:
             col_name = col_def.split("ADD COLUMN ")[1].split()[0]
             if col_name not in existing_cols:

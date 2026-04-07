@@ -68,6 +68,34 @@ async def scan_and_trade_job():
             "actionable": len(actionable),
         })
 
+        # Record SKIP decisions for all non-actionable signals (before the early return)
+        if signals:
+            db_skip = SessionLocal()
+            try:
+                from backend.core.decisions import record_decision
+                for sig in signals:
+                    if not sig.passes_threshold:
+                        record_decision(
+                            db_skip, "btc_5m",
+                            getattr(sig.market, "market_id", "unknown"),
+                            "SKIP",
+                            confidence=sig.confidence,
+                            signal_data={
+                                "direction": sig.direction,
+                                "model_probability": sig.model_probability,
+                                "market_probability": sig.market_probability,
+                                "edge": sig.edge,
+                                "btc_price": getattr(sig, "btc_price", None),
+                            },
+                            reason=f"edge {sig.edge:.3f} below threshold"
+                        )
+                db_skip.commit()
+            except Exception as _de:
+                logger.warning(f"Decision logging (SKIP) failed: {_de}")
+                db_skip.rollback()
+            finally:
+                db_skip.close()
+
         if not actionable:
             log_event("info", "No actionable BTC signals")
             return
@@ -156,6 +184,68 @@ async def scan_and_trade_job():
                 state.total_trades += 1
                 trades_executed += 1
 
+                # Execute on-chain for testnet / live modes
+                clob_order_id = None
+                if settings.TRADING_MODE in ("testnet", "live"):
+                    token_id = (
+                        signal.market.up_token_id
+                        if signal.direction == "up"
+                        else signal.market.down_token_id
+                    )
+                    if token_id:
+                        try:
+                            from backend.data.polymarket_clob import clob_from_settings
+                            async with clob_from_settings() as clob:
+                                result = await clob.place_limit_order(
+                                    token_id=token_id,
+                                    side="BUY",
+                                    price=entry_price,
+                                    size=trade_size,
+                                )
+                            if result.success:
+                                clob_order_id = result.order_id
+                                log_event("success",
+                                    f"[{settings.TRADING_MODE.upper()}] Order placed: {result.order_id}",
+                                    {"order_id": result.order_id, "mode": settings.TRADING_MODE}
+                                )
+                            else:
+                                log_event("warning",
+                                    f"[{settings.TRADING_MODE.upper()}] Order rejected: {result.error}",
+                                    {"error": result.error}
+                                )
+                        except Exception as _clob_err:
+                            log_event("error", f"CLOB execution error: {_clob_err}")
+                    else:
+                        log_event("warning",
+                            f"[{settings.TRADING_MODE.upper()}] No token_id for {signal.market.slug} — order skipped"
+                        )
+
+                if clob_order_id:
+                    trade.clob_order_id = clob_order_id
+
+                # Record BUY decision
+                try:
+                    from backend.core.decisions import record_decision
+                    record_decision(
+                        db, "btc_5m",
+                        signal.market.market_id,
+                        "BUY",
+                        confidence=signal.confidence,
+                        signal_data={
+                            "direction": signal.direction,
+                            "model_probability": signal.model_probability,
+                            "market_probability": signal.market_probability,
+                            "edge": signal.edge,
+                            "btc_price": getattr(signal, "btc_price", None),
+                            "trade_id": trade.id,
+                            "trade_size": trade_size,
+                            "mode": settings.TRADING_MODE,
+                        },
+                        reason=f"edge {signal.edge:.3f} >= threshold, {signal.direction} @ {entry_price:.0%}"
+                    )
+                except Exception as _de:
+                    logger.warning(f"Decision logging (BUY) failed: {_de}")
+
                 try:
                     from backend.api.main import _broadcast_event
                     _broadcast_event("trade_opened", {
@@ -165,12 +255,14 @@ async def scan_and_trade_job():
                         "size": trade.size,
                         "entry_price": trade.entry_price,
                         "mode": settings.TRADING_MODE,
+                        "clob_order_id": clob_order_id,
                     })
                 except Exception:
                     pass
 
+                mode_label = f"[{settings.TRADING_MODE.upper()}] " if settings.TRADING_MODE != "paper" else ""
                 log_event("trade",
-                    f"BTC {signal.direction.upper()} ${trade_size:.0f} @ {entry_price:.0%} | {signal.market.slug}",
+                    f"{mode_label}BTC {signal.direction.upper()} ${trade_size:.0f} @ {entry_price:.0%} | {signal.market.slug}",
                     {
                         "slug": signal.market.slug,
                         "direction": signal.direction,
@@ -178,6 +270,7 @@ async def scan_and_trade_job():
                         "edge": signal.edge,
                         "entry_price": entry_price,
                         "btc_price": signal.btc_price,
+                        "clob_order_id": clob_order_id,
                     }
                 )
 

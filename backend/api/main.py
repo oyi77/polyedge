@@ -453,6 +453,48 @@ async def get_signals():
         return []
 
 
+@app.get("/api/signals/history")
+async def get_signals_history(
+    limit: int = 100,
+    offset: int = 0,
+    market_type: Optional[str] = None,
+    direction: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Return historical signals from the database with outcome data."""
+    from backend.models.database import Signal as SignalModel
+    query = db.query(SignalModel)
+    if market_type:
+        query = query.filter(SignalModel.market_type == market_type)
+    if direction:
+        query = query.filter(SignalModel.direction == direction)
+    total = query.count()
+    rows = query.order_by(SignalModel.timestamp.desc()).offset(offset).limit(limit).all()
+    items = [
+        {
+            "id": r.id,
+            "market_ticker": r.market_ticker,
+            "platform": r.platform or "polymarket",
+            "market_type": r.market_type or "btc",
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "direction": r.direction,
+            "model_probability": r.model_probability,
+            "market_probability": r.market_price,
+            "edge": r.edge,
+            "confidence": r.confidence,
+            "suggested_size": r.suggested_size,
+            "reasoning": r.reasoning,
+            "executed": r.executed,
+            "actual_outcome": r.actual_outcome,
+            "outcome_correct": r.outcome_correct,
+            "settlement_value": r.settlement_value,
+            "settled_at": r.settled_at.isoformat() if r.settled_at else None,
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": total}
+
+
 @app.get("/api/signals/actionable", response_model=List[SignalResponse])
 async def get_actionable_signals():
     """Get only signals that pass the edge threshold."""
@@ -1400,7 +1442,12 @@ async def update_admin_settings(body: SettingsUpdate, _: None = Depends(require_
         elif isinstance(current, float):
             value = float(value)
         setattr(settings, field, value)
-        safe_value = str(value).replace('\n', '').replace('\r', '')
+        # Strip characters that could corrupt .env format
+        safe_value = str(value).replace('\n', '').replace('\r', '').replace('\x00', '')
+        # For string fields that are comma-separated lists (cities, origins, etc.),
+        # strip any trailing key=value injections (chars after unexpected = in list values)
+        if isinstance(current, str) and ',' in safe_value and '=' in safe_value:
+            safe_value = safe_value.split('=')[0].rstrip()
         env_lines[field] = safe_value
         updated_count += 1
 

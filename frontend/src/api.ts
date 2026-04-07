@@ -96,6 +96,31 @@ export async function resetBot(): Promise<{ status: string; trades_deleted: numb
   return data
 }
 
+export interface SignalHistoryRow {
+  id: number
+  market_ticker: string
+  platform: string
+  market_type: string
+  timestamp: string | null
+  direction: string
+  model_probability: number
+  market_probability: number
+  edge: number
+  confidence: number | null
+  suggested_size: number | null
+  reasoning: string | null
+  executed: boolean
+  actual_outcome: string | null
+  outcome_correct: boolean | null
+  settlement_value: number | null
+  settled_at: string | null
+}
+
+export async function fetchSignalHistory(params?: { limit?: number; offset?: number; market_type?: string; direction?: string }): Promise<{ items: SignalHistoryRow[]; total: number }> {
+  const { data } = await api.get('/signals/history', { params })
+  return data
+}
+
 export async function fetchWeatherForecasts(): Promise<WeatherForecast[]> {
   const { data } = await api.get<WeatherForecast[]>('/weather/forecasts')
   return data

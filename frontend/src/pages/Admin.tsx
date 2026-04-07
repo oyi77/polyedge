@@ -20,6 +20,8 @@ import {
   createWalletConfig,
   updateWalletConfig,
   deleteWalletConfig,
+  fetchSystemStatus,
+  switchTradingMode,
 } from '../api'
 
 function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
@@ -379,13 +381,27 @@ function WalletConfigTab() {
   )
 }
 
+const MODE_META = {
+  paper:   { label: 'Paper',   color: 'text-amber-400',  border: 'border-amber-500/30',  desc: 'Simulated orders, no credentials needed' },
+  testnet: { label: 'Testnet', color: 'text-yellow-400', border: 'border-yellow-500/30', desc: 'Real orders on Amoy testnet (chain 80002)' },
+  live:    { label: 'Live',    color: 'text-red-400',    border: 'border-red-500/30',    desc: 'Real money on Polygon mainnet' },
+} as const
+
 function CredentialsTab() {
+  const qc = useQueryClient()
   const [privateKey, setPrivateKey] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
   const [apiPassphrase, setApiPassphrase] = useState('')
-  const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null)
+  const [saveStatus, setSaveStatus] = useState<{ ok: boolean; message: string } | null>(null)
   const [saving, setSaving] = useState(false)
+  const [switchingMode, setSwitchingMode] = useState(false)
+
+  const { data: sysStatus, refetch: refetchStatus } = useQuery({
+    queryKey: ['admin-system-creds'],
+    queryFn: fetchSystemStatus,
+    refetchInterval: 15_000,
+  })
 
   const handleSave = async () => {
     const payload: Record<string, string> = {}
@@ -396,66 +412,110 @@ function CredentialsTab() {
     if (!Object.keys(payload).length) return
 
     setSaving(true)
-    setStatus(null)
+    setSaveStatus(null)
     try {
       const result = await updateCredentials(payload)
-      setStatus({ ok: true, message: `Saved: ${result.updated.join(', ')}` })
+      setSaveStatus({ ok: true, message: `Saved: ${result.updated.map(k => k.replace('POLYMARKET_', '')).join(', ')}` })
       setPrivateKey('')
       setApiKey('')
       setApiSecret('')
       setApiPassphrase('')
+      refetchStatus()
+      qc.invalidateQueries({ queryKey: ['admin-system'] })
     } catch {
-      setStatus({ ok: false, message: 'Failed to save credentials' })
+      setSaveStatus({ ok: false, message: 'Failed to save credentials' })
     } finally {
       setSaving(false)
     }
   }
 
+  const handleSwitchMode = async (mode: 'paper' | 'testnet' | 'live') => {
+    setSwitchingMode(true)
+    try {
+      await switchTradingMode(mode)
+      refetchStatus()
+      qc.invalidateQueries({ queryKey: ['admin-system'] })
+    } finally {
+      setSwitchingMode(false)
+    }
+  }
+
   const fields = [
-    {
-      label: 'Private Key',
-      hint: 'Required for testnet + live (0x hex private key)',
-      value: privateKey,
-      setter: setPrivateKey,
-      mode: 'testnet + live',
-    },
-    {
-      label: 'API Key',
-      hint: 'Required for live only',
-      value: apiKey,
-      setter: setApiKey,
-      mode: 'live',
-    },
-    {
-      label: 'API Secret',
-      hint: 'Required for live only',
-      value: apiSecret,
-      setter: setApiSecret,
-      mode: 'live',
-    },
-    {
-      label: 'API Passphrase',
-      hint: 'Required for live only',
-      value: apiPassphrase,
-      setter: setApiPassphrase,
-      mode: 'live',
-    },
+    { label: 'Private Key',    hint: '0x hex — required for testnet + live', value: privateKey,    setter: setPrivateKey,    badge: 'testnet + live' },
+    { label: 'API Key',        hint: 'CLOB API key — required for live only', value: apiKey,        setter: setApiKey,        badge: 'live' },
+    { label: 'API Secret',     hint: 'CLOB API secret',                       value: apiSecret,     setter: setApiSecret,     badge: 'live' },
+    { label: 'API Passphrase', hint: 'CLOB API passphrase',                   value: apiPassphrase, setter: setApiPassphrase, badge: 'live' },
   ]
+
+  const currentMode = sysStatus?.trading_mode ?? 'paper'
+  const credsReady = {
+    paper:   true,
+    testnet: sysStatus?.creds_testnet ?? false,
+    live:    sysStatus?.creds_live ?? false,
+  }
+  const missing = {
+    testnet: sysStatus?.missing_for_testnet ?? [],
+    live:    sysStatus?.missing_for_live ?? [],
+  }
 
   return (
     <div className="space-y-4">
+      {/* Mode Switcher */}
+      <div className="border border-neutral-800 bg-neutral-900/20 p-4">
+        <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-3">Trading Mode</div>
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          {(['paper', 'testnet', 'live'] as const).map(mode => {
+            const meta = MODE_META[mode]
+            const ready = credsReady[mode]
+            const active = currentMode === mode
+            const miss = mode !== 'paper' ? missing[mode] : []
+            return (
+              <button
+                key={mode}
+                disabled={switchingMode || active}
+                onClick={() => handleSwitchMode(mode)}
+                title={miss.length > 0 ? `Missing: ${miss.join(', ')}` : meta.desc}
+                className={`relative p-3 border text-left transition-colors disabled:cursor-not-allowed ${
+                  active
+                    ? `${meta.border} bg-neutral-900`
+                    : 'border-neutral-800 hover:border-neutral-600'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${active ? meta.color : 'text-neutral-500'}`}>
+                    {meta.label}
+                  </span>
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ready ? 'bg-green-500' : 'bg-neutral-700'}`} />
+                </div>
+                <div className="text-[9px] text-neutral-600 leading-tight">{meta.desc}</div>
+                {miss.length > 0 && (
+                  <div className="text-[8px] text-amber-600/80 mt-1 truncate">
+                    Need: {miss.map(k => k.replace('POLYMARKET_', '')).join(', ')}
+                  </div>
+                )}
+                {active && (
+                  <div className={`absolute top-1.5 right-1.5 text-[8px] uppercase tracking-wider ${meta.color}`}>active</div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+        {switchingMode && <div className="text-[10px] text-neutral-500">Switching mode...</div>}
+      </div>
+
+      {/* Credential form */}
       <div className="border border-neutral-800 bg-neutral-900/20 p-4">
         <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Polymarket Credentials</div>
         <p className="text-[11px] text-neutral-600 mb-4 leading-relaxed">
-          Credentials are persisted to <span className="text-neutral-400 font-mono">.env</span> and hot-reloaded — no restart needed.
-          Only fill fields you want to update. Paper mode requires no credentials.
+          Persisted to <span className="text-neutral-400 font-mono">.env</span> and hot-reloaded — no restart needed.
+          Only fill fields you want to update.
         </p>
         <div className="space-y-3">
-          {fields.map(({ label, hint, value, setter, mode }) => (
+          {fields.map(({ label, hint, value, setter, badge }) => (
             <div key={label}>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-[10px] text-neutral-400 uppercase tracking-wider w-36">{label}</span>
-                <span className="text-[9px] text-neutral-600">({mode})</span>
+                <span className="text-[9px] text-neutral-600">({badge})</span>
               </div>
               <input
                 type="password"
@@ -475,21 +535,14 @@ function CredentialsTab() {
           >
             {saving ? 'Saving...' : 'Save Credentials'}
           </button>
-          {status && (
-            <span className={`text-[10px] font-mono ${status.ok ? 'text-green-500' : 'text-red-500'}`}>
-              {status.message}
+          {saveStatus && (
+            <span className={`text-[10px] font-mono ${saveStatus.ok ? 'text-green-500' : 'text-red-500'}`}>
+              {saveStatus.message}
             </span>
           )}
         </div>
       </div>
-      <div className="border border-neutral-800 bg-neutral-900/20 p-4">
-        <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-2">Mode Requirements</div>
-        <div className="space-y-1 text-[10px] font-mono">
-          <div className="flex gap-3"><span className="text-green-500">paper</span><span className="text-neutral-600">— no credentials needed, simulated orders only</span></div>
-          <div className="flex gap-3"><span className="text-yellow-500">testnet</span><span className="text-neutral-600">— Private Key only, Amoy testnet (chain 80002), staging CLOB</span></div>
-          <div className="flex gap-3"><span className="text-red-400">live</span><span className="text-neutral-600">— Private Key + API Key + Secret + Passphrase, mainnet</span></div>
-        </div>
-      </div>
+
       <AdminPasswordSection />
     </div>
   )
