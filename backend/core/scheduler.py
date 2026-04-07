@@ -514,11 +514,81 @@ async def arbitrage_scan_job():
         return
     try:
         from backend.core.arbitrage_detector import ArbitrageDetector
+        from backend.core.market_scanner import fetch_all_active_markets
+        markets = await fetch_all_active_markets(limit=300)
         det = ArbitrageDetector()
-        ops = det.scan_all([])
-        log_event("data", f"Arbitrage scan: {len(ops)} opportunities")
+        market_dicts = [
+            {
+                "market_id": m.ticker or m.slug,
+                "yes_price": m.yes_price,
+                "no_price": m.no_price,
+                "question": m.question,
+            }
+            for m in markets
+        ]
+        ops = det.scan_all(market_dicts)
+        log_event("data", f"Arbitrage scan: {len(ops)} opportunities from {len(market_dicts)} markets")
     except Exception as e:
         log_event("error", f"arbitrage_scan error: {e}")
+
+
+async def auto_trader_job():
+    """Run AutoTrader against unexecuted signals when AUTO_TRADER_ENABLED."""
+    if not settings.AUTO_TRADER_ENABLED:
+        return
+    try:
+        from backend.core.auto_trader import AutoTrader
+        from backend.core.risk_manager import RiskManager
+
+        trader = AutoTrader(RiskManager())
+        db = SessionLocal()
+        try:
+            state = db.query(BotState).first()
+            if not state or not state.is_running:
+                return
+
+            signals = (
+                db.query(Signal)
+                .filter(Signal.executed == False)
+                .order_by(Signal.timestamp.desc())
+                .limit(10)
+                .all()
+            )
+            if not signals:
+                return
+
+            current_exposure = float(
+                db.query(func.coalesce(func.sum(Trade.size), 0.0))
+                .filter(Trade.settled == False)
+                .scalar()
+                or 0.0
+            )
+
+            executed = 0
+            queued = 0
+            for sig in signals:
+                signal_dict = {
+                    "market_id": sig.market_ticker,
+                    "side": "BUY",
+                    "confidence": getattr(sig, "confidence", 0.0) or 0.0,
+                    "size": min(50.0, state.bankroll * 0.03),
+                    "price": getattr(sig, "model_probability", 0.5) or 0.5,
+                    "token_id": None,
+                }
+                result = await trader.execute_signal(
+                    signal_dict,
+                    bankroll=state.bankroll,
+                    current_exposure=current_exposure,
+                )
+                if result.executed:
+                    executed += 1
+                elif result.pending_approval:
+                    queued += 1
+            log_event("data", f"AutoTrader cycle: executed={executed} queued={queued}")
+        finally:
+            db.close()
+    except Exception as e:
+        log_event("error", f"auto_trader_job error: {e}")
 
 
 async def heartbeat_job():
@@ -740,6 +810,15 @@ def start_scheduler():
             arbitrage_scan_job,
             IntervalTrigger(seconds=settings.ARBITRAGE_SCAN_INTERVAL_SECONDS),
             id="arbitrage_scan",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    if settings.AUTO_TRADER_ENABLED:
+        scheduler.add_job(
+            auto_trader_job,
+            IntervalTrigger(seconds=60),
+            id="auto_trader",
             replace_existing=True,
             max_instances=1,
         )

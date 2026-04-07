@@ -40,11 +40,37 @@ class WhaleDiscovery:
         return results
 
     async def _fetch_history(self, wallet: str) -> List[dict]:
+        """Fetch the wallet's recent positions from the Polymarket Data API.
+
+        Returns a list of trade dicts compatible with calculate_whale_score:
+        ``[{"pnl": float, "size": float, "timestamp": int}, ...]``.
+        Network or parse failures return an empty list (whale gets score 0).
         """
-        Default implementation returns an empty list (no external calls).
-        Override or monkeypatch in tests / production with the Polymarket Data API client.
-        """
-        return []
+        if not wallet:
+            return []
+        url = f"https://data-api.polymarket.com/positions?user={wallet}&limit=200"
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url)
+            if r.status_code != 200:
+                return []
+            payload = r.json()
+            rows = payload if isinstance(payload, list) else payload.get("data", [])
+            out: List[dict] = []
+            for row in rows:
+                try:
+                    out.append({
+                        "pnl": float(row.get("realizedPnl", row.get("pnl", 0.0)) or 0.0),
+                        "size": float(row.get("size", row.get("initialValue", 0.0)) or 0.0),
+                        "timestamp": int(row.get("timestamp", row.get("createdAt", 0)) or 0),
+                    })
+                except Exception:
+                    continue
+            return out
+        except Exception as e:
+            logger.debug(f"polymarket data api fetch failed for {wallet}: {e}")
+            return []
 
     def _estimate_days(self, history: List[dict]) -> float:
         if not history:

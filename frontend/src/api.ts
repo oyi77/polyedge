@@ -392,3 +392,61 @@ export async function fetchAISuggest(): Promise<{
   const { data } = await adminApi.get('/admin/ai/suggest')
   return data
 }
+
+// ============================================================================
+// PE-011 Phase 2 endpoints — auto-trader pending approvals
+// ============================================================================
+
+export interface PendingApproval {
+  id: number
+  market_id: string
+  direction: string
+  size: number
+  confidence: number
+  signal_data: Record<string, unknown> | null
+  status: string
+  created_at: string | null
+}
+
+export async function fetchPendingApprovals(): Promise<PendingApproval[]> {
+  const { data } = await adminApi.get<PendingApproval[]>('/auto-trader/pending')
+  return data
+}
+
+export async function approvePendingTrade(id: number): Promise<{ id: number; status: string }> {
+  const { data } = await adminApi.post<{ id: number; status: string }>(`/auto-trader/approve/${id}`)
+  return data
+}
+
+export async function rejectPendingTrade(id: number): Promise<{ id: number; status: string }> {
+  const { data } = await adminApi.post<{ id: number; status: string }>(`/auto-trader/reject/${id}`)
+  return data
+}
+
+export interface WhaleTx {
+  id: number
+  tx_hash: string
+  wallet: string
+  market_id: string | null
+  side: string | null
+  size_usd: number
+  observed_at: string | null
+}
+
+export async function fetchWhaleTransactions(limit = 50): Promise<WhaleTx[]> {
+  const { data } = await api.get<WhaleTx[]>('/whales/transactions', { params: { limit } })
+  return data
+}
+
+export interface ArbOpportunity {
+  market_id: string
+  kind: string
+  net_profit: number
+  yes_price?: number
+  no_price?: number
+}
+
+export async function fetchArbitrageOpportunities(): Promise<ArbOpportunity[]> {
+  const { data } = await api.get<{ opportunities: ArbOpportunity[] }>('/arbitrage/opportunities')
+  return data.opportunities ?? []
+}

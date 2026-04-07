@@ -2814,12 +2814,41 @@ async def get_whale_transactions(limit: int = 50):
         db.close()
 
 
+# In-memory cache for arbitrage scans (60s TTL)
+_arb_cache: dict = {"timestamp": 0.0, "data": []}
+
+
 @app.get("/api/arbitrage/opportunities")
 async def get_arbitrage_opportunities():
+    """Live arbitrage scan over recent Polymarket Gamma markets, cached 60s."""
+    import time as _time
     from backend.core.arbitrage_detector import ArbitrageDetector
-    # Pull a small sample of recent markets — full integration in PE-013
-    detector = ArbitrageDetector()
-    return {"opportunities": [op.__dict__ for op in detector.scan_all([])]}
+    from backend.core.market_scanner import fetch_all_active_markets
+
+    now = _time.time()
+    if now - _arb_cache["timestamp"] < 60 and _arb_cache["data"]:
+        return {"opportunities": _arb_cache["data"], "cached": True}
+
+    try:
+        markets = await fetch_all_active_markets(limit=200)
+        detector = ArbitrageDetector()
+        market_dicts = [
+            {
+                "market_id": m.ticker or m.slug,
+                "yes_price": m.yes_price,
+                "no_price": m.no_price,
+                "question": m.question,
+            }
+            for m in markets
+        ]
+        ops = detector.scan_all(market_dicts)[:25]
+        data = [op.__dict__ for op in ops]
+        _arb_cache["timestamp"] = now
+        _arb_cache["data"] = data
+        return {"opportunities": data, "cached": False, "scanned": len(market_dicts)}
+    except Exception as e:
+        logger.warning(f"arbitrage scan failed: {e}")
+        return {"opportunities": [], "error": str(e)}
 
 
 @app.get("/api/news/feed")
@@ -2850,6 +2879,35 @@ async def get_prediction(market_id: str):
     return {"market_id": market_id, "prediction": pred.__dict__}
 
 
+@app.get("/api/auto-trader/pending")
+async def list_pending_approvals(_admin=Depends(require_admin)):
+    from backend.models.database import PendingApproval
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(PendingApproval)
+            .filter(PendingApproval.status == "pending")
+            .order_by(PendingApproval.created_at.desc())
+            .limit(100)
+            .all()
+        )
+        return [
+            {
+                "id": r.id,
+                "market_id": r.market_id,
+                "direction": r.direction,
+                "size": r.size,
+                "confidence": r.confidence,
+                "signal_data": r.signal_data,
+                "status": r.status,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
 @app.post("/api/auto-trader/approve/{trade_id}")
 async def approve_pending_trade(trade_id: int, _admin=Depends(require_admin)):
     from backend.models.database import PendingApproval
@@ -2865,6 +2923,88 @@ async def approve_pending_trade(trade_id: int, _admin=Depends(require_admin)):
         return {"id": row.id, "status": row.status}
     finally:
         db.close()
+
+
+@app.post("/api/auto-trader/reject/{trade_id}")
+async def reject_pending_trade(trade_id: int, _admin=Depends(require_admin)):
+    from backend.models.database import PendingApproval
+    from datetime import datetime as _dt
+    db = SessionLocal()
+    try:
+        row = db.query(PendingApproval).filter(PendingApproval.id == trade_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="not found")
+        row.status = "rejected"
+        row.decided_at = _dt.utcnow()
+        db.commit()
+        return {"id": row.id, "status": row.status}
+    finally:
+        db.close()
+
+
+# WebSocket channels for live market + whale streams
+_ws_market_clients: list = []
+_ws_whale_clients: list = []
+
+
+@app.websocket("/ws/markets")
+async def ws_markets(websocket: WebSocket):
+    await websocket.accept()
+    _ws_market_clients.append(websocket)
+    try:
+        await websocket.send_json({"type": "connected", "channel": "markets"})
+        while True:
+            await asyncio.sleep(30)
+            await websocket.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        if websocket in _ws_market_clients:
+            _ws_market_clients.remove(websocket)
+
+
+@app.websocket("/ws/whales")
+async def ws_whales(websocket: WebSocket):
+    await websocket.accept()
+    _ws_whale_clients.append(websocket)
+    try:
+        await websocket.send_json({"type": "connected", "channel": "whales"})
+        while True:
+            await asyncio.sleep(30)
+            await websocket.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        if websocket in _ws_whale_clients:
+            _ws_whale_clients.remove(websocket)
+
+
+async def broadcast_market_tick(payload: dict) -> None:
+    dead = []
+    for ws in list(_ws_market_clients):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    for d in dead:
+        if d in _ws_market_clients:
+            _ws_market_clients.remove(d)
+
+
+async def broadcast_whale_tick(payload: dict) -> None:
+    dead = []
+    for ws in list(_ws_whale_clients):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    for d in dead:
+        if d in _ws_whale_clients:
+            _ws_whale_clients.remove(d)
 
 
 if __name__ == "__main__":

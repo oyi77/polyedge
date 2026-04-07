@@ -69,6 +69,14 @@ export function NavBar({ title }: { title: string }) {
         >
           Trading Terminal
         </Link>
+        <Link
+          to="/pending-approvals"
+          className={`text-[10px] uppercase tracking-wider transition-colors ${
+            location.pathname === '/pending-approvals' ? 'text-green-500' : 'text-neutral-500 hover:text-green-500'
+          }`}
+        >
+          Approvals
+        </Link>
       </div>
     </nav>
   )
