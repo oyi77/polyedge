@@ -65,6 +65,17 @@ export interface Trade {
   settled: boolean
   result: string
   pnl: number | null
+  strategy?: string
+  signal_source?: string
+  confidence?: number
+}
+
+export interface PnlModeStats {
+  pnl: number
+  bankroll: number
+  trades: number
+  wins: number
+  win_rate: number
 }
 
 export interface BotStats {
@@ -76,6 +87,10 @@ export interface BotStats {
   is_running: boolean
   last_run: string | null
   trading_mode?: string
+  paper?: PnlModeStats
+  live?: PnlModeStats
+  mode?: string
+  pnl_source?: string
 }
 
 export interface EquityPoint {

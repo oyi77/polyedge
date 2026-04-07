@@ -7,14 +7,15 @@ from datetime import datetime
 from typing import Optional, List, Tuple
 
 import httpx
+from cachetools import TTLCache
 from sqlalchemy.orm import Session
 
-from backend.models.database import Trade, BotState, Signal
+from backend.models.database import Trade, BotState, Signal, SettlementEvent
 
 logger = logging.getLogger("trading_bot")
 
-# Module-level: track consecutive 404s per market_id
-_market_404_counts: dict = {}
+# Module-level: track consecutive 404s per market_id (bounded TTLCache: 1000 entries, 1 hour TTL)
+_market_404_counts: TTLCache = TTLCache(maxsize=1000, ttl=3600)
 
 
 async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] = None) -> Tuple[bool, Optional[float]]:
@@ -237,10 +238,50 @@ async def _fetch_kalshi_resolution(ticker: str) -> Tuple[bool, Optional[float]]:
         return False, None
 
 
+async def _resolve_markets(
+    normal_tickers: set,
+    weather_tickers: set,
+    trade_slugs: dict,
+    trade_platforms: dict,
+) -> dict:
+    """
+    Resolve all unique market tickers concurrently.
+
+    Returns a dict mapping ticker -> (is_resolved, settlement_value).
+    normal_tickers: set of tickers for BTC/standard markets.
+    weather_tickers: set of tickers for weather markets.
+    trade_slugs: dict mapping ticker -> event_slug (may be None).
+    trade_platforms: dict mapping ticker -> platform string.
+    """
+    async def _resolve_one(ticker: str, is_weather: bool):
+        platform = trade_platforms.get(ticker, "polymarket") or "polymarket"
+        if is_weather and platform == "kalshi":
+            result = await _fetch_kalshi_resolution(ticker)
+        else:
+            result = await fetch_polymarket_resolution(ticker, event_slug=trade_slugs.get(ticker))
+        return ticker, result
+
+    tasks = (
+        [_resolve_one(t, False) for t in normal_tickers] +
+        [_resolve_one(t, True) for t in weather_tickers]
+    )
+    gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+    resolutions = {}
+    for item in gathered:
+        if isinstance(item, Exception):
+            logger.error(f"Market resolution error: {item}")
+            continue
+        ticker, result = item
+        resolutions[ticker] = result
+    return resolutions
+
+
 async def settle_pending_trades(db: Session) -> List[Trade]:
     """
     Process all pending trades for settlement.
     Uses REAL market outcomes from Polymarket API.
+    Deduplicates API calls: each unique market_ticker is resolved once.
     """
     try:
         pending = db.query(Trade).filter(Trade.settled == False).all()
@@ -252,17 +293,50 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
         logger.info("No pending trades to settle")
         return []
 
-    logger.info(f"Checking {len(pending)} pending trades for settlement...")
-    sem = asyncio.Semaphore(10)
+    # Separate weather vs normal trades and collect unique tickers
+    normal_tickers: set = set()
+    weather_tickers: set = set()
+    trade_slugs: dict = {}
+    trade_platforms: dict = {}
 
-    async def _settle_one(trade):
-        async with sem:
-            market_type = getattr(trade, 'market_type', 'btc') or 'btc'
-            if market_type == "weather":
-                return trade, await check_weather_settlement(trade)
-            return trade, await check_market_settlement(trade)
+    for trade in pending:
+        market_type = getattr(trade, 'market_type', 'btc') or 'btc'
+        ticker = trade.market_ticker
+        trade_slugs[ticker] = getattr(trade, 'event_slug', None)
+        trade_platforms[ticker] = getattr(trade, 'platform', 'polymarket') or 'polymarket'
+        if market_type == "weather":
+            weather_tickers.add(ticker)
+        else:
+            normal_tickers.add(ticker)
 
-    results = await asyncio.gather(*[_settle_one(t) for t in pending], return_exceptions=True)
+    unique_tickers = normal_tickers | weather_tickers
+    logger.info(
+        f"Settlement: {len(pending)} trades across {len(unique_tickers)} markets "
+        f"(saved {len(pending) - len(unique_tickers)} API calls)"
+    )
+
+    resolutions = await _resolve_markets(normal_tickers, weather_tickers, trade_slugs, trade_platforms)
+
+    def _settlement_from_resolution(trade) -> tuple:
+        ticker = trade.market_ticker
+        if ticker not in resolutions:
+            return False, None, None
+        is_resolved, settlement_value = resolutions[ticker]
+        if not is_resolved or settlement_value is None:
+            return False, None, None
+        pnl = calculate_pnl(trade, settlement_value)
+        market_type = getattr(trade, 'market_type', 'btc') or 'btc'
+        if market_type != "weather":
+            mapped_dir = "UP" if trade.direction in ("up", "yes") else "DOWN"
+            outcome = "UP" if settlement_value == 1.0 else "DOWN"
+            result = "WIN" if mapped_dir == outcome else "LOSS"
+            logger.info(
+                f"Trade {trade.id} settled: {mapped_dir} @ {trade.entry_price:.0%} -> "
+                f"{result} P&L: ${pnl:+.2f}"
+            )
+        return True, settlement_value, pnl
+
+    results = [(t, _settlement_from_resolution(t)) for t in pending]
 
     settled_trades = []
     for item in results:
@@ -282,6 +356,27 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             else:
                 trade.result = "push"
             settled_trades.append(trade)
+            platform = getattr(trade, 'platform', 'polymarket') or 'polymarket'
+            resolved_outcome = "up" if settlement_value == 1.0 else "down"
+            db.add(SettlementEvent(
+                trade_id=trade.id,
+                market_ticker=trade.market_ticker,
+                resolved_outcome=resolved_outcome,
+                pnl=pnl,
+                source=platform,
+            ))
+            # Backfill DecisionLog outcome for this trade
+            try:
+                from backend.models.database import DecisionLog
+                outcome = "WIN" if trade.result == "win" else ("LOSS" if trade.result == "loss" else "PUSH")
+                db.query(DecisionLog).filter(
+                    DecisionLog.market_ticker == trade.market_ticker,
+                    DecisionLog.outcome == None,
+                    DecisionLog.decision == "BUY",
+                ).update({"outcome": outcome})
+            except Exception as e:
+                logger.debug(f"DecisionLog outcome backfill failed for {trade.market_ticker}: {e}")
+
             if trade.signal_id:
                 linked_signal = db.query(Signal).filter(Signal.id == trade.signal_id).first()
                 if linked_signal:

@@ -1,6 +1,6 @@
 """Database models and connection for BTC 5-min trading bot."""
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, JSON, text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, JSON, Text, text, UniqueConstraint, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import inspect
@@ -46,6 +46,11 @@ class Trade(Base):
 
     # Trading mode this trade was placed in
     trading_mode = Column(String, default="paper", index=True)
+
+    # Strategy tracking
+    strategy = Column(String, nullable=True)
+    signal_source = Column(String, nullable=True)
+    confidence = Column(Float, nullable=True)
 
 
 class BtcPriceSnapshot(Base):
@@ -153,6 +158,92 @@ class ScanLog(Base):
     error = Column(String, nullable=True)
 
 
+class CopyTraderEntry(Base):
+    """Copy trader position entries mirrored from tracked wallets."""
+    __tablename__ = "copy_trader_entries"
+
+    id = Column(Integer, primary_key=True)
+    wallet = Column(String, nullable=False, index=True)
+    condition_id = Column(String, nullable=False)
+    side = Column(String, nullable=False)  # "YES" or "NO"
+    size = Column(Float, nullable=False)
+    opened_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('wallet', 'condition_id', 'side', name='uq_copy_entry'),
+    )
+
+
+class SettlementEvent(Base):
+    __tablename__ = "settlement_events"
+
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
+    market_ticker = Column(String, nullable=False, index=True)
+    resolved_outcome = Column(String)  # "up", "down", "yes", "no"
+    pnl = Column(Float)
+    settled_at = Column(DateTime, default=datetime.utcnow)
+    source = Column(String, default="polymarket")  # "polymarket" or "kalshi"
+
+
+class DecisionLog(Base):
+    __tablename__ = "decision_log"
+    id = Column(Integer, primary_key=True, index=True)
+    strategy = Column(String, nullable=False, index=True)
+    market_ticker = Column(String, nullable=False, index=True)
+    decision = Column(String, nullable=False)  # BUY, SKIP, SELL, HOLD, ERROR
+    confidence = Column(Float, nullable=True)
+    signal_data = Column(Text, nullable=True)  # JSON string
+    reason = Column(Text, nullable=True)
+    outcome = Column(String, nullable=True)  # WIN, LOSS, PUSH — filled at settlement
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class MarketWatch(Base):
+    __tablename__ = "market_watch"
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, nullable=False, unique=True, index=True)
+    category = Column(String, nullable=True)
+    source = Column(String, nullable=True)  # strategy name or "user"
+    config = Column(Text, nullable=True)  # JSON string
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WalletConfig(Base):
+    __tablename__ = "wallet_config"
+    id = Column(Integer, primary_key=True, index=True)
+    address = Column(String, nullable=False, unique=True, index=True)
+    pseudonym = Column(String, nullable=True)
+    source = Column(String, default="user")  # "leaderboard", "user", "import"
+    tags = Column(Text, nullable=True)  # JSON array string
+    enabled = Column(Boolean, default=True)
+    notes = Column(Text, nullable=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StrategyConfig(Base):
+    __tablename__ = "strategy_config"
+    id = Column(Integer, primary_key=True, index=True)
+    strategy_name = Column(String, nullable=False, unique=True, index=True)
+    enabled = Column(Boolean, default=False)
+    params = Column(Text, nullable=True)  # JSON string
+    interval_seconds = Column(Integer, default=60)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TradeContext(Base):
+    __tablename__ = "trade_context"
+    trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
+    strategy = Column(String, nullable=True)
+    signal_source = Column(String, nullable=True)
+    confidence = Column(Float, nullable=True)
+    entry_signal = Column(Text, nullable=True)  # JSON string
+    exit_signal = Column(Text, nullable=True)   # JSON string
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
@@ -234,6 +325,36 @@ def ensure_schema():
                             conn.execute(text(f"ALTER TABLE signals ADD COLUMN {col} {coltype}"))
                     except Exception:
                         pass  # column already exists
+
+
+    # Ensure copy_trader_entries table exists
+    try:
+        copy_entry_tables = inspector.get_table_names()
+    except Exception:
+        copy_entry_tables = []
+
+    if "copy_trader_entries" not in copy_entry_tables:
+        CopyTraderEntry.__table__.create(bind=engine, checkfirst=True)
+
+    # Ensure settlement_events table exists
+    if "settlement_events" not in copy_entry_tables:
+        SettlementEvent.__table__.create(bind=engine, checkfirst=True)
+
+    # Ensure new tables exist (DecisionLog, MarketWatch, WalletConfig, StrategyConfig, TradeContext)
+    Base.metadata.create_all(bind=engine)
+
+    # Add new columns to trades table if missing
+    with engine.connect() as conn:
+        existing_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(trades)")).fetchall()}
+        for col_def in [
+            "ALTER TABLE trades ADD COLUMN strategy TEXT",
+            "ALTER TABLE trades ADD COLUMN signal_source TEXT",
+            "ALTER TABLE trades ADD COLUMN confidence REAL",
+        ]:
+            col_name = col_def.split("ADD COLUMN ")[1].split()[0]
+            if col_name not in existing_cols:
+                conn.execute(text(col_def))
+        conn.commit()
 
 
 def get_db():

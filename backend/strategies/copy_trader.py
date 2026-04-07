@@ -20,6 +20,8 @@ from typing import Optional
 
 import httpx
 
+from backend.models.database import SessionLocal, CopyTraderEntry
+
 logger = logging.getLogger("trading_bot")
 
 DATA_HOST = "https://data-api.polymarket.com"
@@ -152,10 +154,51 @@ class WalletWatcher:
         self._http = http
         # wallet -> set of seen tx_hashes
         self._seen: dict[str, set[str]] = {}
-        # wallet -> {condition_id+outcome -> cumulative_buy_size}
-        self._entry_sizes: dict[str, dict[str, float]] = {}
-        # wallet -> {condition_id+outcome -> cumulative_sell_size}
+        # wallet -> {pos_key -> cumulative_sell_size} (in-memory only; resets on restart)
         self._sell_sizes: dict[str, dict[str, float]] = {}
+
+    def _get_entry_size(self, wallet: str, pos_key: str) -> float:
+        """Read cumulative buy size from DB for this wallet+position."""
+        try:
+            db = SessionLocal()
+            condition_id, side = pos_key.split(":", 1)
+            entry = db.query(CopyTraderEntry).filter_by(
+                wallet=wallet, condition_id=condition_id, side=side
+            ).first()
+            return entry.size if entry else 0.0
+        except Exception as e:
+            logger.warning(f"DB read error for entry size ({wallet[:10]}, {pos_key}): {e}")
+            return 0.0
+        finally:
+            db.close()
+
+    def _upsert_entry_size(self, wallet: str, pos_key: str, delta: float) -> float:
+        """Add delta to cumulative buy size in DB; return new total."""
+        try:
+            db = SessionLocal()
+            condition_id, side = pos_key.split(":", 1)
+            entry = db.query(CopyTraderEntry).filter_by(
+                wallet=wallet, condition_id=condition_id, side=side
+            ).first()
+            if entry:
+                entry.size += delta
+            else:
+                entry = CopyTraderEntry(
+                    wallet=wallet,
+                    condition_id=condition_id,
+                    side=side,
+                    size=delta,
+                )
+                db.add(entry)
+            db.commit()
+            db.refresh(entry)
+            return entry.size
+        except Exception as e:
+            logger.warning(f"DB upsert error for entry size ({wallet[:10]}, {pos_key}): {e}")
+            db.rollback()
+            return 0.0
+        finally:
+            db.close()
 
     async def poll(self, wallet: str, limit: int = 100) -> tuple[list[WalletTrade], list[WalletTrade]]:
         """
@@ -175,7 +218,6 @@ class WalletWatcher:
 
         if wallet not in self._seen:
             self._seen[wallet] = set()
-            self._entry_sizes[wallet] = {}
             self._sell_sizes[wallet] = {}
             # Seed with existing trades (don't mirror history)
             for t in trades_raw:
@@ -214,19 +256,17 @@ class WalletWatcher:
 
             pos_key = f"{condition_id}:{outcome}"
             if side == "BUY":
-                self._entry_sizes[wallet][pos_key] = (
-                    self._entry_sizes[wallet].get(pos_key, 0) + size
-                )
+                new_total = self._upsert_entry_size(wallet, pos_key, size)
                 new_buys.append(trade)
                 logger.info(
                     f"New trade from {wallet[:10]}...: BUY {outcome} "
-                    f"@ {price:.3f} size={size:.2f} | {trade.title[:40]}"
+                    f"@ {price:.3f} size={size:.2f} total={new_total:.2f} | {trade.title[:40]}"
                 )
             else:  # SELL
                 self._sell_sizes[wallet][pos_key] = (
                     self._sell_sizes[wallet].get(pos_key, 0) + size
                 )
-                orig_entry = self._entry_sizes[wallet].get(pos_key, 0)
+                orig_entry = self._get_entry_size(wallet, pos_key)
                 cumulative_sell = self._sell_sizes[wallet][pos_key]
 
                 if orig_entry > 0 and cumulative_sell >= 0.50 * orig_entry:
@@ -379,3 +419,123 @@ class CopyTrader:
             except Exception as e:
                 logger.error(f"Copy trader loop error: {e}")
             await asyncio.sleep(poll_interval)
+
+
+# ---------------------------------------------------------------------------
+# BaseStrategy wrapper
+# ---------------------------------------------------------------------------
+
+from backend.strategies.base import BaseStrategy, CycleResult  # noqa: E402
+
+
+class CopyTraderStrategy(BaseStrategy):
+    """Wraps CopyTrader engine in the BaseStrategy plugin interface."""
+
+    default_params = {
+        "max_wallets": 20,
+        "min_score": 60.0,
+        "poll_interval": 60,
+        "interval_seconds": 60,
+    }
+
+    name = "copy_trader"
+    description = "Mirror top Polymarket whale traders proportionally to our bankroll"
+    category = "copy_trading"
+
+    def __init__(self, max_wallets: int = 20, min_score: float = 60.0):
+        super().__init__()
+        self._engine = CopyTrader(bankroll=10000, max_wallets=max_wallets, min_score=min_score)
+        self._task: asyncio.Task | None = None
+
+    async def market_filter(self, markets):
+        return markets
+
+    async def _get_active_wallets(self, ctx) -> list[str]:
+        """
+        Return union of: leaderboard top-N + enabled WalletConfig rows.
+        WalletConfig rows are always included (user-curated, may not score well).
+        """
+        import json
+        from backend.models.database import WalletConfig
+
+        max_wallets = ctx.params.get("max_wallets", 20)
+        min_score = ctx.params.get("min_score", 60.0)
+
+        # 1. Get user-configured wallets
+        user_wallets = [
+            w.address for w in ctx.db.query(WalletConfig).filter(WalletConfig.enabled == True).all()
+        ]
+
+        # 2. Get leaderboard top wallets
+        leaderboard_wallets = []
+        try:
+            traders = await self._engine._scorer.fetch_and_score(top_n=50)
+            scored = [t for t in traders if t.score >= min_score]
+            scored.sort(key=lambda t: t.score, reverse=True)
+            leaderboard_wallets = [t.wallet for t in scored[:max_wallets]]
+        except Exception as e:
+            ctx.logger.warning(f"CopyTrader: leaderboard fetch failed: {e}")
+
+        # 3. Union (preserve order: user-curated first, then leaderboard)
+        seen = set()
+        result = []
+        for w in user_wallets + leaderboard_wallets:
+            if w not in seen:
+                seen.add(w)
+                result.append(w)
+
+        return result[:max_wallets * 2]  # cap at 2x to avoid runaway
+
+    async def run_cycle(self, ctx):
+        import json
+        from backend.models.database import DecisionLog
+
+        max_wallets = ctx.params.get("max_wallets", 20)
+        min_score = ctx.params.get("min_score", 60.0)
+
+        result = CycleResult(decisions_recorded=0, trades_attempted=0, trades_placed=0)
+        try:
+            if not self._engine._running:
+                await self._engine.start()
+
+            wallet_pool = await self._get_active_wallets(ctx)
+
+            signals = await self._engine.poll_once()
+
+            # Build a set of wallets that produced signals for fast lookup
+            signaled_wallets = {s.source_wallet for s in signals} if signals else set()
+
+            # Record a DecisionLog row for each wallet polled
+            for wallet in wallet_pool:
+                decision = "FOLLOW" if wallet in signaled_wallets else "SKIP"
+                # Find matching signal for scoring breakdown if present
+                wallet_signals = [s for s in (signals or []) if s.source_wallet == wallet]
+                if wallet_signals:
+                    signal_data = json.dumps({
+                        "trader_score": wallet_signals[0].trader_score,
+                        "signals_count": len(wallet_signals),
+                        "outcomes": [s.our_side for s in wallet_signals],
+                    })
+                    reason = wallet_signals[0].reasoning
+                else:
+                    signal_data = json.dumps({"min_score": min_score, "max_wallets": max_wallets})
+                    reason = f"No new trades detected for wallet {wallet[:10]}..."
+
+                log_row = DecisionLog(
+                    strategy=self.name,
+                    market_ticker=wallet[:42],  # wallet address as identifier
+                    decision=decision,
+                    confidence=wallet_signals[0].trader_score / 100.0 if wallet_signals else None,
+                    signal_data=signal_data,
+                    reason=reason,
+                )
+                ctx.db.add(log_row)
+
+            ctx.db.commit()
+            result.decisions_recorded = len(wallet_pool)
+            result.trades_attempted = len(signals) if signals else 0
+
+        except Exception as e:
+            result.errors.append(str(e))
+            ctx.logger.error(f"CopyTraderStrategy cycle error: {e}")
+        return result

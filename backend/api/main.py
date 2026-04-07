@@ -1,6 +1,7 @@
 """FastAPI backend for BTC 5-min trading bot dashboard."""
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Header
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import List, Optional
@@ -10,13 +11,17 @@ import os
 from backend.config import settings
 from backend.models.database import (
     get_db, init_db, SessionLocal,
-    Signal, Trade, BotState, AILog
+    Signal, Trade, BotState, AILog, StrategyConfig,
+    MarketWatch, WalletConfig, DecisionLog, TradeContext
 )
 from backend.core.signals import scan_for_signals, TradingSignal
 from backend.data.btc_markets import fetch_active_btc_markets
 from backend.data.crypto import fetch_crypto_price, compute_btc_microstructure
 
 from pydantic import BaseModel
+import logging
+
+logger = logging.getLogger("trading_bot")
 
 app = FastAPI(
     title="BTC 5-Min Trading Bot",
@@ -145,6 +150,16 @@ class BotStats(BaseModel):
     total_pnl: float
     is_running: bool
     last_run: Optional[datetime]
+    # Paper trading fields
+    paper_pnl: float = 0.0
+    paper_bankroll: float = 10000.0
+    paper_trades: int = 0
+    paper_wins: int = 0
+    paper_win_rate: float = 0.0
+    mode: str = "paper"
+    pnl_source: str = "botstate"
+    paper: dict = {}
+    live: dict = {}
 
 
 class CalibrationBucket(BaseModel):
@@ -300,8 +315,16 @@ async def root():
 
 
 @app.get("/api/health")
-async def health():
-    return {"status": "healthy"}
+async def health_check(db: Session = Depends(get_db)):
+    """Return system health including per-strategy heartbeat status."""
+    from backend.core.heartbeat import get_strategy_health
+    healths = get_strategy_health(db)
+    all_healthy = all(h["healthy"] or h["lag_seconds"] is None for h in healths)
+    return {
+        "status": "ok" if all_healthy else "degraded",
+        "strategies": healths,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 @app.get("/api/stats", response_model=BotStats)
@@ -312,6 +335,21 @@ async def get_stats(db: Session = Depends(get_db)):
 
     win_rate = state.winning_trades / state.total_trades if state.total_trades > 0 else 0
 
+    # Paper trading stats
+    paper_pnl = state.paper_pnl or 0.0
+    paper_bankroll = state.paper_bankroll or 10000.0
+    paper_trades = state.paper_trades or 0
+    paper_wins = state.paper_wins or 0
+    paper_win_rate = paper_wins / paper_trades if paper_trades > 0 else 0.0
+
+    # Fallback: if total_pnl is 0 but settled paper trades exist, recalculate from DB
+    pnl_source = "botstate"
+    if state.total_pnl == 0 and paper_trades > 0:
+        db_paper_pnl = db.query(func.sum(Trade.pnl)).filter(Trade.settled == True).scalar() or 0.0
+        if db_paper_pnl != 0:
+            paper_pnl = db_paper_pnl
+            pnl_source = "recalculated"
+
     return BotStats(
         bankroll=state.bankroll,
         total_trades=state.total_trades,
@@ -319,7 +357,16 @@ async def get_stats(db: Session = Depends(get_db)):
         win_rate=win_rate,
         total_pnl=state.total_pnl,
         is_running=state.is_running,
-        last_run=state.last_run
+        last_run=state.last_run,
+        paper_pnl=paper_pnl,
+        paper_bankroll=paper_bankroll,
+        paper_trades=paper_trades,
+        paper_wins=paper_wins,
+        paper_win_rate=paper_win_rate,
+        mode=settings.TRADING_MODE,
+        pnl_source=pnl_source,
+        paper={"pnl": paper_pnl, "bankroll": paper_bankroll, "trades": paper_trades, "wins": paper_wins, "win_rate": paper_win_rate},
+        live={"pnl": state.total_pnl, "bankroll": state.bankroll, "trades": state.total_trades, "wins": state.winning_trades, "win_rate": win_rate},
     )
 
 
@@ -423,8 +470,16 @@ async def get_trades(
         query = query.filter(Trade.result == status)
     trades = query.order_by(Trade.timestamp.desc()).limit(limit).all()
 
-    return [
-        TradeResponse(
+    trade_ids = [t.id for t in trades]
+    context_map = {}
+    if trade_ids:
+        contexts = db.query(TradeContext).filter(TradeContext.trade_id.in_(trade_ids)).all()
+        context_map = {c.trade_id: c for c in contexts}
+
+    result_list = []
+    for t in trades:
+        ctx = context_map.get(t.id)
+        trade_dict = TradeResponse(
             id=t.id,
             market_ticker=t.market_ticker,
             platform=t.platform,
@@ -437,8 +492,13 @@ async def get_trades(
             result=t.result,
             pnl=t.pnl
         )
-        for t in trades
-    ]
+        trade_dict = trade_dict.model_dump()
+        trade_dict["strategy"] = (ctx.strategy if ctx else None) or getattr(t, 'strategy', None)
+        trade_dict["signal_source"] = (ctx.signal_source if ctx else None) or getattr(t, 'signal_source', None)
+        trade_dict["confidence"] = (ctx.confidence if ctx else None) or getattr(t, 'confidence', None)
+        result_list.append(trade_dict)
+
+    return result_list
 
 
 @app.get("/api/equity-curve")
@@ -801,6 +861,9 @@ async def start_bot(db: Session = Depends(get_db), _: None = Depends(require_adm
     from backend.core.scheduler import start_scheduler, log_event, is_scheduler_running
 
     state = db.query(BotState).first()
+    if state and state.is_running:
+        raise HTTPException(status_code=409, detail={"error": "already_running", "is_running": True})
+
     if state:
         state.is_running = True
         db.commit()
@@ -817,6 +880,9 @@ async def stop_bot(db: Session = Depends(get_db), _: None = Depends(require_admi
     from backend.core.scheduler import log_event
 
     state = db.query(BotState).first()
+    if state and not state.is_running:
+        raise HTTPException(status_code=409, detail={"error": "already_stopped", "is_running": False})
+
     if state:
         state.is_running = False
         db.commit()
@@ -1256,11 +1322,21 @@ async def update_admin_settings(body: SettingsUpdate, _: None = Depends(require_
         for k, v in env_lines.items():
             f.write(f"{k}={v}\n")
 
-    return {"status": "ok", "message": f"Updated {updated_count} settings"}
+    from backend.core.scheduler import reschedule_jobs
+    scheduler_result = reschedule_jobs()
+
+    return {"status": "ok", "message": f"Updated {updated_count} settings", "scheduler": scheduler_result}
 
 
 class ModeSwitch(BaseModel):
     mode: str
+
+
+class CredentialsUpdate(BaseModel):
+    private_key: str | None = None
+    api_key: str | None = None
+    api_secret: str | None = None
+    api_passphrase: str | None = None
 
 
 @app.post("/api/admin/mode")
@@ -1292,6 +1368,70 @@ async def switch_mode(body: ModeSwitch, _: None = Depends(require_admin)):
     return {"status": "ok", "mode": new_mode, "previous_mode": old_mode}
 
 
+@app.post("/api/admin/credentials")
+async def update_credentials(body: CredentialsUpdate, _: None = Depends(require_admin)):
+    """Update Polymarket trading credentials, persist to .env, and hot-reload settings."""
+    env_map = {
+        "POLYMARKET_PRIVATE_KEY": body.private_key,
+        "POLYMARKET_API_KEY": body.api_key,
+        "POLYMARKET_API_SECRET": body.api_secret,
+        "POLYMARKET_API_PASSPHRASE": body.api_passphrase,
+    }
+
+    env_path = ".env"
+    env_lines: dict[str, str] = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_lines[k.strip()] = v.strip()
+
+    updated: list[str] = []
+    for env_key, value in env_map.items():
+        if value is not None and value.strip():
+            env_lines[env_key] = value.strip()
+            updated.append(env_key)
+
+    with open(env_path, "w") as f:
+        for k, v in env_lines.items():
+            f.write(f"{k}={v}\n")
+
+    # Hot-reload into running settings object
+    if body.private_key and body.private_key.strip():
+        settings.POLYMARKET_PRIVATE_KEY = body.private_key.strip()
+    if body.api_key and body.api_key.strip():
+        settings.POLYMARKET_API_KEY = body.api_key.strip()
+    if body.api_secret and body.api_secret.strip():
+        settings.POLYMARKET_API_SECRET = body.api_secret.strip()
+    if body.api_passphrase and body.api_passphrase.strip():
+        settings.POLYMARKET_API_PASSPHRASE = body.api_passphrase.strip()
+
+    has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
+    has_api_key = bool(settings.POLYMARKET_API_KEY)
+    has_api_secret = bool(settings.POLYMARKET_API_SECRET)
+    has_api_passphrase = bool(settings.POLYMARKET_API_PASSPHRASE)
+
+    logger.info(f"Credentials updated: {updated}")
+    return {
+        "status": "ok",
+        "updated": updated,
+        "creds_paper": True,
+        "creds_testnet": has_private_key,
+        "creds_live": has_private_key and has_api_key and has_api_secret and has_api_passphrase,
+        "missing_for_testnet": [] if has_private_key else ["POLYMARKET_PRIVATE_KEY"],
+        "missing_for_live": [
+            k for k, v in {
+                "POLYMARKET_PRIVATE_KEY": has_private_key,
+                "POLYMARKET_API_KEY": has_api_key,
+                "POLYMARKET_API_SECRET": has_api_secret,
+                "POLYMARKET_API_PASSPHRASE": has_api_passphrase,
+            }.items() if not v
+        ],
+    }
+
+
 @app.get("/api/admin/system")
 async def get_admin_system(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Return system health overview."""
@@ -1301,6 +1441,11 @@ async def get_admin_system(db: Session = Depends(get_db), _: None = Depends(requ
     db_signal_count = db.query(Signal).count()
 
     uptime = (datetime.utcnow() - _bot_start_time).total_seconds()
+
+    has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
+    has_api_key = bool(settings.POLYMARKET_API_KEY)
+    has_api_secret = bool(settings.POLYMARKET_API_SECRET)
+    has_api_passphrase = bool(settings.POLYMARKET_API_PASSPHRASE)
 
     return {
         "trading_mode": settings.TRADING_MODE,
@@ -1312,7 +1457,551 @@ async def get_admin_system(db: Session = Depends(get_db), _: None = Depends(requ
         "weather_enabled": settings.WEATHER_ENABLED,
         "db_trade_count": db_trade_count,
         "db_signal_count": db_signal_count,
+        # Credential readiness per mode
+        "creds_paper": True,  # paper needs no credentials
+        "creds_testnet": has_private_key,
+        "creds_live": has_private_key and has_api_key and has_api_secret and has_api_passphrase,
+        "missing_for_testnet": [] if has_private_key else ["POLYMARKET_PRIVATE_KEY"],
+        "missing_for_live": [
+            k for k, v in {
+                "POLYMARKET_PRIVATE_KEY": has_private_key,
+                "POLYMARKET_API_KEY": has_api_key,
+                "POLYMARKET_API_SECRET": has_api_secret,
+                "POLYMARKET_API_PASSPHRASE": has_api_passphrase,
+            }.items() if not v
+        ],
     }
+
+
+@app.post("/api/admin/alerts/test")
+async def test_alert(_: None = Depends(require_admin)):
+    """Send a test Telegram alert to verify bot configuration."""
+    from backend.core.heartbeat import _send_telegram_alert_sync
+    if not settings.TELEGRAM_BOT_TOKEN:
+        raise HTTPException(status_code=400, detail="TELEGRAM_BOT_TOKEN not configured")
+    _send_telegram_alert_sync("✅ PolyEdge alert test — bot is configured correctly")
+    return {"status": "ok", "message": "Test alert sent"}
+
+
+# =========================================================================
+# Strategy Config CRUD
+# =========================================================================
+
+@app.get("/api/strategies")
+async def list_strategies_endpoint(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """List all registered strategies merged with their DB config."""
+    from backend.strategies.registry import load_all_strategies, STRATEGY_REGISTRY, list_strategies as _list_strategies
+    load_all_strategies()
+
+    metas = {m.name: m for m in _list_strategies()}
+    configs = {c.strategy_name: c for c in db.query(StrategyConfig).all()}
+
+    result = []
+    for name, meta in metas.items():
+        cfg = configs.get(name)
+        import json as _json
+        result.append({
+            "name": name,
+            "description": meta.description,
+            "category": meta.category,
+            "default_params": meta.default_params,
+            "enabled": cfg.enabled if cfg else False,
+            "interval_seconds": cfg.interval_seconds if cfg else 60,
+            "params": _json.loads(cfg.params) if cfg and cfg.params else meta.default_params,
+            "updated_at": cfg.updated_at.isoformat() if cfg and cfg.updated_at else None,
+        })
+    return result
+
+
+@app.get("/api/strategies/{name}")
+async def get_strategy(name: str, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Get a single strategy by name."""
+    from backend.strategies.registry import STRATEGY_REGISTRY, load_all_strategies
+    load_all_strategies()
+    if name not in STRATEGY_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not registered")
+    cfg = db.query(StrategyConfig).filter(StrategyConfig.strategy_name == name).first()
+    import json as _json
+    from backend.strategies.registry import list_strategies as _ls
+    meta = next((m for m in _ls() if m.name == name), None)
+    return {
+        "name": name,
+        "description": meta.description if meta else "",
+        "category": meta.category if meta else "",
+        "enabled": cfg.enabled if cfg else False,
+        "interval_seconds": cfg.interval_seconds if cfg else 60,
+        "params": _json.loads(cfg.params) if cfg and cfg.params else (meta.default_params if meta else {}),
+        "updated_at": cfg.updated_at.isoformat() if cfg and cfg.updated_at else None,
+    }
+
+
+class StrategyUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_seconds: int | None = None
+    params: dict | None = None
+
+
+@app.put("/api/strategies/{name}")
+async def update_strategy(name: str, body: StrategyUpdate, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Upsert strategy config and hot-reload scheduler."""
+    from backend.strategies.registry import STRATEGY_REGISTRY, load_all_strategies
+    load_all_strategies()
+    if name not in STRATEGY_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not registered")
+
+    cfg = db.query(StrategyConfig).filter(StrategyConfig.strategy_name == name).first()
+    if not cfg:
+        cfg = StrategyConfig(strategy_name=name, enabled=False, interval_seconds=60)
+        db.add(cfg)
+
+    import json as _json
+    if body.enabled is not None:
+        cfg.enabled = body.enabled
+    if body.interval_seconds is not None:
+        cfg.interval_seconds = body.interval_seconds
+    if body.params is not None:
+        cfg.params = _json.dumps(body.params)
+
+    db.commit()
+    db.refresh(cfg)
+
+    # Hot-reload scheduler
+    from backend.core.scheduler import schedule_strategy, unschedule_strategy
+    if cfg.enabled:
+        schedule_strategy(name, cfg.interval_seconds or 60)
+    else:
+        unschedule_strategy(name)
+
+    return {"status": "ok", "name": name, "enabled": cfg.enabled, "interval_seconds": cfg.interval_seconds}
+
+
+@app.post("/api/strategies/{name}/run-now")
+async def run_strategy_now(name: str, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Execute one strategy cycle synchronously and return the result."""
+    from backend.strategies.registry import STRATEGY_REGISTRY, load_all_strategies
+    from backend.strategies.base import StrategyContext
+    load_all_strategies()
+
+    strategy_cls = STRATEGY_REGISTRY.get(name)
+    if not strategy_cls:
+        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not in registry")
+
+    cfg = db.query(StrategyConfig).filter(StrategyConfig.strategy_name == name).first()
+    import json as _json
+    params = {}
+    if cfg and cfg.params:
+        try:
+            params = _json.loads(cfg.params)
+        except Exception:
+            pass
+
+    ctx = StrategyContext(
+        db=db,
+        clob=None,
+        settings=settings,
+        logger=logger,
+        params=params,
+        mode=settings.TRADING_MODE,
+    )
+    strategy = strategy_cls()
+    result = await strategy.run(ctx)
+
+    return {
+        "name": name,
+        "decisions_recorded": result.decisions_recorded,
+        "trades_attempted": result.trades_attempted,
+        "trades_placed": result.trades_placed,
+        "errors": result.errors,
+        "cycle_duration_ms": result.cycle_duration_ms,
+    }
+
+
+class MarketWatchCreate(BaseModel):
+    ticker: str
+    category: str | None = None
+    source: str | None = None
+    config: dict | None = None
+    enabled: bool = True
+
+class MarketWatchUpdate(BaseModel):
+    category: str | None = None
+    source: str | None = None
+    config: dict | None = None
+    enabled: bool | None = None
+
+class WalletConfigCreate(BaseModel):
+    address: str
+    pseudonym: str | None = None
+    source: str = "user"
+    tags: list[str] | None = None
+    enabled: bool = True
+    notes: str | None = None
+
+class WalletConfigUpdate(BaseModel):
+    pseudonym: str | None = None
+    tags: list[str] | None = None
+    enabled: bool | None = None
+    notes: str | None = None
+
+
+# =========================================================================
+# MarketWatch CRUD
+# =========================================================================
+
+@app.get("/api/markets/watch")
+async def list_market_watches(
+    enabled: bool | None = None,
+    category: str | None = None,
+    source: str | None = None,
+    q: str | None = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    query = db.query(MarketWatch)
+    if enabled is not None:
+        query = query.filter(MarketWatch.enabled == enabled)
+    if category:
+        query = query.filter(MarketWatch.category == category)
+    if source:
+        query = query.filter(MarketWatch.source == source)
+    if q:
+        query = query.filter(MarketWatch.ticker.contains(q))
+    total = query.count()
+    col = getattr(MarketWatch, sort, MarketWatch.created_at)
+    if order == "desc":
+        col = col.desc()
+    items = query.order_by(col).offset(offset).limit(limit).all()
+    return {
+        "items": [{"id": m.id, "ticker": m.ticker, "category": m.category, "source": m.source, "enabled": m.enabled, "created_at": m.created_at.isoformat() if m.created_at else None} for m in items],
+        "total": total,
+    }
+
+
+@app.post("/api/markets/watch", status_code=201)
+async def create_market_watch(body: MarketWatchCreate, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    existing = db.query(MarketWatch).filter(MarketWatch.ticker == body.ticker).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Market '{body.ticker}' already watched")
+    import json as _json
+    row = MarketWatch(
+        ticker=body.ticker,
+        category=body.category,
+        source=body.source,
+        config=_json.dumps(body.config) if body.config else None,
+        enabled=body.enabled,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "ticker": row.ticker, "enabled": row.enabled}
+
+
+@app.put("/api/markets/watch/{watch_id}")
+async def update_market_watch(watch_id: int, body: MarketWatchUpdate, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    row = db.query(MarketWatch).filter(MarketWatch.id == watch_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="MarketWatch not found")
+    import json as _json
+    if body.category is not None:
+        row.category = body.category
+    if body.source is not None:
+        row.source = body.source
+    if body.config is not None:
+        row.config = _json.dumps(body.config)
+    if body.enabled is not None:
+        row.enabled = body.enabled
+    db.commit()
+    return {"id": row.id, "ticker": row.ticker, "enabled": row.enabled}
+
+
+@app.delete("/api/markets/watch/{watch_id}", status_code=204)
+async def delete_market_watch(watch_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    row = db.query(MarketWatch).filter(MarketWatch.id == watch_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="MarketWatch not found")
+    db.delete(row)
+    db.commit()
+
+
+# =========================================================================
+# WalletConfig CRUD + Leaderboard
+# =========================================================================
+
+@app.get("/api/wallets/config")
+async def list_wallet_configs(
+    enabled: bool | None = None,
+    source: str | None = None,
+    q: str | None = None,
+    sort: str = "added_at",
+    order: str = "desc",
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    query = db.query(WalletConfig)
+    if enabled is not None:
+        query = query.filter(WalletConfig.enabled == enabled)
+    if source:
+        query = query.filter(WalletConfig.source == source)
+    if q:
+        query = query.filter(
+            (WalletConfig.address.contains(q)) | (WalletConfig.pseudonym.contains(q))
+        )
+    total = query.count()
+    col = getattr(WalletConfig, sort, WalletConfig.added_at)
+    if order == "desc":
+        col = col.desc()
+    items = query.order_by(col).offset(offset).limit(limit).all()
+    import json as _json
+    return {
+        "items": [
+            {
+                "id": w.id,
+                "address": w.address,
+                "pseudonym": w.pseudonym,
+                "source": w.source,
+                "tags": _json.loads(w.tags) if w.tags else [],
+                "enabled": w.enabled,
+                "notes": w.notes,
+                "added_at": w.added_at.isoformat() if w.added_at else None,
+            }
+            for w in items
+        ],
+        "total": total,
+    }
+
+
+@app.post("/api/wallets/config", status_code=201)
+async def create_wallet_config(body: WalletConfigCreate, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    existing = db.query(WalletConfig).filter(WalletConfig.address == body.address).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Wallet '{body.address}' already configured")
+    import json as _json
+    row = WalletConfig(
+        address=body.address,
+        pseudonym=body.pseudonym,
+        source=body.source,
+        tags=_json.dumps(body.tags) if body.tags else None,
+        enabled=body.enabled,
+        notes=body.notes,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "address": row.address, "enabled": row.enabled}
+
+
+@app.put("/api/wallets/config/{wallet_id}")
+async def update_wallet_config(wallet_id: int, body: WalletConfigUpdate, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    row = db.query(WalletConfig).filter(WalletConfig.id == wallet_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="WalletConfig not found")
+    import json as _json
+    if body.pseudonym is not None:
+        row.pseudonym = body.pseudonym
+    if body.tags is not None:
+        row.tags = _json.dumps(body.tags)
+    if body.enabled is not None:
+        row.enabled = body.enabled
+    if body.notes is not None:
+        row.notes = body.notes
+    db.commit()
+    return {"id": row.id, "address": row.address, "enabled": row.enabled}
+
+
+@app.delete("/api/wallets/config/{wallet_id}", status_code=204)
+async def delete_wallet_config(wallet_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    row = db.query(WalletConfig).filter(WalletConfig.id == wallet_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="WalletConfig not found")
+    db.delete(row)
+    db.commit()
+
+
+@app.get("/api/wallets/leaderboard")
+async def get_wallet_leaderboard(
+    min_pnl: float | None = None,
+    min_winrate: float | None = None,
+    source: str | None = None,
+    q: str | None = None,
+    sort: str = "added_at",
+    order: str = "desc",
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Return WalletConfig rows merged with any available leaderboard data."""
+    query = db.query(WalletConfig).filter(WalletConfig.enabled == True)
+    if source:
+        query = query.filter(WalletConfig.source == source)
+    if q:
+        query = query.filter(
+            (WalletConfig.address.contains(q)) | (WalletConfig.pseudonym.contains(q))
+        )
+    total = query.count()
+    col = getattr(WalletConfig, sort, WalletConfig.added_at)
+    if order == "desc":
+        col = col.desc()
+    items = query.order_by(col).offset(offset).limit(limit).all()
+    import json as _json
+    return {
+        "items": [
+            {
+                "address": w.address,
+                "pseudonym": w.pseudonym or w.address[:8] + "...",
+                "source": w.source,
+                "tags": _json.loads(w.tags) if w.tags else [],
+                "enabled": w.enabled,
+                "added_at": w.added_at.isoformat() if w.added_at else None,
+            }
+            for w in items
+        ],
+        "total": total,
+    }
+
+
+# =========================================================================
+# Decision Log
+# =========================================================================
+
+@app.get("/api/decisions")
+async def list_decisions(
+    strategy: str | None = None,
+    decision: str | None = None,
+    market: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """List decision log entries with filtering."""
+    query = db.query(DecisionLog)
+    if strategy:
+        query = query.filter(DecisionLog.strategy == strategy)
+    if decision:
+        query = query.filter(DecisionLog.decision == decision.upper())
+    if market:
+        query = query.filter(DecisionLog.market_ticker.contains(market))
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            query = query.filter(DecisionLog.created_at >= since_dt)
+        except ValueError:
+            pass
+    if until:
+        try:
+            until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
+            query = query.filter(DecisionLog.created_at <= until_dt)
+        except ValueError:
+            pass
+    total = query.count()
+    col = getattr(DecisionLog, sort, DecisionLog.created_at)
+    if order == "desc":
+        col = col.desc()
+    items = query.order_by(col).offset(offset).limit(limit).all()
+    return {
+        "items": [
+            {
+                "id": d.id,
+                "strategy": d.strategy,
+                "market_ticker": d.market_ticker,
+                "decision": d.decision,
+                "confidence": d.confidence,
+                "reason": d.reason,
+                "outcome": d.outcome,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            for d in items
+        ],
+        "total": total,
+    }
+
+
+@app.get("/api/decisions/export")
+async def export_decisions(
+    format: str = "jsonl",
+    strategy: str | None = None,
+    decision: str | None = None,
+    limit: int = 10000,
+    db: Session = Depends(get_db),
+):
+    """Export decision log as JSONL for ML training."""
+    from fastapi.responses import StreamingResponse
+    import json as _json
+    import io
+
+    query = db.query(DecisionLog)
+    if strategy:
+        query = query.filter(DecisionLog.strategy == strategy)
+    if decision:
+        query = query.filter(DecisionLog.decision == decision.upper())
+    items = query.order_by(DecisionLog.created_at.desc()).limit(limit).all()
+
+    def generate():
+        for d in items:
+            signal_data = None
+            if d.signal_data:
+                try:
+                    signal_data = _json.loads(d.signal_data)
+                except Exception:
+                    signal_data = d.signal_data
+            row = {
+                "id": d.id,
+                "strategy": d.strategy,
+                "market_ticker": d.market_ticker,
+                "decision": d.decision,
+                "confidence": d.confidence,
+                "signal_data": signal_data,
+                "reason": d.reason,
+                "outcome": d.outcome,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            yield _json.dumps(row) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson",
+                             headers={"Content-Disposition": "attachment; filename=decisions.jsonl"})
+
+
+@app.get("/api/decisions/{decision_id}")
+async def get_decision(decision_id: int, db: Session = Depends(get_db)):
+    """Get a single decision log entry including full signal_data."""
+    row = db.query(DecisionLog).filter(DecisionLog.id == decision_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    import json as _json
+    signal_data = None
+    if row.signal_data:
+        try:
+            signal_data = _json.loads(row.signal_data)
+        except Exception:
+            signal_data = row.signal_data
+    return {
+        "id": row.id,
+        "strategy": row.strategy,
+        "market_ticker": row.market_ticker,
+        "decision": row.decision,
+        "confidence": row.confidence,
+        "signal_data": signal_data,
+        "reason": row.reason,
+        "outcome": row.outcome,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@app.get("/api/admin/scheduler/jobs")
+async def get_scheduler_jobs_endpoint(_: None = Depends(require_admin)):
+    """Return current APScheduler job list."""
+    from backend.core.scheduler import get_scheduler_jobs
+    return get_scheduler_jobs()
 
 
 @app.get("/api/copy-trader/status")
@@ -1320,6 +2009,7 @@ async def get_copy_trader_status():
     """Return copy trader status with tracked wallets."""
     wallet_details = []
     recent_signals = []
+    errors = []
 
     try:
         from backend.strategies.copy_trader import LeaderboardScorer
@@ -1338,8 +2028,8 @@ async def get_copy_trader_status():
             }
             for t in traders
         ]
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append({"source": "leaderboard_scorer", "message": str(e)})
 
     try:
         db = SessionLocal()
@@ -1360,15 +2050,77 @@ async def get_copy_trader_status():
             for s in copy_signals
         ]
         db.close()
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append({"source": "db_signals", "message": str(e)})
 
-    return {
+    has_any_data = bool(wallet_details or recent_signals)
+    if not errors:
+        status = "ok"
+    elif has_any_data:
+        status = "degraded"
+    else:
+        status = "down"
+
+    response_body = {
+        "status": status,
+        "errors": errors,
+        "last_scan_at": datetime.utcnow().isoformat(),
         "enabled": True,
         "tracked_wallets": len(wallet_details),
         "wallet_details": wallet_details,
         "recent_signals": recent_signals,
     }
+
+    if status == "down":
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content=response_body)
+
+    return response_body
+
+
+@app.get("/api/copy-trader/positions")
+async def get_copy_trader_positions(db: Session = Depends(get_db)):
+    """Return recent copy trader position entries from DB."""
+    from backend.models.database import CopyTraderEntry
+    entries = db.query(CopyTraderEntry).order_by(CopyTraderEntry.opened_at.desc()).limit(100).all()
+    return [
+        {
+            "wallet": e.wallet,
+            "condition_id": e.condition_id,
+            "side": e.side,
+            "size": e.size,
+            "opened_at": e.opened_at.isoformat() if e.opened_at else None,
+        }
+        for e in entries
+    ]
+
+
+@app.get("/api/settlements")
+async def get_settlements(
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    from backend.models.database import SettlementEvent
+    events = (
+        db.query(SettlementEvent)
+        .order_by(SettlementEvent.settled_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": e.id,
+            "trade_id": e.trade_id,
+            "market_ticker": e.market_ticker,
+            "resolved_outcome": e.resolved_outcome,
+            "pnl": e.pnl,
+            "settled_at": e.settled_at.isoformat() if e.settled_at else None,
+            "source": e.source,
+        }
+        for e in events
+    ]
 
 
 @app.websocket("/ws/events")

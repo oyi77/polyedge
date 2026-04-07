@@ -29,6 +29,38 @@ export function NavBar({ title }: { title: string }) {
         >
           Admin
         </Link>
+        <Link
+          to="/whale-tracker"
+          className={`text-[10px] uppercase tracking-wider transition-colors ${
+            location.pathname === '/whale-tracker' ? 'text-green-500' : 'text-neutral-500 hover:text-green-500'
+          }`}
+        >
+          Whale Tracker
+        </Link>
+        <Link
+          to="/settlements"
+          className={`text-[10px] uppercase tracking-wider transition-colors ${
+            location.pathname === '/settlements' ? 'text-green-500' : 'text-neutral-500 hover:text-green-500'
+          }`}
+        >
+          Settlements
+        </Link>
+        <Link
+          to="/market-intel"
+          className={`text-[10px] uppercase tracking-wider transition-colors ${
+            location.pathname === '/market-intel' ? 'text-green-500' : 'text-neutral-500 hover:text-green-500'
+          }`}
+        >
+          Market Intel
+        </Link>
+        <Link
+          to="/decisions"
+          className={`text-[10px] uppercase tracking-wider transition-colors ${
+            location.pathname === '/decisions' ? 'text-green-500' : 'text-neutral-500 hover:text-green-500'
+          }`}
+        >
+          Decisions
+        </Link>
       </div>
     </nav>
   )

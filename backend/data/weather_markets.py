@@ -1,24 +1,14 @@
 """Weather temperature market fetcher from Polymarket."""
-import httpx
+import json
 import re
 import logging
 from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional
 
-logger = logging.getLogger("trading_bot")
+from backend.core.market_scanner import fetch_markets_by_keywords
 
-# Map city names/variants found in market titles to our city keys
-CITY_ALIASES = {
-    "new york": "nyc",
-    "nyc": "nyc",
-    "new york city": "nyc",
-    "chicago": "chicago",
-    "miami": "miami",
-    "los angeles": "los_angeles",
-    "la": "los_angeles",
-    "denver": "denver",
-}
+logger = logging.getLogger("trading_bot")
 
 # Month name to number
 MONTH_MAP = {
@@ -28,6 +18,14 @@ MONTH_MAP = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4,
     "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
+
+_DEFAULT_WEATHER_KEYWORDS = [
+    "temperature",
+    "weather",
+    "degrees fahrenheit",
+    "high temperature",
+    "low temperature",
+]
 
 
 @dataclass
@@ -66,15 +64,27 @@ def _parse_weather_market_title(title: str) -> Optional[dict]:
     if not any(kw in title_lower for kw in ["temperature", "temp", "°f", "degrees", "high", "low"]):
         return None
 
-    # Extract city
+    # Extract city by scanning CITY_CONFIG keys/names dynamically
     city_key = None
     city_name = None
-    for alias, key in sorted(CITY_ALIASES.items(), key=lambda x: -len(x[0])):
-        if alias in title_lower:
-            city_key = key
-            from backend.data.weather import CITY_CONFIG
-            city_name = CITY_CONFIG[key]["name"]
-            break
+    try:
+        from backend.data.weather import CITY_CONFIG
+        # Build alias map from CITY_CONFIG: check both key and name variants
+        candidates = []
+        for key, cfg in CITY_CONFIG.items():
+            name_lower = cfg["name"].lower()
+            candidates.append((name_lower, key, cfg["name"]))
+            candidates.append((key.replace("_", " "), key, cfg["name"]))
+            candidates.append((key, key, cfg["name"]))
+        # Sort longest alias first to prefer specific matches
+        candidates.sort(key=lambda x: -len(x[0]))
+        for alias, key, name in candidates:
+            if alias in title_lower:
+                city_key = key
+                city_name = name
+                break
+    except Exception:
+        pass
 
     if not city_key:
         return None
@@ -146,63 +156,26 @@ def _extract_date(text: str) -> Optional[date]:
     return None
 
 
-async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None) -> List[WeatherMarket]:
+async def fetch_polymarket_weather_markets(
+    city_keys: Optional[List[str]] = None,
+    keywords: Optional[List[str]] = None,
+) -> List[WeatherMarket]:
     """
-    Search Polymarket for weather temperature markets.
-    Searches for temperature/weather events and parses their titles.
+    Search Polymarket for weather temperature markets using keyword-based scanning.
     """
-    markets = []
+    if keywords is None:
+        keywords = _DEFAULT_WEATHER_KEYWORDS
+
+    markets: List[WeatherMarket] = []
+    seen_ids: set = set()
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            # Search for weather/temperature events
-            for search_term in ["temperature", "weather high", "weather low"]:
-                try:
-                    response = await client.get(
-                        "https://gamma-api.polymarket.com/events",
-                        params={
-                            "closed": "false",
-                            "limit": 100,
-                            "tag": "Weather",
-                        }
-                    )
-                    response.raise_for_status()
-                    events = response.json()
-
-                    for event in events:
-                        event_slug = event.get("slug", "")
-                        for market_data in event.get("markets", []):
-                            market = _parse_polymarket_weather(market_data, event_slug, city_keys)
-                            if market:
-                                markets.append(market)
-
-                except Exception as e:
-                    logger.debug(f"Weather market search for '{search_term}' failed: {e}")
-
-            # Also try slug-based search for known patterns
-            for slug_pattern in ["weather", "temperature", "temp-"]:
-                try:
-                    response = await client.get(
-                        "https://gamma-api.polymarket.com/events",
-                        params={
-                            "closed": "false",
-                            "limit": 100,
-                            "slug_contains": slug_pattern,
-                        }
-                    )
-                    response.raise_for_status()
-                    events = response.json()
-
-                    for event in events:
-                        event_slug = event.get("slug", "")
-                        for market_data in event.get("markets", []):
-                            market = _parse_polymarket_weather(market_data, event_slug, city_keys)
-                            if market and not any(m.market_id == market.market_id for m in markets):
-                                markets.append(market)
-
-                except Exception as e:
-                    logger.debug(f"Weather slug search for '{slug_pattern}' failed: {e}")
-
+        scanner_results = await fetch_markets_by_keywords(keywords)
+        for info in scanner_results:
+            market = _parse_scanner_market(info, city_keys)
+            if market and market.market_id not in seen_ids:
+                seen_ids.add(market.market_id)
+                markets.append(market)
     except Exception as e:
         logger.warning(f"Failed to fetch weather markets: {e}")
 
@@ -210,13 +183,12 @@ async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None
     return markets
 
 
-def _parse_polymarket_weather(
-    market_data: dict,
-    event_slug: str,
+def _parse_scanner_market(
+    info,
     city_keys: Optional[List[str]] = None,
 ) -> Optional[WeatherMarket]:
-    """Parse a Polymarket market dict into a WeatherMarket if it's a temp market."""
-    question = market_data.get("question", "") or market_data.get("groupItemTitle", "")
+    """Parse a MarketInfo from the scanner into a WeatherMarket if it's a temp market."""
+    question = info.question
     if not question:
         return None
 
@@ -232,35 +204,16 @@ def _parse_polymarket_weather(
     if parsed["target_date"] < date.today():
         return None
 
-    # Parse prices
-    outcome_prices = market_data.get("outcomePrices", [])
-    if isinstance(outcome_prices, str):
-        import json
-        try:
-            outcome_prices = json.loads(outcome_prices)
-        except Exception:
-            outcome_prices = []
+    yes_price = info.yes_price
+    no_price = info.no_price
 
-    if not outcome_prices or len(outcome_prices) < 2:
-        return None
-
-    try:
-        yes_price = float(outcome_prices[0])
-        no_price = float(outcome_prices[1])
-    except (ValueError, IndexError):
-        return None
-
-    # Skip resolved markets
-    if market_data.get("closed", False):
-        return None
+    # Skip near-resolved markets
     if yes_price > 0.98 or yes_price < 0.02:
         return None
 
-    volume = float(market_data.get("volume", 0) or 0)
-
     return WeatherMarket(
-        slug=event_slug,
-        market_id=str(market_data.get("id", "")),
+        slug=info.slug,
+        market_id=info.ticker,
         platform="polymarket",
         title=question,
         city_key=parsed["city_key"],
@@ -271,5 +224,5 @@ def _parse_polymarket_weather(
         direction=parsed["direction"],
         yes_price=yes_price,
         no_price=no_price,
-        volume=volume,
+        volume=info.volume,
     )

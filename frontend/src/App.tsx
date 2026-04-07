@@ -1,8 +1,13 @@
-import React from 'react'
+import React, { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Landing from './pages/Landing'
 import Dashboard from './pages/Dashboard'
 import Admin from './pages/Admin'
+
+const WhaleTracker = lazy(() => import('./pages/WhaleTracker'))
+const Settlements = lazy(() => import('./pages/Settlements'))
+const MarketIntel = lazy(() => import('./pages/MarketIntel'))
+const DecisionLog = lazy(() => import('./pages/DecisionLog'))
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -53,6 +58,10 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/admin" element={<Admin />} />
+          <Route path="/whale-tracker" element={<Suspense fallback={null}><WhaleTracker /></Suspense>} />
+          <Route path="/settlements" element={<Suspense fallback={null}><Settlements /></Suspense>} />
+          <Route path="/market-intel" element={<Suspense fallback={null}><MarketIntel /></Suspense>} />
+          <Route path="/decisions" element={<Suspense fallback={null}><DecisionLog /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

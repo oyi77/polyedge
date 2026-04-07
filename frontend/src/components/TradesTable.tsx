@@ -80,6 +80,8 @@ export function TradesTable({ trades }: Props) {
             </div>
           </th>
           <th className="py-1.5 px-1.5 font-medium">Market</th>
+          <th className="py-1.5 px-1.5 font-medium">Strategy</th>
+          <th className="py-1.5 px-1.5 font-medium text-right">Conf</th>
           <th className="py-1.5 px-1.5 font-medium text-center">Dir</th>
           <th
             className="py-1.5 px-1.5 font-medium text-right cursor-pointer hover:text-neutral-400"
@@ -141,6 +143,19 @@ export function TradesTable({ trades }: Props) {
                   <span className="text-neutral-400 truncate block max-w-[100px]" title={trade.event_slug || trade.market_ticker}>
                     {(trade.event_slug || trade.market_ticker).replace('btc-updown-5m-', '')}
                   </span>
+                  {trade.signal_source && (
+                    <span className="text-[9px] text-neutral-600 block truncate max-w-[100px]">{trade.signal_source}</span>
+                  )}
+                </td>
+                <td className="py-1 px-1.5">
+                  {trade.strategy ? (
+                    <span className="text-[9px] bg-neutral-800 px-1 rounded text-neutral-400 whitespace-nowrap">{trade.strategy}</span>
+                  ) : (
+                    <span className="text-neutral-700">-</span>
+                  )}
+                </td>
+                <td className="py-1 px-1.5 text-right text-neutral-500 tabular-nums">
+                  {trade.confidence != null ? `${Math.round(trade.confidence * 100)}%` : <span className="text-neutral-700">-</span>}
                 </td>
                 <td className="py-1 px-1.5 text-center">
                   <span className={`text-[10px] font-semibold uppercase ${isUp ? 'text-green-500' : 'text-red-500'}`}>

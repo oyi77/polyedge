@@ -122,6 +122,24 @@ export async function switchTradingMode(mode: 'paper' | 'testnet' | 'live'): Pro
   return data
 }
 
+export async function updateCredentials(creds: {
+  private_key?: string
+  api_key?: string
+  api_secret?: string
+  api_passphrase?: string
+}): Promise<{
+  status: string
+  updated: string[]
+  creds_paper: boolean
+  creds_testnet: boolean
+  creds_live: boolean
+  missing_for_testnet: string[]
+  missing_for_live: string[]
+}> {
+  const { data } = await adminApi.post('/admin/credentials', creds)
+  return data
+}
+
 export async function fetchSystemStatus(): Promise<{
   trading_mode: string
   bot_running: boolean
@@ -132,6 +150,11 @@ export async function fetchSystemStatus(): Promise<{
   weather_enabled: boolean
   db_trade_count: number
   db_signal_count: number
+  creds_paper: boolean
+  creds_testnet: boolean
+  creds_live: boolean
+  missing_for_testnet: string[]
+  missing_for_live: string[]
 }> {
   const { data } = await adminApi.get('/admin/system')
   return data
@@ -142,7 +165,187 @@ export async function fetchCopyTraderStatus(): Promise<{
   tracked_wallets: number
   wallet_details: Array<{ address: string; pseudonym: string; score: number; profit_30d: number }>
   recent_signals: Array<Record<string, unknown>>
+  status: string
+  errors: Array<{ source: string; message: string }>
 }> {
   const { data } = await adminApi.get('/copy-trader/status')
+  return data
+}
+
+export interface CopyTraderPosition {
+  wallet: string
+  condition_id: string
+  side: string
+  size: number
+  opened_at: string | null
+}
+
+export async function fetchCopyTraderPositions(): Promise<CopyTraderPosition[]> {
+  const { data } = await adminApi.get<CopyTraderPosition[]>('/copy-trader/positions')
+  return data
+}
+
+export interface SettlementEvent {
+  id: number
+  trade_id: number
+  market_ticker: string
+  resolved_outcome: string | null
+  pnl: number | null
+  settled_at: string | null
+  source: string
+}
+
+export async function fetchSettlements(limit = 100, offset = 0): Promise<SettlementEvent[]> {
+  const { data } = await api.get<SettlementEvent[]>('/settlements', { params: { limit, offset } })
+  return data
+}
+
+// ── Leaderboard / Whale Tracker ──────────────────────────────────────────────
+
+export interface ScoredTrader {
+  wallet: string
+  pseudonym: string
+  profit_30d: number
+  win_rate: number
+  total_trades: number
+  unique_markets: number
+  estimated_bankroll: number
+  score: number
+  market_diversity: number
+}
+
+export async function fetchCopyLeaderboard(): Promise<ScoredTrader[]> {
+  const { data } = await adminApi.get<ScoredTrader[]>('/copy/leaderboard')
+  return data
+}
+
+// ── Wallet Config ─────────────────────────────────────────────────────────────
+
+export interface WalletConfigRow {
+  id: number
+  address: string
+  pseudonym: string
+  source: string
+  tags: string[]
+  enabled: boolean
+  added_at: string | null
+}
+
+export async function fetchWalletConfigs(params?: Record<string, string | number | boolean>): Promise<{ items: WalletConfigRow[]; total: number }> {
+  const { data } = await adminApi.get('/wallets/config', { params })
+  return data
+}
+
+export async function createWalletConfig(body: { address: string; pseudonym?: string; source?: string; tags?: string[]; enabled?: boolean }): Promise<WalletConfigRow> {
+  const { data } = await adminApi.post('/wallets/config', body)
+  return data
+}
+
+export async function updateWalletConfig(id: number, body: Partial<{ pseudonym: string; tags: string[]; enabled: boolean; notes: string }>): Promise<WalletConfigRow> {
+  const { data } = await adminApi.put(`/wallets/config/${id}`, body)
+  return data
+}
+
+export async function deleteWalletConfig(id: number): Promise<void> {
+  await adminApi.delete(`/wallets/config/${id}`)
+}
+
+// ── Strategies ────────────────────────────────────────────────────────────────
+
+export interface StrategyConfig {
+  name: string
+  description: string
+  category: string
+  enabled: boolean
+  interval_seconds: number
+  params: Record<string, unknown>
+  default_params: Record<string, unknown>
+  updated_at: string | null
+}
+
+export async function fetchStrategies(): Promise<StrategyConfig[]> {
+  const { data } = await adminApi.get('/strategies')
+  return data
+}
+
+export async function updateStrategy(name: string, body: { enabled?: boolean; interval_seconds?: number; params?: Record<string, unknown> }): Promise<StrategyConfig> {
+  const { data } = await adminApi.put(`/strategies/${name}`, body)
+  return data
+}
+
+export async function runStrategyNow(name: string): Promise<{ status: string }> {
+  const { data } = await adminApi.post(`/strategies/${name}/run-now`)
+  return data
+}
+
+// ── Market Watch ──────────────────────────────────────────────────────────────
+
+export interface MarketWatchRow {
+  id: number
+  ticker: string
+  category: string
+  source: string
+  enabled: boolean
+  created_at: string | null
+}
+
+export async function fetchMarketWatches(params?: Record<string, string | number | boolean>): Promise<{ items: MarketWatchRow[]; total: number }> {
+  const { data } = await adminApi.get('/markets/watch', { params })
+  return data
+}
+
+export async function createMarketWatch(body: { ticker: string; category?: string; source?: string; enabled?: boolean }): Promise<MarketWatchRow> {
+  const { data } = await adminApi.post('/markets/watch', body)
+  return data
+}
+
+export async function deleteMarketWatch(id: number): Promise<void> {
+  await adminApi.delete(`/markets/watch/${id}`)
+}
+
+// ── Decision Log ──────────────────────────────────────────────────────────────
+
+export interface DecisionLogRow {
+  id: number
+  strategy: string
+  market_ticker: string
+  decision: string
+  confidence: number | null
+  reason: string | null
+  outcome: string | null
+  created_at: string | null
+}
+
+export interface DecisionLogDetail extends DecisionLogRow {
+  signal_data: Record<string, unknown> | null
+}
+
+export async function fetchDecisions(params?: Record<string, string | number>): Promise<{ items: DecisionLogRow[]; total: number }> {
+  const { data } = await api.get('/decisions', { params })
+  return data
+}
+
+export async function fetchDecision(id: number): Promise<DecisionLogDetail> {
+  const { data } = await api.get(`/decisions/${id}`)
+  return data
+}
+
+export function decisionsExportUrl(params?: Record<string, string>): string {
+  const API_BASE = import.meta.env.VITE_API_URL || ''
+  const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+  return `${API_BASE}/api/decisions/export${qs}`
+}
+
+// ── Health ────────────────────────────────────────────────────────────────────
+
+export interface StrategyHealth {
+  name: string
+  last_heartbeat: string | null
+  lag_seconds: number | null
+  healthy: boolean
+}
+
+export async function fetchHealth(): Promise<{ strategies: StrategyHealth[]; bot_running: boolean }> {
+  const { data } = await api.get('/health')
   return data
 }

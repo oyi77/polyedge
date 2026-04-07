@@ -58,14 +58,38 @@ class Orchestrator:
             self._bot.on_mode_switch = self.on_mode_switch
             await self._bot.start()
 
-        # 3. Copy trader
-        from backend.strategies.copy_trader import CopyTrader
-        self._copy_trader = CopyTrader(
-            bankroll=settings.INITIAL_BANKROLL,
-            max_wallets=10,
-            min_score=60.0,
-        )
-        await self._copy_trader.start()
+        # 3. Seed strategy configs and load registry
+        from backend.strategies.registry import load_all_strategies
+        from backend.models.database import SessionLocal, StrategyConfig
+        import json
+
+        load_all_strategies()  # trigger auto-registration
+
+        # Seed default strategy configs if table is empty
+        db = SessionLocal()
+        try:
+            if db.query(StrategyConfig).count() == 0:
+                defaults = [
+                    StrategyConfig(strategy_name="copy_trader", enabled=True, interval_seconds=60,
+                                  params=json.dumps({"max_wallets": 20, "min_score": 60.0, "poll_interval": 60})),
+                    StrategyConfig(strategy_name="weather_emos", enabled=False, interval_seconds=300,
+                                  params=json.dumps({"min_edge": 0.05, "max_position_usd": 100, "calibration_window_days": 40})),
+                    StrategyConfig(strategy_name="kalshi_arb", enabled=False, interval_seconds=30,
+                                  params=json.dumps({"min_edge": 0.02, "allow_live_execution": False})),
+                    StrategyConfig(strategy_name="btc_oracle", enabled=False, interval_seconds=30,
+                                  params=json.dumps({"min_edge": 0.03, "max_minutes_to_resolution": 10})),
+                    StrategyConfig(strategy_name="btc_5m", enabled=False, interval_seconds=60,
+                                  params=json.dumps({"WARNING": "EXPERIMENTAL — documented -49.5% live ROI. Do not enable without re-validation."})),
+                ]
+                for d in defaults:
+                    db.add(d)
+                db.commit()
+                logger.info(f"Seeded {len(defaults)} default strategy configs")
+        finally:
+            db.close()
+
+        self._copy_trader = None
+        self._copy_task = None
 
         # 4. Wire weather scan to use Telegram alerts
         self._patch_weather_job()
@@ -74,31 +98,12 @@ class Orchestrator:
         from backend.core.scheduler import start_scheduler
         start_scheduler()
 
-        # 6. Copy trader run loop (async task)
-        self._copy_task = asyncio.create_task(
-            self._copy_trader.run_loop(
-                poll_interval=60,
-                on_signal=self._handle_copy_signals,
-            ),
-            name="copy_trader_loop",
-        )
-
         logger.info("Orchestrator started.")
 
     async def stop(self) -> None:
         """Graceful shutdown."""
         logger.info("Orchestrator stopping...")
         self._running = False
-
-        if self._copy_task and not self._copy_task.done():
-            self._copy_task.cancel()
-            try:
-                await self._copy_task
-            except asyncio.CancelledError:
-                pass
-
-        if self._copy_trader:
-            await self._copy_trader.stop()
 
         if self._bot:
             await self._bot.stop()

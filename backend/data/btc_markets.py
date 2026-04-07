@@ -8,10 +8,11 @@ from datetime import datetime, timezone
 from typing import Optional, List
 from dataclasses import dataclass
 
+from backend.core.market_scanner import fetch_markets_by_keywords
+
 logger = logging.getLogger("trading_bot")
 
 GAMMA_API = "https://gamma-api.polymarket.com"
-SERIES_SLUG = "btc-up-or-down-5m"
 
 # Strict regex: only match real BTC 5-min window slugs (e.g. btc-updown-5m-1708531200)
 _BTC_SLUG_RE = re.compile(r"^btc-updown-5m-\d{10}$")
@@ -166,53 +167,51 @@ async def fetch_btc_market_by_slug(slug: str) -> Optional[BtcMarket]:
             return None
 
 
-async def fetch_active_btc_markets() -> List[BtcMarket]:
+async def fetch_active_btc_markets(
+    keywords: List[str] = None,
+) -> List[BtcMarket]:
     """
     Fetch current and upcoming BTC 5-min markets from Polymarket.
 
-    Strategy: compute expected slugs from current time and fetch them,
-    plus do a series search as fallback.
+    Uses fetch_markets_by_keywords() as the primary source, with direct
+    slug-based fetching as a supplement for time-windowed markets.
     """
-    markets: List[BtcMarket] = []
-    seen_slugs = set()
+    if keywords is None:
+        keywords = ["btc", "bitcoin", "btc-up"]
 
-    # Method 1: Compute expected slugs and fetch directly
+    markets: List[BtcMarket] = []
+    seen_slugs: set = set()
+
+    # Method 1: Keyword-based scanner (primary)
+    try:
+        scanner_results = await fetch_markets_by_keywords(keywords)
+        for info in scanner_results:
+            # Only accept slugs matching the BTC 5-min pattern
+            if not is_valid_btc_slug(info.slug):
+                continue
+            if info.slug in seen_slugs:
+                continue
+            seen_slugs.add(info.slug)
+            # Fetch the full event to get window timestamps
+            market = await fetch_btc_market_by_slug(info.slug)
+            if market and not market.closed:
+                markets.append(market)
+    except Exception as e:
+        logger.debug(f"BTC keyword scanner failed: {e}")
+
+    # Method 2: Compute expected slugs and fetch directly (supplement)
     expected_slugs = _compute_window_slugs(count=6)
     for slug in expected_slugs:
+        if slug in seen_slugs:
+            continue
         market = await fetch_btc_market_by_slug(slug)
         if market and market.slug not in seen_slugs:
             seen_slugs.add(market.slug)
-            markets.append(market)
-
-    # Method 2: Search by series as fallback/supplement
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                f"{GAMMA_API}/events",
-                params={
-                    "active": "true",
-                    "closed": "false",
-                    "slug_contains": "btc-updown-5m",
-                    "limit": 20,
-                }
-            )
-            response.raise_for_status()
-            events = response.json()
-
-            for event in events:
-                market = _parse_event_to_btc_market(event)
-                if market and market.slug not in seen_slugs and is_valid_btc_slug(market.slug):
-                    seen_slugs.add(market.slug)
-                    markets.append(market)
-
-    except Exception as e:
-        logger.debug(f"BTC series search fallback failed: {e}")
+            if not market.closed:
+                markets.append(market)
 
     # Sort by window end time (soonest first)
     markets.sort(key=lambda m: m.window_end)
-
-    # Filter out already-closed markets
-    markets = [m for m in markets if not m.closed]
 
     logger.info(f"Fetched {len(markets)} active BTC 5-min markets")
     return markets

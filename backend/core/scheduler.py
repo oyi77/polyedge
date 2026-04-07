@@ -388,6 +388,118 @@ async def heartbeat_job():
             db.close()
 
 
+async def strategy_cycle_job(strategy_name: str) -> None:
+    """Generic strategy dispatcher — called by APScheduler for each enabled strategy."""
+    from backend.strategies.registry import STRATEGY_REGISTRY
+    from backend.models.database import SessionLocal, StrategyConfig
+    import json
+
+    db = SessionLocal()
+    try:
+        config = db.query(StrategyConfig).filter(
+            StrategyConfig.strategy_name == strategy_name,
+            StrategyConfig.enabled == True,
+        ).first()
+
+        if not config:
+            log_event("info", f"Strategy {strategy_name} disabled or not configured, skipping")
+            return
+
+        strategy_cls = STRATEGY_REGISTRY.get(strategy_name)
+        if not strategy_cls:
+            log_event("warning", f"Strategy {strategy_name} not in registry")
+            return
+
+        params = {}
+        if config.params:
+            try:
+                params = json.loads(config.params)
+            except Exception:
+                pass
+
+        from backend.strategies.base import StrategyContext
+        from backend.config import settings as _settings
+
+        ctx = StrategyContext(
+            db=db,
+            clob=None,  # strategies use their own CLOB if needed
+            settings=_settings,
+            logger=logger,
+            params=params,
+            mode=_settings.TRADING_MODE,
+        )
+
+        strategy = strategy_cls()
+        result = await strategy.run(ctx)
+
+        log_event("info", f"Strategy {strategy_name} cycle done: decisions={result.decisions_recorded} trades={result.trades_placed} errors={len(result.errors)}")
+
+    except Exception as e:
+        log_event("error", f"Strategy cycle job failed for {strategy_name}: {e}")
+        logger.exception(f"strategy_cycle_job({strategy_name})")
+    finally:
+        db.close()
+
+
+def schedule_strategy(strategy_name: str, interval_seconds: int) -> None:
+    """Add or replace a strategy's APScheduler job."""
+    global scheduler
+    if scheduler is None or not scheduler.running:
+        return
+
+    import functools
+    job_id = f"strategy_{strategy_name}"
+    job_fn = functools.partial(strategy_cycle_job, strategy_name)
+    scheduler.add_job(
+        job_fn,
+        IntervalTrigger(seconds=interval_seconds),
+        id=job_id,
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info(f"Scheduled strategy {strategy_name} every {interval_seconds}s (job_id={job_id})")
+
+
+def unschedule_strategy(strategy_name: str) -> None:
+    """Remove a strategy's APScheduler job."""
+    global scheduler
+    if scheduler is None or not scheduler.running:
+        return
+    job_id = f"strategy_{strategy_name}"
+    try:
+        scheduler.remove_job(job_id)
+        logger.info(f"Unscheduled strategy {strategy_name}")
+    except Exception:
+        pass
+
+
+def get_scheduler_jobs() -> list[dict]:
+    """Return current scheduled jobs info."""
+    global scheduler
+    if scheduler is None or not scheduler.running:
+        return []
+    return [
+        {
+            "id": job.id,
+            "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+            "trigger": str(job.trigger),
+        }
+        for job in scheduler.get_jobs()
+    ]
+
+
+def _load_strategy_jobs() -> None:
+    """Read StrategyConfig table and schedule enabled strategies."""
+    from backend.models.database import SessionLocal, StrategyConfig
+    db = SessionLocal()
+    try:
+        configs = db.query(StrategyConfig).filter(StrategyConfig.enabled == True).all()
+        for cfg in configs:
+            schedule_strategy(cfg.strategy_name, cfg.interval_seconds or 60)
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """Start the background scheduler for BTC 5-min trading."""
     global scheduler
@@ -400,15 +512,6 @@ def start_scheduler():
 
     scan_seconds = settings.SCAN_INTERVAL_SECONDS
     settle_seconds = settings.SETTLEMENT_INTERVAL_SECONDS
-
-    # Scan BTC markets every minute
-    scheduler.add_job(
-        scan_and_trade_job,
-        IntervalTrigger(seconds=scan_seconds),
-        id="market_scan",
-        replace_existing=True,
-        max_instances=1
-    )
 
     # Check settlements every 2 minutes
     scheduler.add_job(
@@ -428,19 +531,20 @@ def start_scheduler():
         max_instances=1
     )
 
-    # Weather trading jobs (gated by WEATHER_ENABLED)
-    if settings.WEATHER_ENABLED:
-        weather_scan_seconds = settings.WEATHER_SCAN_INTERVAL_SECONDS
-
-        scheduler.add_job(
-            weather_scan_and_trade_job,
-            IntervalTrigger(seconds=weather_scan_seconds),
-            id="weather_scan",
-            replace_existing=True,
-            max_instances=1,
-        )
+    # Watchdog: check strategy heartbeats every 30s
+    from backend.core.heartbeat import watchdog_job
+    scheduler.add_job(
+        watchdog_job,
+        IntervalTrigger(seconds=30),
+        id="watchdog",
+        replace_existing=True,
+        max_instances=1,
+    )
 
     scheduler.start()
+    for job in scheduler.get_jobs():
+        logger.info(f"scheduler job registered: id={job.id} next_run={job.next_run_time}")
+    logger.info(f"scheduler started: jobs={[j.id for j in scheduler.get_jobs()]}")
     log_event("success", "BTC 5-min trading scheduler started", {
         "scan_interval": f"{scan_seconds}s",
         "settlement_interval": f"{settle_seconds}s",
@@ -448,10 +552,11 @@ def start_scheduler():
         "weather_enabled": settings.WEATHER_ENABLED,
     })
 
-    asyncio.create_task(scan_and_trade_job())
-
-    if settings.WEATHER_ENABLED:
-        asyncio.create_task(weather_scan_and_trade_job())
+    # Load registry-driven strategy jobs from DB
+    try:
+        _load_strategy_jobs()
+    except Exception as e:
+        logger.warning(f"Could not load strategy jobs from DB: {e}")
 
 
 def stop_scheduler():
@@ -470,6 +575,52 @@ def stop_scheduler():
 def is_scheduler_running() -> bool:
     """Check if scheduler is currently running."""
     return scheduler is not None and scheduler.running
+
+
+def reschedule_jobs() -> list[dict]:
+    """Reschedule jobs with current settings values. Call after settings update."""
+    global scheduler
+    if scheduler is None or not scheduler.running:
+        return []
+
+    results = []
+
+    # Reschedule scan job
+    try:
+        scheduler.reschedule_job(
+            "market_scan",
+            trigger=IntervalTrigger(seconds=settings.SCAN_INTERVAL_SECONDS)
+        )
+        job = scheduler.get_job("market_scan")
+        results.append({"job_id": "market_scan", "next_run": str(job.next_run_time) if job else None})
+    except Exception as e:
+        logger.warning(f"Failed to reschedule market_scan: {e}")
+
+    # Reschedule settlement job
+    try:
+        scheduler.reschedule_job(
+            "settlement_check",
+            trigger=IntervalTrigger(seconds=settings.SETTLEMENT_INTERVAL_SECONDS)
+        )
+        job = scheduler.get_job("settlement_check")
+        results.append({"job_id": "settlement_check", "next_run": str(job.next_run_time) if job else None})
+    except Exception as e:
+        logger.warning(f"Failed to reschedule settlement_check: {e}")
+
+    # Reschedule weather scan if enabled
+    if settings.WEATHER_ENABLED:
+        try:
+            scheduler.reschedule_job(
+                "weather_scan",
+                trigger=IntervalTrigger(seconds=settings.WEATHER_SCAN_INTERVAL_SECONDS)
+            )
+            job = scheduler.get_job("weather_scan")
+            results.append({"job_id": "weather_scan", "next_run": str(job.next_run_time) if job else None})
+        except Exception as e:
+            logger.warning(f"Failed to reschedule weather_scan: {e}")
+
+    log_event("info", f"Scheduler jobs rescheduled: {[r['job_id'] for r in results]}")
+    return results
 
 
 async def run_manual_scan():

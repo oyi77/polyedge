@@ -1,0 +1,95 @@
+"""
+Decision logging helper for PolyEdge strategies.
+
+Every strategy must call record_decision() for EVERY BUY/SKIP/SELL/HOLD/ERROR
+evaluation — including skips. This creates the audit trail and ML training dataset.
+"""
+import json
+import logging
+from datetime import datetime, timezone
+
+from backend.models.database import SessionLocal, DecisionLog
+
+logger = logging.getLogger("trading_bot")
+
+
+def record_decision(
+    db,
+    strategy: str,
+    market_ticker: str,
+    decision: str,
+    confidence: float | None = None,
+    signal_data: dict | None = None,
+    reason: str | None = None,
+) -> DecisionLog | None:
+    """
+    Insert a DecisionLog row.
+
+    Args:
+        db: SQLAlchemy Session
+        strategy: strategy name (e.g. "copy_trader", "weather_emos")
+        market_ticker: Polymarket market ticker or condition_id
+        decision: one of BUY, SKIP, SELL, HOLD, ERROR
+        confidence: float 0.0-1.0 or None
+        signal_data: dict of inputs that drove the decision (JSON-serialized)
+        reason: human-readable explanation
+
+    Returns:
+        The inserted DecisionLog instance, or None on failure.
+    """
+    signal_json: str | None = None
+    if signal_data is not None:
+        try:
+            signal_json = json.dumps(signal_data)
+        except (TypeError, ValueError):
+            try:
+                signal_json = json.dumps(signal_data, default=str)
+            except Exception:
+                logger.warning(
+                    f"record_decision: could not serialize signal_data for "
+                    f"{strategy}/{market_ticker} — storing as string repr"
+                )
+                signal_json = str(signal_data)
+
+    try:
+        row = DecisionLog(
+            strategy=strategy,
+            market_ticker=market_ticker,
+            decision=decision.upper(),
+            confidence=confidence,
+            signal_data=signal_json,
+            reason=reason,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(row)
+        db.flush()
+        return row
+    except Exception as e:
+        logger.error(
+            f"record_decision failed for {strategy}/{market_ticker}: {e}",
+            extra={"component": "decisions"},
+        )
+        return None
+
+
+def record_decision_standalone(
+    strategy: str,
+    market_ticker: str,
+    decision: str,
+    confidence: float | None = None,
+    signal_data: dict | None = None,
+    reason: str | None = None,
+) -> None:
+    """
+    Convenience wrapper that opens its own DB session.
+    Use when you don't have an active session.
+    """
+    db = SessionLocal()
+    try:
+        record_decision(db, strategy, market_ticker, decision, confidence, signal_data, reason)
+        db.commit()
+    except Exception as e:
+        logger.error(f"record_decision_standalone failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
