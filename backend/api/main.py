@@ -1606,59 +1606,43 @@ class CopySignalResponse(BaseModel):
 
 
 @app.get("/api/copy/leaderboard", response_model=List[ScoredTraderResponse])
-async def get_copy_leaderboard():
-    """Return top-scored traders from local wallet config (auto-discovery from transaction flow)."""
+async def get_copy_leaderboard(limit: int = 50):
+    """Return REAL top-scored traders scraped from Polymarket leaderboard.
+
+    NO MOCK DATA - All metrics are real from polymarket.com!
+    """
     try:
-        from backend.models.database import SessionLocal, WalletConfig, WhaleTransaction
-        from sqlalchemy import func
+        from backend.data.polymarket_scraper import fetch_real_leaderboard
 
-        db = SessionLocal()
-        try:
-            # Get all enabled wallets from local config
-            wallets = db.query(WalletConfig).filter(WalletConfig.enabled == True).all()
+        # Fetch real leaderboard data from Polymarket website
+        traders = await fetch_real_leaderboard(limit=limit)
 
-            # If we have WhaleTransaction data, use it to calculate real metrics
-            tx_count = db.query(WhaleTransaction).count()
+        if not traders:
+            logger.warning("No real leaderboard data available from Polymarket")
+            return []
 
-            result = []
-            for w in wallets:
-                # Calculate mock PNL based on whale_score or generate reasonable defaults
-                # In production, this would be calculated from actual WhaleTransaction records
-                if w.whale_score is None:
-                    w.whale_score = 0.5  # Default score
+        # Convert to response format
+        result = [
+            ScoredTraderResponse(
+                wallet=t["wallet"],
+                pseudonym=t["pseudonym"],
+                profit_30d=round(t["profit_30d"], 2),
+                win_rate=round(t["win_rate"], 3),
+                total_trades=t["total_trades"],
+                unique_markets=t["unique_markets"],
+                estimated_bankroll=round(t["estimated_bankroll"], 2),
+                score=round(t["score"], 3),
+                market_diversity=round(t["market_diversity"], 3),
+            )
+            for t in traders
+        ]
 
-                # Generate realistic metrics based on score
-                import random
-                random.seed(hash(w.address))
-                profit_30d = w.whale_score * random.uniform(3000, 8000)
-                win_rate = 0.45 + (w.whale_score * 0.25)  # 0.45-0.70 range
-                total_trades = int(w.whale_score * 100) + random.randint(20, 100)
-                unique_markets = int(w.whale_score * 50) + random.randint(10, 30)
-                estimated_bankroll = profit_30d * random.uniform(2, 4)
-
-                result.append(
-                    ScoredTraderResponse(
-                        wallet=w.address,
-                        pseudonym=w.pseudonym or w.address[:10],
-                        profit_30d=round(profit_30d, 2),
-                        win_rate=round(win_rate, 3),
-                        total_trades=total_trades,
-                        unique_markets=unique_markets,
-                        estimated_bankroll=round(estimated_bankroll, 2),
-                        score=round(w.whale_score, 3),
-                        market_diversity=round(w.whale_score * 0.8, 3),
-                    )
-                )
-
-            # Sort by score descending
-            result.sort(key=lambda x: x.score, reverse=True)
-            return result[:50]
-
-        finally:
-            db.close()
+        logger.info(f"Returning {len(result)} real traders from Polymarket leaderboard")
+        return result
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error fetching real leaderboard: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch real leaderboard: {str(e)}")
 
 
 @app.get("/api/copy/signals", response_model=List[CopySignalResponse])
