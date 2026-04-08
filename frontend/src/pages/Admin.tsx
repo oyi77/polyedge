@@ -27,7 +27,11 @@ import {
   fetchAdminSettings,
   updateAdminSettings,
   fetchAISuggest,
+  getActiveWallet,
+  getWalletBalance,
+  setActiveWallet,
   type CreatedWallet,
+  type WalletBalance,
 } from '../api'
 
 function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
@@ -280,9 +284,6 @@ function WalletConfigTab() {
   })
   const activeWallet = activeWalletData?.active_wallet ?? null
 
-  // Wallet balances state (map by address)
-  const [walletBalances, setWalletBalances] = useState<Record<string, { balance: WalletBalance }>>({})
-
   const { data: configs, isLoading } = useQuery({
     queryKey: ['wallet-configs'],
     queryFn: () => fetchWalletConfigs(),
@@ -292,14 +293,12 @@ function WalletConfigTab() {
   const total = configs?.total ?? 0
 
   // Fetch balance for active wallet
-  const { data: activeWalletBalance } = useQuery({
+  const { data: activeWalletBalance } = useQuery<WalletBalance | null>({
     queryKey: ['wallet-balance', activeWallet],
     queryFn: () => activeWallet ? getWalletBalance(activeWallet) : null,
     refetchInterval: 30000,
     enabled: !!activeWallet,
   })
-
-  const activeWalletBalance = activeWalletBalanceData ?? null
 
   const handleToggle = async (id: number, enabled: boolean) => {
     await updateWalletConfig(id, { enabled: !enabled })
