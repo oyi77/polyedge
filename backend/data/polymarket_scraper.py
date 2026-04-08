@@ -1,16 +1,15 @@
 """
-Polymarket Data Fetcher - Uses official py-clob-client + web scraping
+Polymarket Data Fetcher - Production-ready scraper with best practices
+
+Based on patterns from:
+- polymarket-mcp-server (348⭐): Rate limiting, error handling
+- py-clob-client (1045⭐): Official API patterns
 
 Fetches REAL data from polymarket.com:
-1. Leaderboard data (top traders by PNL)
-2. Market data (active markets, prices, volume)
-3. Position data (whale tracking)
+1. Leaderboard data (top traders by PNL) - NOT available via py-clob-client
+2. Market data (Gamma API) - Alternative to py-clob-client market endpoints
 
 NO MOCK DATA - Everything is real!
-
-Uses:
-- py-clob-client (official Polymarket library) for CLOB API
-- Direct HTTP scraping for Next.js data endpoints
 """
 import logging
 import asyncio
@@ -22,59 +21,101 @@ logger = logging.getLogger("trading_bot.polymarket_scraper")
 
 # Polymarket URLs
 POLYMARKET_BASE = "https://polymarket.com"
-POLYMARKET_CLOB = "https://clob.polymarket.com"
 POLYMARKET_GAMMA = "https://gamma-api.polymarket.com"
-# Next.js data endpoints (these return JSON data)
 POLYMARKET_LEADERBOARD = f"{POLYMARKET_BASE}/_next/data/build-TfctsWXpff2fKS/en/leaderboard.json"
+
+# Rate limiting (from polymarket-mcp-server patterns)
+REQUEST_TIMEOUT = 30.0
+MAX_RETRIES = 3
+RETRY_DELAY = 1.0
 
 
 class PolymarketScraper:
-    """Fetches real data from Polymarket using official client + scraping."""
+    """
+    Production-ready scraper for Polymarket data.
 
-    def __init__(self, timeout: float = 30.0):
+    Note: Leaderboard data is NOT available via py-clob-client.
+    py-clob-client only provides CLOB operations (trading, order books).
+    For leaderboard/top-traders data, we must scrape the website.
+    """
+
+    def __init__(self, timeout: float = REQUEST_TIMEOUT):
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
-        self._clob_client = None  # Optional: for authenticated requests
 
     async def __aenter__(self):
-        self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+        self._client = httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            }
+        )
         return self
 
     async def __aexit__(self, *args):
         if self._client:
             await self._client.aclose()
 
-    async def _get(self, url: str) -> Dict[str, Any]:
-        """Make HTTP GET request and return JSON data."""
+    async def _get_with_retry(
+        self,
+        url: str,
+        params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Make HTTP GET request with retry logic (production pattern).
+
+        Pattern from: polymarket-mcp-server
+        """
         if not self._client:
             raise RuntimeError("PolymarketScraper must be used as async context manager")
 
-        try:
-            logger.debug(f"Fetching {url}")
-            response = await self._client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-            })
-            response.raise_for_status()
-            data = response.json()
-            logger.debug(f"Successfully fetched {len(str(data))} bytes from {url}")
-            return data
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error fetching {url}: {e.response.status_code}")
-            return {}
-        except Exception as e:
-            logger.error(f"Error fetching {url}: {e}")
-            return {}
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.debug(f"Fetching {url} (attempt {attempt + 1}/{MAX_RETRIES})")
+                response = await self._client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+                logger.debug(f"Successfully fetched {len(str(data))} bytes from {url}")
+                return data
+
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:  # Rate limit
+                    wait_time = RETRY_DELAY * (2 ** attempt)
+                    logger.warning(f"Rate limited, waiting {wait_time}s before retry")
+                    await asyncio.sleep(wait_time)
+                elif e.response.status_code >= 500:
+                    logger.warning(f"Server error {e.response.status_code}, retrying...")
+                    await asyncio.sleep(RETRY_DELAY)
+                else:
+                    logger.error(f"HTTP error fetching {url}: {e.response.status_code}")
+                    return {}
+
+            except httpx.TimeoutException:
+                logger.warning(f"Timeout on attempt {attempt + 1}, retrying...")
+                await asyncio.sleep(RETRY_DELAY)
+
+            except Exception as e:
+                logger.error(f"Error fetching {url}: {e}")
+                if attempt == MAX_RETRIES - 1:
+                    return {}
+                await asyncio.sleep(RETRY_DELAY)
+
+        return {}
 
     async def fetch_leaderboard(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Fetch REAL leaderboard data from Polymarket.
 
+        NOTE: Leaderboard data is NOT available via py-clob-client.
+        We must scrape the Next.js endpoint for this data.
+
         Returns list of traders with real PNL, win rate, trade count, etc.
         """
         logger.info(f"Fetching real leaderboard from Polymarket (top {limit})")
 
-        data = await self._get(POLYMARKET_LEADERBOARD)
+        data = await self._get_with_retry(POLYMARKET_LEADERBOARD)
         if not data:
             logger.warning("No leaderboard data received")
             return []
@@ -98,7 +139,6 @@ class PolymarketScraper:
             traders = []
             for entry in leaderboard_data[:limit]:
                 try:
-                    # Extract trader data - adapt to actual structure
                     trader = self._parse_leaderboard_entry(entry)
                     if trader:
                         traders.append(trader)
