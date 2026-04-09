@@ -21,7 +21,8 @@ export function WeatherPanel({ forecasts, signals }: Props) {
     return (
       <div className="h-full flex items-center justify-center text-center px-4">
         <div className="text-neutral-600 text-[10px] leading-relaxed">
-          Weather scanning paused — enable in Admin &gt; Strategies
+          No weather data yet — forecasts load every 5 min when weather scanning is active.<br />
+          <span className="text-neutral-700">Check Admin &gt; Strategies to verify weather_emos is enabled.</span>
         </div>
       </div>
     )
