@@ -417,6 +417,7 @@ async def run_scan(db: Session = Depends(get_db), _: None = Depends(require_admi
             result["weather_signals"] = len(wx_signals)
             result["weather_actionable"] = len(wx_actionable)
         except Exception:
+            logger.warning("Failed to scan for weather signals in run_scan")
             result["weather_signals"] = 0
             result["weather_actionable"] = 0
 
@@ -510,6 +511,7 @@ async def export_decisions(
                 try:
                     signal_data = _json.loads(d.signal_data)
                 except Exception:
+                    logger.debug(f"Failed to parse signal_data for decision {d.id}, using raw value")
                     signal_data = d.signal_data
             row = {
                 "id": d.id,
@@ -543,6 +545,7 @@ async def get_decision(decision_id: int, db: Session = Depends(get_db)):
         try:
             signal_data = _json.loads(decision.signal_data)
         except Exception:
+            logger.debug(f"Failed to parse signal_data for decision {decision_id}, using raw value")
             signal_data = decision.signal_data
 
     return {
