@@ -61,6 +61,8 @@ from backend.api.arbitrage import router as arbitrage_router
 from backend.api.market_intel import router as market_intel_router
 from backend.api.auto_trader import router as auto_trader_router
 from backend.api.system import router as system_router, get_stats, BotStats
+from backend.api.backtest import router as backtest_router
+from backend.api.wallets import router as wallets_router
 
 from pydantic import BaseModel
 import logging
@@ -91,6 +93,8 @@ app.include_router(arbitrage_router)
 app.include_router(market_intel_router)
 app.include_router(auto_trader_router)
 app.include_router(system_router)
+app.include_router(backtest_router)
+app.include_router(wallets_router)
 
 # Add metrics middleware for automatic tracking
 @app.middleware("http")

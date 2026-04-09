@@ -1,12 +1,10 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, forwardRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTradeEvents, TradeEvent } from '../hooks/useTradeEvents'
-import { simulateTrade } from '../api'
+import { simulateTrade, fetchSignalConfig } from '../api'
 
-// Config from environment variables
-const SIGNAL_NOTIFICATION_DURATION = Number(import.meta.env.VITE_SIGNAL_NOTIFICATION_DURATION) || 10000
-const SIGNAL_APPROVAL_MODE = (import.meta.env.VITE_SIGNAL_APPROVAL_MODE as 'manual' | 'auto_approve' | 'auto_deny') || 'manual'
-const AUTO_APPROVE_MIN_CONFIDENCE = 0.85
+// Fallback defaults (overridden by backend settings at runtime)
+const FALLBACK_NOTIFICATION_DURATION = Number(import.meta.env.VITE_SIGNAL_NOTIFICATION_DURATION) || 10000
 
 type Tier = 'info' | 'small' | 'medium' | 'large' | 'whale'
 type Side = 'win' | 'loss' | 'neutral'
@@ -57,7 +55,7 @@ const TIER_DURATIONS: Record<Tier, number> = {
   large: 6000,
   medium: 4000,
   small: 3000,
-  info: SIGNAL_NOTIFICATION_DURATION,  // Use config duration for signals
+  info: FALLBACK_NOTIFICATION_DURATION,
 }
 
 function getTier(amount: number): Tier {
@@ -240,13 +238,15 @@ function TierBadge({ tier, side }: { tier: Tier; side: Side }) {
   )
 }
 
-function NotificationCard({
+const NotificationCard = forwardRef(function NotificationCard({
   notification,
   onDismiss,
+  approvalMode,
 }: {
   notification: Notification
   onDismiss: (id: string) => void
-}) {
+  approvalMode: 'manual' | 'auto_approve' | 'auto_deny'
+}, ref: React.Ref<HTMLDivElement>) {
   const { border, titleColor, glow } = getCardStyle(notification.tier, notification.side)
   const age = formatAge(Date.now() - notification.createdAt)
 
@@ -267,6 +267,7 @@ function NotificationCard({
 
     return (
       <motion.div
+        ref={ref}
         layout
         initial={{ x: 60, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
@@ -333,8 +334,8 @@ function NotificationCard({
             )}
           </div>
 
-          {/* Action Buttons */}
-          {ctx.actionable && (
+          {/* Action Buttons - only show in manual approval mode */}
+          {ctx.actionable && approvalMode === 'manual' && (
             <div className="flex gap-1 mt-2">
               <button
                 onClick={(e) => {
@@ -366,6 +367,7 @@ function NotificationCard({
   // Regular notification for trades
   return (
     <motion.div
+      ref={ref}
       layout
       initial={{ x: 60, opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
@@ -418,7 +420,7 @@ function NotificationCard({
       </div>
     </motion.div>
   )
-}
+})
 
 export function useNotifications() {
   const [notifications, setNotifications] = useState<Notification[]>([])
@@ -455,6 +457,26 @@ export function useNotifications() {
 export function TradeNotifications() {
   const { notifications, addNotification, dismiss } = useNotifications()
 
+  // Fetch signal approval config from backend
+  const [signalConfig, setSignalConfig] = useState<{
+    approvalMode: 'manual' | 'auto_approve' | 'auto_deny'
+    minConfidence: number
+  }>({
+    approvalMode: (import.meta.env.VITE_SIGNAL_APPROVAL_MODE as 'manual' | 'auto_approve' | 'auto_deny') || 'manual',
+    minConfidence: 0.85,
+  })
+
+  useEffect(() => {
+    fetchSignalConfig().then((cfg) => {
+      setSignalConfig({
+        approvalMode: cfg.approval_mode,
+        minConfidence: cfg.min_confidence,
+      })
+    }).catch(() => {
+      // Fallback to env vars already set in initial state
+    })
+  }, [])
+
   const handleEvent = useCallback(
     (event: TradeEvent) => {
       const notif = mapEventToNotification(event)
@@ -462,13 +484,11 @@ export function TradeNotifications() {
 
       // Handle auto-approval for signals
       if (notif.type === 'signal_found' && notif.signalContext) {
-        if (SIGNAL_APPROVAL_MODE === 'auto_approve' && notif.signalContext.confidence >= AUTO_APPROVE_MIN_CONFIDENCE) {
-          // Auto-approve high confidence signals
+        if (signalConfig.approvalMode === 'auto_approve' && notif.signalContext.confidence >= signalConfig.minConfidence) {
           handleApproveSignal(notif.signalContext)
           console.log(`Auto-approved signal for ${notif.signalContext.market_ticker} (confidence: ${(notif.signalContext.confidence * 100).toFixed(1)}%)`)
           return
-        } else if (SIGNAL_APPROVAL_MODE === 'auto_deny') {
-          // Auto-deny all signals
+        } else if (signalConfig.approvalMode === 'auto_deny') {
           handleSkipSignal(notif.signalContext)
           console.log(`Auto-denied signal for ${notif.signalContext.market_ticker}`)
           return
@@ -477,7 +497,7 @@ export function TradeNotifications() {
 
       addNotification(notif)
     },
-    [addNotification]
+    [addNotification, signalConfig.approvalMode, signalConfig.minConfidence]
   )
 
   useTradeEvents(handleEvent)
@@ -489,7 +509,7 @@ export function TradeNotifications() {
     >
       <AnimatePresence mode="popLayout">
         {notifications.map((n) => (
-          <NotificationCard key={n.id} notification={n} onDismiss={dismiss} />
+          <NotificationCard key={n.id} notification={n} onDismiss={dismiss} approvalMode={signalConfig.approvalMode} />
         ))}
       </AnimatePresence>
     </div>

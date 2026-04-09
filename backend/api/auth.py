@@ -1,0 +1,445 @@
+"""Authentication and admin routes."""
+from fastapi import Depends, HTTPException, Header, APIRouter, Request
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from datetime import datetime
+import logging
+import os
+
+from backend.config import settings
+from backend.models.database import get_db, BotState, Trade, Signal
+
+logger = logging.getLogger("trading_bot")
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+def require_admin(authorization: str | None = Header(None)):
+    """Require admin API key if ADMIN_API_KEY is configured."""
+    key = settings.ADMIN_API_KEY
+    if not key:
+        return  # No key configured = open (dev mode)
+    if not authorization or authorization != f"Bearer {key}":
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized — set Authorization: Bearer <ADMIN_API_KEY>",
+        )
+
+
+class AdminLoginBody(BaseModel):
+    password: str
+
+
+class ChangePasswordBody(BaseModel):
+    new_password: str
+
+
+# Secret keywords for masking sensitive values
+_SECRET_KEYWORDS = {"KEY", "SECRET", "PASSWORD", "PASSPHRASE", "TOKEN", "PRIVATE"}
+
+
+def _is_secret(field_name: str) -> bool:
+    upper = field_name.upper()
+    return any(kw in upper for kw in _SECRET_KEYWORDS)
+
+
+def _mask_value(field_name: str, value) -> str:
+    if value is None or value == "" or value == "None":
+        return ""
+    if _is_secret(field_name):
+        return "****"
+    return value
+
+
+def _persist_env_updates(updates: dict[str, str]) -> None:
+    """
+    Atomic .env file update helper.
+
+    Reads existing .env, merges in updates, and writes back.
+    Handles key=value parsing and preserves comments.
+
+    Args:
+        updates: dict of env var names to their new values
+    """
+    env_path = ".env"
+    env_lines: dict[str, str] = {}
+
+    # Read existing .env
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line_stripped = line.strip()
+                if "=" in line_stripped and not line_stripped.startswith("#"):
+                    k, v = line_stripped.split("=", 1)
+                    env_lines[k.strip()] = v.strip()
+
+    # Merge updates
+    env_lines.update(updates)
+
+    # Write back
+    with open(env_path, "w") as f:
+        for k, v in env_lines.items():
+            f.write(f"{k}={v}\n")
+
+
+def _get_grouped_settings() -> dict:
+    """Return all settings grouped by category with secrets masked."""
+    trading = {}
+    weather = {}
+    risk = {}
+    indicators = {}
+    ai = {}
+    api_keys = {}
+    telegram = {}
+    security = {}
+    system = {}
+
+    signals = {}
+
+    field_groups = {
+        "TRADING_MODE": trading,
+        "INITIAL_BANKROLL": trading,
+        "KELLY_FRACTION": trading,
+        "MAX_TRADE_SIZE": trading,
+        "DAILY_LOSS_LIMIT": trading,
+        "MIN_EDGE_THRESHOLD": trading,
+        "MAX_ENTRY_PRICE": trading,
+        "MAX_TRADES_PER_WINDOW": trading,
+        "MAX_TOTAL_PENDING_TRADES": trading,
+        "BTC_PRICE_SOURCE": trading,
+        "SIGNAL_APPROVAL_MODE": signals,
+        "AUTO_APPROVE_MIN_CONFIDENCE": signals,
+        "SIGNAL_NOTIFICATION_DURATION_MS": signals,
+        "AUTO_TRADER_ENABLED": signals,
+        "WEATHER_ENABLED": weather,
+        "WEATHER_CITIES": weather,
+        "WEATHER_MIN_EDGE_THRESHOLD": weather,
+        "WEATHER_MAX_ENTRY_PRICE": weather,
+        "WEATHER_MAX_TRADE_SIZE": weather,
+        "WEATHER_SCAN_INTERVAL_SECONDS": weather,
+        "WEATHER_SETTLEMENT_INTERVAL_SECONDS": weather,
+        "MIN_TIME_REMAINING": risk,
+        "MAX_TIME_REMAINING": risk,
+        "MIN_MARKET_VOLUME": risk,
+        "WEIGHT_RSI": indicators,
+        "WEIGHT_MOMENTUM": indicators,
+        "WEIGHT_VWAP": indicators,
+        "WEIGHT_SMA": indicators,
+        "WEIGHT_MARKET_SKEW": indicators,
+        "GROQ_MODEL": ai,
+        "AI_PROVIDER": ai,
+        "AI_BASE_URL": ai,
+        "AI_MODEL": ai,
+        "AI_LOG_ALL_CALLS": ai,
+        "AI_DAILY_BUDGET_USD": ai,
+        "GROQ_API_KEY": api_keys,
+        "AI_API_KEY": api_keys,
+        "POLYMARKET_API_KEY": api_keys,
+        "POLYMARKET_PRIVATE_KEY": api_keys,
+        "POLYMARKET_API_SECRET": api_keys,
+        "POLYMARKET_API_PASSPHRASE": api_keys,
+        "KALSHI_API_KEY_ID": api_keys,
+        "KALSHI_PRIVATE_KEY_PATH": api_keys,
+        "TELEGRAM_BOT_TOKEN": telegram,
+        "TELEGRAM_ADMIN_CHAT_IDS": telegram,
+        "ADMIN_API_KEY": security,
+        "CORS_ORIGINS": security,
+        "DATABASE_URL": system,
+        "SCAN_INTERVAL_SECONDS": system,
+        "SETTLEMENT_INTERVAL_SECONDS": system,
+        "KALSHI_ENABLED": system,
+        "POLYGON_AMOY_RPC": system,
+        "POLYGON_AMOY_CHAIN_ID": system,
+        "POLYMARKET_TESTNET_CLOB_HOST": system,
+    }
+
+    for field_name, group in field_groups.items():
+        if hasattr(settings, field_name):
+            raw = getattr(settings, field_name)
+            group[field_name] = _mask_value(field_name, raw)
+
+    return {
+        "trading": trading,
+        "signals": signals,
+        "weather": weather,
+        "risk": risk,
+        "indicators": indicators,
+        "ai": ai,
+        "api_keys": api_keys,
+        "telegram": telegram,
+        "security": security,
+        "system": system,
+    }
+
+
+class SettingsUpdate(BaseModel):
+    updates: dict
+
+
+# ============================================================================
+# Admin Authentication Routes
+# ============================================================================
+
+
+@router.get("/auth-required")
+async def auth_required_endpoint():
+    """Returns whether admin authentication is configured."""
+    return {"auth_required": bool(settings.ADMIN_API_KEY)}
+
+
+@router.post("/login")
+async def admin_login(body: AdminLoginBody):
+    """Verify admin password. Returns success; client stores the password as bearer token."""
+    if not settings.ADMIN_API_KEY:
+        return {"success": True, "auth_required": False}
+    if body.password != settings.ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid password")
+    return {"success": True, "auth_required": True}
+
+
+@router.post("/change-password")
+async def change_admin_password(
+    body: ChangePasswordBody, _: None = Depends(require_admin)
+):
+    """Change the admin password (ADMIN_API_KEY). Persists to .env and hot-reloads."""
+    new_pw = body.new_password.strip()
+    if not new_pw:
+        raise HTTPException(status_code=400, detail="Password cannot be empty")
+
+    _persist_env_updates({"ADMIN_API_KEY": new_pw})
+    settings.ADMIN_API_KEY = new_pw
+    logger.info("Admin password changed")
+    return {"status": "ok", "message": "Password updated — please re-login"}
+
+
+# ============================================================================
+# Admin Settings Routes
+# ============================================================================
+
+
+@router.get("/settings")
+async def get_admin_settings(_: None = Depends(require_admin)):
+    """Return all configurable settings grouped by category."""
+    return _get_grouped_settings()
+
+
+@router.post("/settings")
+async def update_admin_settings(body: SettingsUpdate, _: None = Depends(require_admin)):
+    """Update settings at runtime and persist to .env file."""
+    env_updates = {}
+
+    for field, value in body.updates.items():
+        if not hasattr(settings, field):
+            continue
+        # Skip if secret placeholder sent back
+        if str(value) == "****":
+            continue
+        # Type coerce
+        current = getattr(settings, field)
+        if isinstance(current, bool):
+            value = str(value).lower() in ("true", "1", "yes")
+        elif isinstance(current, int):
+            value = int(value)
+        elif isinstance(current, float):
+            value = float(value)
+        setattr(settings, field, value)
+        # Strip characters that could corrupt .env format
+        safe_value = str(value).replace("\n", "").replace("\r", "").replace("\x00", "")
+        # For string fields that are comma-separated lists (cities, origins, etc.),
+        # strip any trailing key=value injections (chars after unexpected = in list values)
+        if isinstance(current, str) and "," in safe_value and "=" in safe_value:
+            safe_value = safe_value.split("=")[0].rstrip()
+        env_updates[field] = safe_value
+
+    _persist_env_updates(env_updates)
+
+    from backend.core.scheduler import reschedule_jobs
+
+    scheduler_result = reschedule_jobs()
+
+    return {
+        "status": "ok",
+        "message": f"Updated {len(env_updates)} settings",
+        "scheduler": scheduler_result,
+    }
+
+
+# ============================================================================
+# Admin System Routes
+# ============================================================================
+
+
+class ModeSwitch(BaseModel):
+    mode: str
+
+
+class CredentialsUpdate(BaseModel):
+    private_key: str | None = None
+    api_key: str | None = None
+    api_secret: str | None = None
+    api_passphrase: str | None = None
+
+
+@router.post("/mode")
+async def switch_mode(body: ModeSwitch, _: None = Depends(require_admin)):
+    """Switch trading mode at runtime and persist to .env."""
+    new_mode = body.mode.lower()
+    if new_mode not in ("paper", "testnet", "live"):
+        raise HTTPException(
+            status_code=400, detail="mode must be paper, testnet, or live"
+        )
+
+    old_mode = settings.TRADING_MODE
+    settings.TRADING_MODE = new_mode
+    _persist_env_updates({"TRADING_MODE": new_mode})
+
+    logger.info(f"Trading mode switched: {old_mode} → {new_mode}")
+    return {"status": "ok", "mode": new_mode, "previous_mode": old_mode}
+
+
+@router.post("/credentials")
+async def update_credentials(body: CredentialsUpdate, _: None = Depends(require_admin)):
+    """Update Polymarket trading credentials, persist to .env, and hot-reload settings."""
+    env_updates = {
+        k: v.strip()
+        for k, v in {
+            "POLYMARKET_PRIVATE_KEY": body.private_key,
+            "POLYMARKET_API_KEY": body.api_key,
+            "POLYMARKET_API_SECRET": body.api_secret,
+            "POLYMARKET_API_PASSPHRASE": body.api_passphrase,
+        }.items()
+        if v and v.strip()
+    }
+
+    _persist_env_updates(env_updates)
+
+    # Hot-reload into running settings object
+    if body.private_key and body.private_key.strip():
+        settings.POLYMARKET_PRIVATE_KEY = body.private_key.strip()
+    if body.api_key and body.api_key.strip():
+        settings.POLYMARKET_API_KEY = body.api_key.strip()
+    if body.api_secret and body.api_secret.strip():
+        settings.POLYMARKET_API_SECRET = body.api_secret.strip()
+    if body.api_passphrase and body.api_passphrase.strip():
+        settings.POLYMARKET_API_PASSPHRASE = body.api_passphrase.strip()
+
+    has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
+    has_api_key = bool(settings.POLYMARKET_API_KEY)
+    has_api_secret = bool(settings.POLYMARKET_API_SECRET)
+    has_api_passphrase = bool(settings.POLYMARKET_API_PASSPHRASE)
+
+    logger.info(f"Credentials updated: {list(env_updates.keys())}")
+
+    # Restart polyedge-bot to pick up new credentials
+    import subprocess as _subprocess
+
+    try:
+        _subprocess.run(
+            ["pm2", "restart", "polyedge-bot"],
+            capture_output=True,
+            timeout=10,
+        )
+        logger.info("polyedge-bot restarted to apply new credentials")
+    except Exception as _e:
+        logger.warning(f"Could not restart polyedge-bot: {_e}")
+
+    return {
+        "status": "ok",
+        "updated": list(env_updates.keys()),
+        "restarted_bot": True,
+        "creds_paper": True,
+        "creds_testnet": has_private_key,
+        "creds_live": has_private_key
+        and has_api_key
+        and has_api_secret
+        and has_api_passphrase,
+        "missing_for_testnet": [] if has_private_key else ["POLYMARKET_PRIVATE_KEY"],
+        "missing_for_live": [
+            k
+            for k, v in {
+                "POLYMARKET_PRIVATE_KEY": has_private_key,
+                "POLYMARKET_API_KEY": has_api_key,
+                "POLYMARKET_API_SECRET": has_api_secret,
+                "POLYMARKET_API_PASSPHRASE": has_api_passphrase,
+            }.items()
+            if not v
+        ],
+    }
+
+
+@router.get("/system")
+async def get_admin_system(
+    request: Request, db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
+    """Return system health overview."""
+    state = db.query(BotState).first()
+    pending_trades = db.query(Trade).filter(Trade.settled == False).count()
+    db_trade_count = db.query(Trade).count()
+    db_signal_count = db.query(Signal).count()
+
+    uptime = (datetime.utcnow() - request.app.state.start_time if hasattr(request.app.state, 'start_time') else datetime.utcnow()).total_seconds()
+
+    has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
+    has_api_key = bool(settings.POLYMARKET_API_KEY)
+    has_api_secret = bool(settings.POLYMARKET_API_SECRET)
+    has_api_passphrase = bool(settings.POLYMARKET_API_PASSPHRASE)
+
+    return {
+        "trading_mode": settings.TRADING_MODE,
+        "bot_running": state.is_running if state else False,
+        "uptime_seconds": int(uptime),
+        "pending_trades": pending_trades,
+        "telegram_configured": bool(settings.TELEGRAM_BOT_TOKEN),
+        "kalshi_enabled": settings.KALSHI_ENABLED,
+        "weather_enabled": settings.WEATHER_ENABLED,
+        "db_trade_count": db_trade_count,
+        "db_signal_count": db_signal_count,
+        # Credential readiness per mode
+        "creds_paper": True,  # paper needs no credentials
+        "creds_testnet": has_private_key,
+        "creds_live": has_private_key
+        and has_api_key
+        and has_api_secret
+        and has_api_passphrase,
+        "missing_for_testnet": [] if has_private_key else ["POLYMARKET_PRIVATE_KEY"],
+        "missing_for_live": [
+            k
+            for k, v in {
+                "POLYMARKET_PRIVATE_KEY": has_private_key,
+                "POLYMARKET_API_KEY": has_api_key,
+                "POLYMARKET_API_SECRET": has_api_secret,
+                "POLYMARKET_API_PASSPHRASE": has_api_passphrase,
+            }.items()
+            if not v
+        ],
+    }
+
+
+@router.post("/alerts/test")
+async def test_alert(_: None = Depends(require_admin)):
+    """Send a test Telegram alert to verify bot configuration."""
+    from backend.core.heartbeat import _send_telegram_alert_sync
+
+    if not settings.TELEGRAM_BOT_TOKEN:
+        raise HTTPException(status_code=400, detail="TELEGRAM_BOT_TOKEN not configured")
+    _send_telegram_alert_sync("✅ PolyEdge alert test — bot is configured correctly")
+    return {"status": "ok", "message": "Test alert sent"}
+
+
+@router.get("/ai/suggest")
+async def ai_suggest_params(
+    db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
+    """Use AI to analyze recent performance and suggest parameter improvements."""
+    from backend.ai.optimizer import ParameterOptimizer
+
+    optimizer = ParameterOptimizer(settings)
+    return await optimizer.get_suggestions(db)
+
+
+@router.get("/scheduler/jobs")
+async def get_scheduler_jobs_endpoint(_: None = Depends(require_admin)):
+    """Return current APScheduler job list."""
+    from backend.core.scheduler import get_scheduler_jobs
+
+    return get_scheduler_jobs()

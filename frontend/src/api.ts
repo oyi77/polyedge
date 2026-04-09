@@ -521,6 +521,19 @@ export async function fetchHealth(): Promise<{ strategies: StrategyHealth[]; bot
   return data
 }
 
+// ── Signal Config (public, no auth) ────────────────────────────────────────────
+
+export interface SignalConfig {
+  approval_mode: 'manual' | 'auto_approve' | 'auto_deny'
+  min_confidence: number
+  notification_duration_ms: number
+}
+
+export async function fetchSignalConfig(): Promise<SignalConfig> {
+  const { data } = await api.get('/signal-config')
+  return data
+}
+
 // ── AI Suggest ────────────────────────────────────────────────────────────────
 
 export async function fetchAISuggest(): Promise<{

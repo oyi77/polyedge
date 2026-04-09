@@ -10,6 +10,7 @@ function isSecret(fieldName: string): boolean {
 
 const SECTION_LABELS: Record<string, string> = {
   trading: 'Trading',
+  signals: 'Signal Approval',
   weather: 'Weather',
   risk: 'Risk Management',
   indicators: 'Signal Weights',

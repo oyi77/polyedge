@@ -94,7 +94,16 @@ export function Terminal({ isRunning, lastRun, onStart, onStop, onScan }: Props)
 
     return () => {
       if (wsRef.current) {
-        wsRef.current.close()
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.close()
+        } else {
+          wsRef.current.onopen = null
+          wsRef.current.onclose = null
+          wsRef.current.onerror = null
+          wsRef.current.onmessage = null
+          wsRef.current.close()
+        }
+        wsRef.current = null
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
