@@ -15,51 +15,6 @@ logger = logging.getLogger("trading_bot")
 router = APIRouter(tags=["market_intel"])
 
 
-class CopySignalResponse(BaseModel):
-    source_wallet: str
-    our_side: str
-    our_outcome: str
-    our_size: float
-    market_price: float
-    trader_score: float
-    reasoning: str
-    condition_id: str
-    title: str
-    timestamp: str
-
-
-@router.get("/api/copy/signals", response_model=List[CopySignalResponse])
-async def get_copy_signals(limit: int = 20):
-    """Return recent copy trade signals from the DB."""
-    try:
-        db = SessionLocal()
-        signals = (
-            db.query(Signal)
-            .filter(Signal.market_type == "copy")
-            .order_by(Signal.timestamp.desc())
-            .limit(limit)
-            .all()
-        )
-        db.close()
-        return [
-            CopySignalResponse(
-                source_wallet=s.sources[0] if s.sources else "",
-                our_side=s.direction,
-                our_outcome="YES",
-                our_size=s.suggested_size,
-                market_price=s.market_price,
-                trader_score=s.confidence * 100,
-                reasoning=s.reasoning,
-                condition_id=s.market_ticker,
-                title=s.market_ticker,
-                timestamp=s.timestamp.isoformat(),
-            )
-            for s in signals
-        ]
-    except Exception:
-        return []
-
-
 @router.get("/api/edge-performance")
 async def get_edge_performance(
     track: str | None = None,

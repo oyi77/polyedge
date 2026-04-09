@@ -121,7 +121,7 @@ class ConnectionManager:
             try:
                 await connection.send_json(message)
             except Exception:
-                pass
+                logger.exception("Failed to broadcast message to WebSocket connection")
 
 
 ws_manager = ConnectionManager()
@@ -404,7 +404,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
                 last_updated=datetime.utcnow(),
             )
     except Exception:
-        pass
+        logger.warning("Failed to fetch BTC microstructure data, falling back to CoinGecko")
     if not btc_price_data:
         try:
             btc = await fetch_crypto_price("BTC")
@@ -418,7 +418,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
                     last_updated=btc.last_updated,
                 )
         except Exception:
-            pass
+            logger.warning("Failed to fetch BTC price from CoinGecko")
 
     # Fetch windows
     windows = []
@@ -441,7 +441,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             for m in markets
         ]
     except Exception:
-        pass
+        logger.warning("Failed to fetch active BTC markets")
 
     # Signals — return ALL signals, mark which are actionable
     signals = []
@@ -451,10 +451,15 @@ async def get_dashboard(db: Session = Depends(get_db)):
             _signal_to_response(s, actionable=s.passes_threshold) for s in raw_signals
         ]
     except Exception:
-        pass
+        logger.warning("Failed to scan for trading signals")
 
-    # Recent trades
+    # Recent trades (with TradeContext enrichment)
     trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
+    trade_ids = [t.id for t in trades]
+    contexts = {}
+    if trade_ids:
+        for ctx in db.query(TradeContext).filter(TradeContext.trade_id.in_(trade_ids)).all():
+            contexts[ctx.trade_id] = ctx
     recent_trades = [
         TradeResponse(
             id=t.id,
@@ -468,6 +473,9 @@ async def get_dashboard(db: Session = Depends(get_db)):
             settled=t.settled,
             result=t.result,
             pnl=t.pnl,
+            strategy=contexts[t.id].strategy if t.id in contexts else None,
+            signal_source=contexts[t.id].signal_source if t.id in contexts else None,
+            confidence=contexts[t.id].confidence if t.id in contexts else None,
         )
         for t in trades
     ]
@@ -525,7 +533,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
                         )
                     )
         except Exception:
-            pass
+            logger.warning("Failed to fetch weather forecasts data")
 
     return DashboardData(
         stats=stats,
@@ -625,6 +633,7 @@ async def ws_markets(websocket: WebSocket):
     except WebSocketDisconnect:
         market_ws.disconnect(websocket)
     except Exception:
+        logger.exception("Market WebSocket error")
         market_ws.disconnect(websocket)
 
 
@@ -639,6 +648,7 @@ async def ws_whales(websocket: WebSocket):
     except WebSocketDisconnect:
         whale_ws.disconnect(websocket)
     except Exception:
+        logger.exception("Whale WebSocket error")
         whale_ws.disconnect(websocket)
 
 
@@ -678,6 +688,7 @@ async def websocket_events(websocket: WebSocket):
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception:
+        logger.exception("Events WebSocket error")
         ws_manager.disconnect(websocket)
 
 

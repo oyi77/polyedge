@@ -28,6 +28,7 @@ def update_heartbeat(db, strategy_name: str) -> None:
             try:
                 data = json.loads(state.misc_data) if isinstance(state.misc_data, str) else dict(state.misc_data)
             except Exception:
+                logger.warning("Failed to parse misc_data JSON, resetting")
                 data = {}
         data[f"{HEARTBEAT_PREFIX}{strategy_name}"] = datetime.now(timezone.utc).isoformat()
         state.misc_data = json.dumps(data)
@@ -50,6 +51,7 @@ def get_strategy_health(db) -> list[dict]:
             try:
                 data = json.loads(state.misc_data) if isinstance(state.misc_data, str) else {}
             except Exception:
+                logger.warning("Failed to parse misc_data JSON, resetting")
                 data = {}
 
         now = datetime.now(timezone.utc)
@@ -69,9 +71,7 @@ def get_strategy_health(db) -> list[dict]:
                     threshold = (cfg.interval_seconds or 60) * 2
                     healthy = lag < threshold
                 except Exception:
-                    pass
-
-            result.append({
+                    logger.warning(f"Failed to check heartbeat for strategy {name}")            result.append({
                 "name": cfg.strategy_name,
                 "last_heartbeat": last_hb_str,
                 "lag_seconds": round(lag, 1) if lag is not None else None,
@@ -145,4 +145,4 @@ def _send_telegram_alert_sync(message: str) -> None:
                 timeout=5.0,
             )
         except Exception:
-            pass
+            logger.warning("Failed to send Telegram heartbeat alert")

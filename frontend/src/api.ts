@@ -5,13 +5,13 @@ import type { DashboardData, Signal, Trade, BotStats, BtcPrice, BtcWindow, Weath
 // Set VITE_API_URL to override (e.g. for local dev pointing at remote API)
 const API_BASE = import.meta.env.VITE_API_URL || ''
 
-const api = axios.create({
+export const api = axios.create({
   baseURL: `${API_BASE}/api`,
   timeout: 15000,
 })
 
 // Admin API instance — injects Authorization header from localStorage
-const adminApi = axios.create({
+export const adminApi = axios.create({
   baseURL: `${API_BASE}/api`,
   timeout: 15000,
 })

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { api } from '../api';
 
 interface WhaleTx {
   id: number;
@@ -13,9 +14,8 @@ export default function WhaleActivityFeed() {
   const [items, setItems] = useState<WhaleTx[]>([]);
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/whales/transactions?limit=20')
-      .then(r => r.json())
-      .then(d => { if (!cancelled) setItems(Array.isArray(d) ? d : []); })
+    api.get<WhaleTx[]>('/whales/transactions', { params: { limit: 20 } })
+      .then(r => { if (!cancelled) setItems(Array.isArray(r.data) ? r.data : []); })
       .catch(() => { if (!cancelled) setItems([]); });
     return () => { cancelled = true; };
   }, []);

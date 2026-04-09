@@ -60,6 +60,7 @@ class RiskManager:
             ).scalar() or 0.0
             return daily_pnl <= -self.s.DAILY_LOSS_LIMIT
         except Exception:
+            logger.exception("Risk check failed, blocking trade")
             return False
         finally:
             db.close()

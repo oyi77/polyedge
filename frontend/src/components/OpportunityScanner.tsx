@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { api } from '../api';
 
 interface ArbOpportunity {
   market_id: string;
@@ -14,9 +15,8 @@ export default function OpportunityScanner() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/arbitrage/opportunities')
-      .then(r => r.json())
-      .then(d => { if (!cancelled) setItems(d.opportunities || []); })
+    api.get<{ opportunities: ArbOpportunity[] }>('/arbitrage/opportunities')
+      .then(r => { if (!cancelled) setItems(r.data.opportunities || []); })
       .catch(() => { if (!cancelled) setItems([]); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
