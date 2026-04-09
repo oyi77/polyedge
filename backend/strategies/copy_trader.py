@@ -62,7 +62,7 @@ class CopyTrader:
         )
         self._watcher = WalletWatcher(self._http)
         self._scorer = LeaderboardScorer(self._http)
-        self._executor = OrderExecutor(self.bankroll)
+        self._executor = OrderExecutor(self.bankroll, http=self._http)
         self._running = True
         await self._refresh_leaderboard()
 
@@ -99,7 +99,7 @@ class CopyTrader:
                     if trade.condition_id in seen_condition_ids:
                         continue
                     seen_condition_ids.add(trade.condition_id)
-                    signal = self._executor.mirror_buy(trader, trade)
+                    signal = await self._executor.mirror_buy_async(trader, trade)
                     if signal:
                         signals.append(signal)
 
