@@ -4,6 +4,7 @@ This module provides the main settlement orchestration functions.
 Helper functions for API resolution, P&L calculation, and weather calibration
 are in settlement_helpers.py.
 """
+
 import logging
 import asyncio
 from datetime import datetime, timedelta
@@ -17,6 +18,8 @@ from backend.core.settlement_helpers import (
     fetch_polymarket_resolution,
     calculate_pnl,
     _resolve_markets,
+    _parse_market_resolution,
+    check_market_settlement,
     process_settled_trade,
 )
 
@@ -48,9 +51,8 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             logger.info("No pending trades to settle")
             return []
 
-        # Mark stale trades (unsettled for >7 days) as expired
         now = datetime.utcnow()
-        stale_threshold = now - timedelta(days=7)
+        stale_threshold = now - timedelta(hours=settings.STALE_TRADE_HOURS)
 
         expired_count = 0
         for trade in pending:
@@ -64,13 +66,16 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             db.commit()
             logger.info(f"Marked {expired_count} stale trades as expired")
 
+        # Filter out expired trades before building ticker list for API calls
+        active_pending = [t for t in pending if not t.settled and t.result != "expired"]
+
         # Separate weather vs normal trades and collect unique tickers
         normal_tickers: set = set()
         weather_tickers: set = set()
         trade_slugs: dict = {}
         trade_platforms: dict = {}
 
-        for trade in pending:
+        for trade in active_pending:
             market_type = getattr(trade, "market_type", "btc") or "btc"
             ticker = trade.market_ticker
             trade_slugs[ticker] = getattr(trade, "event_slug", None)
@@ -111,8 +116,6 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                 )
             return True, settlement_value, pnl
 
-        # Skip trades already marked as expired
-        active_pending = [t for t in pending if t.result != "expired"]
         results = [(t, _settlement_from_resolution(t)) for t in active_pending]
 
         settled_trades = []
@@ -121,7 +124,9 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                 logger.error(f"Settlement error: {item}")
                 continue
             trade, (is_settled, settlement_value, pnl) = item
-            if process_settled_trade(trade, is_settled, settlement_value, pnl, db):
+            if await process_settled_trade(
+                trade, is_settled, settlement_value, pnl, db
+            ):
                 settled_trades.append(trade)
 
         if settled_trades:
@@ -158,14 +163,18 @@ async def update_bot_state_with_settlements(
                 # Only update the fields for the ACTUAL trading mode
                 if trading_mode == "paper":
                     state.paper_pnl = (state.paper_pnl or 0.0) + trade.pnl
-                    state.paper_bankroll = (state.paper_bankroll or settings.INITIAL_BANKROLL) + trade.pnl
+                    state.paper_bankroll = (
+                        state.paper_bankroll or settings.INITIAL_BANKROLL
+                    ) + trade.pnl
                     state.paper_trades = (state.paper_trades or 0) + 1
                     if trade.result == "win":
                         state.paper_wins = (state.paper_wins or 0) + 1
                 else:
                     # Live/testnet mode: update live-specific fields
                     state.total_pnl = (state.total_pnl or 0.0) + trade.pnl
-                    state.bankroll = (state.bankroll or settings.INITIAL_BANKROLL) + trade.pnl
+                    state.bankroll = (
+                        state.bankroll or settings.INITIAL_BANKROLL
+                    ) + trade.pnl
                     state.total_trades = (state.total_trades or 0) + 1
                     if trade.result == "win":
                         state.winning_trades = (state.winning_trades or 0) + 1

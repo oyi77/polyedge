@@ -20,6 +20,7 @@ Decision logic:
 - If |calibrated_p - market_mid| > min_edge: BUY
 - Always writes DecisionLog with full signal_data for ML training
 """
+
 import asyncio
 import json
 import logging
@@ -30,7 +31,8 @@ from typing import Any
 
 import httpx
 
-from backend.strategies.base import BaseStrategy, StrategyContext, CycleResult, MarketInfo
+from backend.strategies.base import BaseStrategy, StrategyContext, CycleResult
+from backend.core.market_scanner import MarketInfo
 from backend.core.decisions import record_decision
 
 logger = logging.getLogger("trading_bot")
@@ -56,28 +58,33 @@ class ForecastPoint:
     city: str
     lat: float
     lon: float
-    forecast_high_f: float | None = None   # predicted max temp (Fahrenheit)
-    forecast_low_f: float | None = None    # predicted min temp (Fahrenheit)
-    ensemble_std: float = 5.0             # ensemble spread in F
-    nbm_p10: float | None = None          # NBM 10th percentile MaxT
-    nbm_p50: float | None = None          # NBM 50th percentile MaxT (median)
-    nbm_p90: float | None = None          # NBM 90th percentile MaxT
+    forecast_high_f: float | None = None  # predicted max temp (Fahrenheit)
+    forecast_low_f: float | None = None  # predicted min temp (Fahrenheit)
+    ensemble_std: float = 5.0  # ensemble spread in F
+    nbm_p10: float | None = None  # NBM 10th percentile MaxT
+    nbm_p50: float | None = None  # NBM 50th percentile MaxT (median)
+    nbm_p90: float | None = None  # NBM 90th percentile MaxT
     source: str = "open_meteo"
 
 
 @dataclass
 class CalibrationState:
     """Rolling EMOS calibration state for one city."""
-    obs_pairs: list[tuple[float, float, float]] = field(default_factory=list)  # (forecast, std, actual)
-    a: float = 0.0   # bias correction intercept
-    b: float = 1.0   # bias correction slope
+
+    obs_pairs: list[tuple[float, float, float]] = field(
+        default_factory=list
+    )  # (forecast, std, actual)
+    a: float = 0.0  # bias correction intercept
+    b: float = 1.0  # bias correction slope
     last_updated: str | None = None
 
     @property
     def n(self) -> int:
         return len(self.obs_pairs)
 
-    def add_observation(self, forecast_mean: float, forecast_std: float, actual: float, window: int = 40):
+    def add_observation(
+        self, forecast_mean: float, forecast_std: float, actual: float, window: int = 40
+    ):
         self.obs_pairs.append((forecast_mean, forecast_std, actual))
         if len(self.obs_pairs) > window:
             self.obs_pairs = self.obs_pairs[-window:]
@@ -115,9 +122,37 @@ def normal_cdf(x: float, mean: float, std: float) -> float:
     return 0.5 * (1.0 + math.erf((x - mean) / (std * math.sqrt(2))))
 
 
-def pr_exceeds_threshold(threshold_f: float, calibrated_mean: float, calibrated_std: float) -> float:
+def pr_exceeds_threshold(
+    threshold_f: float, calibrated_mean: float, calibrated_std: float
+) -> float:
     """P(T > threshold) using calibrated normal distribution."""
     return 1.0 - normal_cdf(threshold_f, calibrated_mean, calibrated_std)
+
+
+def _calculate_weather_kelly_size(
+    edge: float,
+    probability: float,
+    market_price: float,
+    direction: str,
+    bankroll: float,
+) -> float:
+    if market_price <= 0 or market_price >= 1:
+        return 10.0
+
+    b = (1.0 - market_price) / market_price
+    p = probability
+    q = 1.0 - p
+    kelly_full = (p * b - q) / b if b != 0 else 0
+
+    kelly_fraction = 0.15
+    kelly_fractional = max(0.0, kelly_full * kelly_fraction)
+
+    size = kelly_fractional * bankroll
+
+    max_fraction = 0.05
+    size = min(size, bankroll * max_fraction)
+
+    return max(10.0, size)
 
 
 async def fetch_open_meteo_forecast(lat: float, lon: float) -> dict[str, Any]:
@@ -147,6 +182,7 @@ def extract_threshold_from_question(question: str) -> tuple[float | None, str | 
     Returns (threshold_f, direction) or (None, None) if cannot parse.
     """
     import re
+
     q = question.lower()
     match = re.search(r"(\d+(?:\.\d+)?)\s*(?:°f|°f|f|degrees?)", q)
     if not match:
@@ -162,9 +198,14 @@ def load_calibration_states(db, strategy_name: str) -> dict[str, CalibrationStat
     """Load EMOS calibration states from BotState JSON blob."""
     try:
         from backend.models.database import BotState
+
         state = db.query(BotState).first()
         if state and state.misc_data:
-            data = json.loads(state.misc_data) if isinstance(state.misc_data, str) else state.misc_data
+            data = (
+                json.loads(state.misc_data)
+                if isinstance(state.misc_data, str)
+                else state.misc_data
+            )
             cal_data = data.get(f"emos_calibration_{strategy_name}", {})
             result = {}
             for city, cal_dict in cal_data.items():
@@ -181,17 +222,24 @@ def load_calibration_states(db, strategy_name: str) -> dict[str, CalibrationStat
     return {}
 
 
-def save_calibration_states(db, strategy_name: str, states: dict[str, CalibrationState]):
+def save_calibration_states(
+    db, strategy_name: str, states: dict[str, CalibrationState]
+):
     """Persist EMOS calibration states to BotState JSON blob."""
     try:
         from backend.models.database import BotState
+
         state = db.query(BotState).first()
         if not state:
             return
         existing = {}
         if state.misc_data:
             try:
-                existing = json.loads(state.misc_data) if isinstance(state.misc_data, str) else dict(state.misc_data)
+                existing = (
+                    json.loads(state.misc_data)
+                    if isinstance(state.misc_data, str)
+                    else dict(state.misc_data)
+                )
             except Exception:
                 existing = {}
         cal_key = f"emos_calibration_{strategy_name}"
@@ -224,15 +272,29 @@ class WeatherEMOSStrategy(BaseStrategy):
         "max_position_usd": 100,
         "calibration_window_days": 40,
         "min_calibration_observations": 10,
-        "keywords": ["temperature", "degrees", "high temperature", "low temperature", "weather"],
+        "keywords": [
+            "temperature",
+            "degrees",
+            "high temperature",
+            "low temperature",
+            "weather",
+        ],
         "interval_seconds": 300,
     }
 
     async def market_filter(self, markets: list[MarketInfo]) -> list[MarketInfo]:
         """Filter to weather/temperature markets."""
-        keywords = ["temperature", "degrees", "fahrenheit", "weather", "high temp", "low temp"]
+        keywords = [
+            "temperature",
+            "degrees",
+            "fahrenheit",
+            "weather",
+            "high temp",
+            "low temp",
+        ]
         return [
-            m for m in markets
+            m
+            for m in markets
             if any(kw in m.question.lower() or kw in m.slug.lower() for kw in keywords)
         ]
 
@@ -244,8 +306,13 @@ class WeatherEMOSStrategy(BaseStrategy):
         )
         params = ctx.params
         min_edge = params.get("min_edge", self.default_params["min_edge"])
-        min_obs = params.get("min_calibration_observations", self.default_params["min_calibration_observations"])
-        max_pos = params.get("max_position_usd", self.default_params["max_position_usd"])
+        min_obs = params.get(
+            "min_calibration_observations",
+            self.default_params["min_calibration_observations"],
+        )
+        max_pos = params.get(
+            "max_position_usd", self.default_params["max_position_usd"]
+        )
         keywords = params.get("keywords", self.default_params["keywords"])
 
         # Load calibration states
@@ -254,6 +321,7 @@ class WeatherEMOSStrategy(BaseStrategy):
         # Fetch active weather markets
         try:
             from backend.core.market_scanner import fetch_markets_by_keywords
+
             all_markets = await fetch_markets_by_keywords(keywords, limit=1000)
             weather_markets = await self.market_filter(all_markets)
         except Exception as e:
@@ -261,8 +329,14 @@ class WeatherEMOSStrategy(BaseStrategy):
             return result
 
         if not weather_markets:
-            record_decision(ctx.db, self.name, "all_weather_markets", "SKIP",
-                          signal_data={"reason": "no_active_weather_markets"}, reason="No active weather markets found")
+            record_decision(
+                ctx.db,
+                self.name,
+                "all_weather_markets",
+                "SKIP",
+                signal_data={"reason": "no_active_weather_markets"},
+                reason="No active weather markets found",
+            )
             result.decisions_recorded = 1
             return result
 
@@ -274,7 +348,9 @@ class WeatherEMOSStrategy(BaseStrategy):
 
         forecast_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
 
-        for (name_city, lat, lon, *_), forecast_data in zip(DEFAULT_CITIES, forecast_results):
+        for (name_city, lat, lon, *_), forecast_data in zip(
+            DEFAULT_CITIES, forecast_results
+        ):
             if isinstance(forecast_data, Exception) or not forecast_data:
                 continue
             try:
@@ -298,23 +374,41 @@ class WeatherEMOSStrategy(BaseStrategy):
             city_name = None
             forecast = None
             for city, fp in city_forecasts.items():
-                if city.lower().replace(" ", "") in market.question.lower().replace(" ", ""):
+                if city.lower().replace(" ", "") in market.question.lower().replace(
+                    " ", ""
+                ):
                     city_name = city
                     forecast = fp
                     break
 
             if forecast is None:
-                record_decision(ctx.db, self.name, market.ticker, "SKIP",
-                              signal_data={"reason": "no_city_match", "question": market.question},
-                              reason="Could not match market to a configured city")
+                record_decision(
+                    ctx.db,
+                    self.name,
+                    market.ticker,
+                    "SKIP",
+                    signal_data={
+                        "reason": "no_city_match",
+                        "question": market.question,
+                    },
+                    reason="Could not match market to a configured city",
+                )
                 result.decisions_recorded += 1
                 continue
 
             threshold_f, direction = extract_threshold_from_question(market.question)
             if threshold_f is None:
-                record_decision(ctx.db, self.name, market.ticker, "SKIP",
-                              signal_data={"reason": "no_threshold_parsed", "question": market.question},
-                              reason="Could not parse temperature threshold from question")
+                record_decision(
+                    ctx.db,
+                    self.name,
+                    market.ticker,
+                    "SKIP",
+                    signal_data={
+                        "reason": "no_threshold_parsed",
+                        "question": market.question,
+                    },
+                    reason="Could not parse temperature threshold from question",
+                )
                 result.decisions_recorded += 1
                 continue
 
@@ -324,7 +418,10 @@ class WeatherEMOSStrategy(BaseStrategy):
             # Check minimum observations
             if cal.n < min_obs:
                 record_decision(
-                    ctx.db, self.name, market.ticker, "SKIP",
+                    ctx.db,
+                    self.name,
+                    market.ticker,
+                    "SKIP",
                     confidence=0.0,
                     signal_data={
                         "reason": "insufficient_calibration_data",
@@ -332,13 +429,17 @@ class WeatherEMOSStrategy(BaseStrategy):
                         "n_observations": cal.n,
                         "min_required": min_obs,
                     },
-                    reason=f"Only {cal.n}/{min_obs} calibration observations for {city_name}"
+                    reason=f"Only {cal.n}/{min_obs} calibration observations for {city_name}",
                 )
                 result.decisions_recorded += 1
                 continue
 
             # Apply EMOS calibration
-            forecast_mean = forecast.forecast_high_f if "high" in market.question.lower() else forecast.forecast_low_f
+            forecast_mean = (
+                forecast.forecast_high_f
+                if "high" in market.question.lower()
+                else forecast.forecast_low_f
+            )
             if forecast_mean is None:
                 continue
 
@@ -347,9 +448,13 @@ class WeatherEMOSStrategy(BaseStrategy):
 
             # Compute P(T > threshold)
             if direction == "above":
-                calibrated_p = pr_exceeds_threshold(threshold_f, calibrated_mean, calibrated_std)
+                calibrated_p = pr_exceeds_threshold(
+                    threshold_f, calibrated_mean, calibrated_std
+                )
             else:
-                calibrated_p = 1.0 - pr_exceeds_threshold(threshold_f, calibrated_mean, calibrated_std)
+                calibrated_p = 1.0 - pr_exceeds_threshold(
+                    threshold_f, calibrated_mean, calibrated_std
+                )
 
             market_mid = market.yes_price
             edge = calibrated_p - market_mid
@@ -377,27 +482,77 @@ class WeatherEMOSStrategy(BaseStrategy):
                 signal_data["trade_side"] = "YES"
 
             record_decision(
-                ctx.db, self.name, market.ticker, decision,
+                ctx.db,
+                self.name,
+                market.ticker,
+                decision,
                 confidence=min(1.0, abs(edge)),
                 signal_data=signal_data,
-                reason=f"EMOS: calibrated_p={calibrated_p:.3f} market={market_mid:.3f} edge={edge:+.3f}"
+                reason=f"EMOS: calibrated_p={calibrated_p:.3f} market={market_mid:.3f} edge={edge:+.3f}",
             )
             result.decisions_recorded += 1
 
             if decision == "BUY":
                 result.trades_attempted += 1
-                if ctx.clob and ctx.mode != "paper":
+                trade_side = signal_data.get("trade_side", "YES")
+                entry_price = market_mid if trade_side == "YES" else (1.0 - market_mid)
+
+                bankroll = 100.0
+                try:
+                    from backend.models.database import BotState
+
+                    state = ctx.db.query(BotState).first()
+                    if state:
+                        bankroll = (
+                            (state.paper_bankroll or state.bankroll)
+                            if ctx.settings.TRADING_MODE == "paper"
+                            else state.bankroll
+                        )
+                except Exception:
+                    pass
+
+                kelly_size = _calculate_weather_kelly_size(
+                    edge=abs(edge),
+                    probability=calibrated_p,
+                    market_price=market_mid,
+                    direction=trade_side.lower(),
+                    bankroll=bankroll,
+                )
+                trade_size = min(
+                    kelly_size, max_pos, ctx.settings.WEATHER_MAX_TRADE_SIZE
+                )
+                trade_size = max(trade_size, 10.0)
+
+                if ctx.clob:
                     try:
-                        side = "BUY"
-                        price = market_mid
                         order_result = await ctx.clob.place_limit_order(
                             token_id=market.ticker,
-                            side=side,
-                            price=price,
-                            size=min(max_pos, 50),
+                            side="BUY",
+                            price=entry_price,
+                            size=trade_size,
                         )
                         if order_result.success:
                             result.trades_placed += 1
+                            # Record Trade in DB for both paper and live modes
+                            try:
+                                from backend.models.database import Trade
+
+                                new_trade = Trade(
+                                    market_ticker=market.ticker,
+                                    direction=trade_side.lower(),
+                                    entry_price=entry_price,
+                                    size=trade_size,
+                                    market_type="weather",
+                                    trading_mode=ctx.mode,
+                                    strategy="weather_emos",
+                                    status="open",
+                                )
+                                ctx.db.add(new_trade)
+                                ctx.db.commit()
+                            except Exception as db_err:
+                                result.errors.append(
+                                    f"Trade record failed {market.ticker}: {db_err}"
+                                )
                     except Exception as e:
                         result.errors.append(f"Order failed {market.ticker}: {e}")
 

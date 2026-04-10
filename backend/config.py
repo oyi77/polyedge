@@ -1,4 +1,5 @@
 """Configuration settings for the BTC 5-min trading bot."""
+
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
     # Kalshi API
     KALSHI_API_KEY_ID: Optional[str] = None
     KALSHI_PRIVATE_KEY_PATH: Optional[str] = None
-    KALSHI_ENABLED: bool = True
+    KALSHI_ENABLED: bool = False
 
     # AI API Keys
     GROQ_API_KEY: Optional[str] = None
@@ -32,9 +33,9 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = "groq"
 
     # Custom / OmniRoute provider settings (OpenAI-compatible API)
-    AI_BASE_URL: Optional[str] = None   # e.g. https://api.omniroute.ai/v1
-    AI_MODEL: Optional[str] = None      # overrides provider default
-    AI_API_KEY: Optional[str] = None    # API key for custom/omniroute providers
+    AI_BASE_URL: Optional[str] = None  # e.g. https://api.omniroute.ai/v1
+    AI_MODEL: Optional[str] = None  # overrides provider default
+    AI_API_KEY: Optional[str] = None  # API key for custom/omniroute providers
 
     # AI Feature Flags
     AI_ENABLED: bool = False  # Master toggle for AI-enhanced signals
@@ -58,10 +59,13 @@ class Settings(BaseSettings):
     SCAN_INTERVAL_SECONDS: int = 60  # Scan every minute
     SETTLEMENT_INTERVAL_SECONDS: int = 120  # Check settlements every 2 min
     BTC_PRICE_SOURCE: str = "coinbase"
-    MIN_EDGE_THRESHOLD: float = 0.02  # 2% edge required — these are 50/50 markets
+    MIN_EDGE_THRESHOLD: float = (
+        0.05  # 5% edge required — covers 0.5% fees + profit margin
+    )
     MAX_ENTRY_PRICE: float = 0.55  # Enter up to 55c
     MAX_TRADES_PER_WINDOW: int = 1
     MAX_TOTAL_PENDING_TRADES: int = 20
+    STALE_TRADE_HOURS: int = 2
 
     # Risk management
     DAILY_LOSS_LIMIT: float = 300.0
@@ -83,10 +87,15 @@ class Settings(BaseSettings):
     WEATHER_ENABLED: bool = True
     WEATHER_SCAN_INTERVAL_SECONDS: int = 300  # 5 min
     WEATHER_SETTLEMENT_INTERVAL_SECONDS: int = 1800  # 30 min
-    WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% — weather has more signal than 5-min BTC
+    WEATHER_MIN_EDGE_THRESHOLD: float = 0.10  # 10% — weather has more signal
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
     WEATHER_MAX_TRADE_SIZE: float = 100.0
-    WEATHER_CITIES: str = "nyc,chicago,miami,dallas,seattle,atlanta,los_angeles,denver,london,seoul,tokyo"
+    WEATHER_CITIES: str = (
+        "nyc,chicago,miami,dallas,seattle,atlanta,los_angeles,denver,london,seoul,tokyo"
+    )
+
+    # Data aggregator staleness guard (seconds; None = unlimited)
+    DATA_AGGREGATOR_MAX_STALE_AGE: float = 300.0
 
     # Admin API security
     ADMIN_API_KEY: Optional[str] = None
@@ -112,10 +121,14 @@ class Settings(BaseSettings):
     MAX_POSITION_FRACTION: float = 0.05
     MAX_TOTAL_EXPOSURE_FRACTION: float = 0.50
     SLIPPAGE_TOLERANCE: float = 0.02
-    DAILY_DRAWDOWN_LIMIT_PCT: float = 0.10  # Pause trading if 24h loss > 10% of bankroll
-    WEEKLY_DRAWDOWN_LIMIT_PCT: float = 0.20  # Pause trading if 7d loss > 20% of bankroll
+    DAILY_DRAWDOWN_LIMIT_PCT: float = (
+        0.10  # Pause trading if 24h loss > 10% of bankroll
+    )
+    WEEKLY_DRAWDOWN_LIMIT_PCT: float = (
+        0.20  # Pause trading if 7d loss > 20% of bankroll
+    )
 
-    AUTO_APPROVE_MIN_CONFIDENCE: float = 0.85
+    AUTO_APPROVE_MIN_CONFIDENCE: float = 0.55
     AUTO_TRADER_ENABLED: bool = False
 
     # Signal approval mode: "manual", "auto_approve", "auto_deny"

@@ -4,6 +4,7 @@ Strategy Registry for PolyEdge.
 Central registry mapping strategy names to their classes.
 Strategies self-register via BaseStrategy.__init_subclass__.
 """
+
 from __future__ import annotations
 
 import logging
@@ -97,13 +98,15 @@ def load_all_strategies() -> None:
         "backend.strategies.realtime_scanner",
         "backend.strategies.whale_pnl_tracker",
         "backend.strategies.market_maker",
-        "backend.strategies.bond_scanner",
+        # "backend.strategies.bond_scanner",
         "backend.strategies.general_market_scanner",
     ]
     for module in strategy_modules:
         try:
             importlib.import_module(module)
-        except ImportError as e:
-            logging.getLogger(__name__).warning(
-                f"Could not load strategy module {module}: {e}"
+        except Exception as e:
+            # Catch all exceptions (SyntaxError, AttributeError, etc.), not just
+            # ImportError — a bad strategy file must not kill the entire registration loop.
+            logging.getLogger(__name__).error(
+                f"Could not load strategy module {module}: {e}", exc_info=True
             )

@@ -3,6 +3,7 @@
 This module manages the APScheduler instance and scheduling configuration.
 The actual job functions are in scheduling_strategies.py.
 """
+
 import asyncio
 from datetime import datetime
 from typing import List, Optional
@@ -14,7 +15,6 @@ from backend.config import settings
 from backend.queue.worker import Worker
 from backend.queue.sqlite_queue import AsyncSQLiteQueue
 
-# Import job functions from scheduling_strategies
 from backend.core.scheduling_strategies import (
     scan_and_trade_job,
     weather_scan_and_trade_job,
@@ -25,6 +25,7 @@ from backend.core.scheduling_strategies import (
     heartbeat_job,
     strategy_cycle_job,
 )
+from backend.core.auto_improve import auto_improve_job
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trading_bot")
@@ -48,7 +49,7 @@ def log_event(event_type: str, message: str, data: dict = None):
         "timestamp": datetime.utcnow().isoformat(),
         "type": event_type,
         "message": message,
-        "data": data or {}
+        "data": data or {},
     }
     event_log.append(event)
 
@@ -61,7 +62,7 @@ def log_event(event_type: str, message: str, data: dict = None):
         "success": logger.info,
         "info": logger.info,
         "data": logger.debug,
-        "trade": logger.info
+        "trade": logger.info,
     }.get(event_type, logger.info)
 
     log_func(f"[{event_type.upper()}] {message}")
@@ -79,6 +80,7 @@ def schedule_strategy(strategy_name: str, interval_seconds: int) -> None:
         return
 
     import functools
+
     job_id = f"strategy_{strategy_name}"
     job_fn = functools.partial(strategy_cycle_job, strategy_name)
     scheduler.add_job(
@@ -88,7 +90,9 @@ def schedule_strategy(strategy_name: str, interval_seconds: int) -> None:
         replace_existing=True,
         max_instances=1,
     )
-    logger.info(f"Scheduled strategy {strategy_name} every {interval_seconds}s (job_id={job_id})")
+    logger.info(
+        f"Scheduled strategy {strategy_name} every {interval_seconds}s (job_id={job_id})"
+    )
 
 
 def unschedule_strategy(strategy_name: str) -> None:
@@ -122,6 +126,7 @@ def get_scheduler_jobs() -> list[dict]:
 def _load_strategy_jobs() -> None:
     """Read StrategyConfig table and schedule enabled strategies."""
     from backend.models.database import SessionLocal, StrategyConfig
+
     db = SessionLocal()
     try:
         configs = db.query(StrategyConfig).filter(StrategyConfig.enabled == True).all()
@@ -150,7 +155,7 @@ def start_scheduler():
         IntervalTrigger(seconds=settle_seconds),
         id="settlement_check",
         replace_existing=True,
-        max_instances=1
+        max_instances=1,
     )
 
     # Heartbeat every minute
@@ -159,7 +164,7 @@ def start_scheduler():
         IntervalTrigger(minutes=1),
         id="heartbeat",
         replace_existing=True,
-        max_instances=1
+        max_instances=1,
     )
 
     # BTC scan job
@@ -173,8 +178,8 @@ def start_scheduler():
     )
 
     # Weather scan job (only if enabled)
-    if getattr(settings, 'WEATHER_ENABLED', True):
-        weather_seconds = getattr(settings, 'WEATHER_SCAN_INTERVAL_SECONDS', 600)
+    if getattr(settings, "WEATHER_ENABLED", True):
+        weather_seconds = getattr(settings, "WEATHER_SCAN_INTERVAL_SECONDS", 600)
         scheduler.add_job(
             weather_scan_and_trade_job,
             IntervalTrigger(seconds=weather_seconds),
@@ -186,6 +191,7 @@ def start_scheduler():
 
     # Watchdog: check strategy heartbeats every 30s
     from backend.core.heartbeat import watchdog_job
+
     scheduler.add_job(
         watchdog_job,
         IntervalTrigger(seconds=30),
@@ -197,7 +203,9 @@ def start_scheduler():
     # Start the scheduler
     scheduler.start()
     for job in scheduler.get_jobs():
-        logger.info(f"scheduler job registered: id={job.id} next_run={job.next_run_time}")
+        logger.info(
+            f"scheduler job registered: id={job.id} next_run={job.next_run_time}"
+        )
     logger.info(f"scheduler started: jobs={[j.id for j in scheduler.get_jobs()]}")
 
     if settings.NEWS_FEED_ENABLED:
@@ -227,6 +235,17 @@ def start_scheduler():
             max_instances=1,
         )
 
+    # Auto-improvement (weekly) - learns from trade outcomes
+    from apscheduler.triggers.interval import IntervalTrigger as _IntervalTrigger
+
+    scheduler.add_job(
+        auto_improve_job,
+        _IntervalTrigger(days=7),
+        id="auto_improve",
+        replace_existing=True,
+        max_instances=1,
+    )
+
     # Initialize queue worker if enabled
     if settings.JOB_WORKER_ENABLED:
         logger.info("JOB_WORKER_ENABLED=True - initializing queue worker")
@@ -241,7 +260,9 @@ def start_scheduler():
         for job_id in jobs_to_remove:
             try:
                 scheduler.remove_job(job_id)
-                logger.info(f"Removed APScheduler job '{job_id}' - worker will handle via queue")
+                logger.info(
+                    f"Removed APScheduler job '{job_id}' - worker will handle via queue"
+                )
             except Exception as e:
                 logger.warning(f"Could not remove job '{job_id}': {e}")
 
@@ -249,34 +270,42 @@ def start_scheduler():
         worker_task = asyncio.create_task(worker.start())
         logger.info("Queue worker started in background")
 
-        log_event("success", "BTC 5-min trading scheduler started with queue worker", {
-            "worker_enabled": True,
-            "scan_interval": f"{scan_seconds}s",
-            "settlement_interval": f"{settle_seconds}s",
-            "min_edge": f"{settings.MIN_EDGE_THRESHOLD:.0%}",
-            "weather_enabled": settings.WEATHER_ENABLED,
-            "max_concurrent_jobs": settings.MAX_CONCURRENT_JOBS,
-        })
+        log_event(
+            "success",
+            "BTC 5-min trading scheduler started with queue worker",
+            {
+                "worker_enabled": True,
+                "scan_interval": f"{scan_seconds}s",
+                "settlement_interval": f"{settle_seconds}s",
+                "min_edge": f"{settings.MIN_EDGE_THRESHOLD:.0%}",
+                "weather_enabled": settings.WEATHER_ENABLED,
+                "max_concurrent_jobs": settings.MAX_CONCURRENT_JOBS,
+            },
+        )
     else:
         logger.info("JOB_WORKER_ENABLED=False - using APScheduler for job execution")
-        log_event("success", "BTC 5-min trading scheduler started", {
-            "worker_enabled": False,
-            "scan_interval": f"{scan_seconds}s",
-            "settlement_interval": f"{settle_seconds}s",
-            "min_edge": f"{settings.MIN_EDGE_THRESHOLD:.0%}",
-            "weather_enabled": settings.WEATHER_ENABLED,
-        })
+        log_event(
+            "success",
+            "BTC 5-min trading scheduler started",
+            {
+                "worker_enabled": False,
+                "scan_interval": f"{scan_seconds}s",
+                "settlement_interval": f"{settle_seconds}s",
+                "min_edge": f"{settings.MIN_EDGE_THRESHOLD:.0%}",
+                "weather_enabled": settings.WEATHER_ENABLED,
+            },
+        )
 
     # Load registry-driven strategy jobs from DB
     try:
         _load_strategy_jobs()
     except Exception as e:
-        logger.warning(f"Could not load strategy jobs from DB: {e}")
+        logger.exception(f"Could not load strategy jobs from DB: {e}")
 
 
 def stop_scheduler():
     """Stop the background scheduler."""
-    global scheduler, worker, queue
+    global scheduler, worker, queue, worker_task
 
     if scheduler is None or not scheduler.running:
         log_event("info", "Scheduler not running")
@@ -288,6 +317,12 @@ def stop_scheduler():
         worker.stop()
         worker = None
         logger.info("Queue worker stopped")
+
+        # Cancel the worker asyncio task to unblock any pending await
+        if worker_task is not None and not worker_task.done():
+            worker_task.cancel()
+            logger.info("Worker task cancelled")
+        worker_task = None
 
         # Shutdown queue
         if queue is not None:
@@ -320,10 +355,15 @@ def reschedule_jobs() -> list[dict]:
     try:
         scheduler.reschedule_job(
             "market_scan",
-            trigger=IntervalTrigger(seconds=settings.SCAN_INTERVAL_SECONDS)
+            trigger=IntervalTrigger(seconds=settings.SCAN_INTERVAL_SECONDS),
         )
         job = scheduler.get_job("market_scan")
-        results.append({"job_id": "market_scan", "next_run": str(job.next_run_time) if job else None})
+        results.append(
+            {
+                "job_id": "market_scan",
+                "next_run": str(job.next_run_time) if job else None,
+            }
+        )
     except _JobLookupError:
         logger.warning("market_scan job not registered, skipping reschedule")
     except Exception as e:
@@ -333,10 +373,15 @@ def reschedule_jobs() -> list[dict]:
     try:
         scheduler.reschedule_job(
             "settlement_check",
-            trigger=IntervalTrigger(seconds=settings.SETTLEMENT_INTERVAL_SECONDS)
+            trigger=IntervalTrigger(seconds=settings.SETTLEMENT_INTERVAL_SECONDS),
         )
         job = scheduler.get_job("settlement_check")
-        results.append({"job_id": "settlement_check", "next_run": str(job.next_run_time) if job else None})
+        results.append(
+            {
+                "job_id": "settlement_check",
+                "next_run": str(job.next_run_time) if job else None,
+            }
+        )
     except _JobLookupError:
         logger.warning("settlement_check job not registered, skipping reschedule")
     except Exception as e:
@@ -347,10 +392,15 @@ def reschedule_jobs() -> list[dict]:
         try:
             scheduler.reschedule_job(
                 "weather_scan",
-                trigger=IntervalTrigger(seconds=settings.WEATHER_SCAN_INTERVAL_SECONDS)
+                trigger=IntervalTrigger(seconds=settings.WEATHER_SCAN_INTERVAL_SECONDS),
             )
             job = scheduler.get_job("weather_scan")
-            results.append({"job_id": "weather_scan", "next_run": str(job.next_run_time) if job else None})
+            results.append(
+                {
+                    "job_id": "weather_scan",
+                    "next_run": str(job.next_run_time) if job else None,
+                }
+            )
         except _JobLookupError:
             logger.warning("weather_scan job not registered, skipping reschedule")
         except Exception as e:
