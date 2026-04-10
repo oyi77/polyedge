@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import PendingApprovals from '../pages/PendingApprovals'
 
 vi.mock('../api', () => ({
@@ -8,13 +9,22 @@ vi.mock('../api', () => ({
   rejectPendingTrade: vi.fn().mockResolvedValue({ id: 1, status: 'rejected' }),
 }))
 
+function createWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  )
+}
+
 describe('PendingApprovals page', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('renders the empty state when no items pending', async () => {
-    render(<PendingApprovals />)
+    render(<PendingApprovals />, { wrapper: createWrapper() })
     await waitFor(() => {
       expect(screen.getByText(/No pending approvals/i)).toBeInTheDocument()
     })
@@ -34,13 +44,13 @@ describe('PendingApprovals page', () => {
         created_at: '2026-04-07T14:00:00',
       },
     ])
-    render(<PendingApprovals />)
+    render(<PendingApprovals />, { wrapper: createWrapper() })
     await waitFor(() => {
       expect(screen.getByText('BTC-MAR-2026')).toBeInTheDocument()
     })
-    expect(screen.getByText('62.0%')).toBeInTheDocument()
+    expect(screen.getAllByText('62.0%').length).toBeGreaterThan(0)
 
-    const approveBtn = screen.getByRole('button', { name: /approve/i })
+    const approveBtn = screen.getByRole('button', { name: 'Approve' })
     fireEvent.click(approveBtn)
     await waitFor(() => {
       expect(vi.mocked(mod.approvePendingTrade)).toHaveBeenCalledWith(7)
@@ -50,7 +60,7 @@ describe('PendingApprovals page', () => {
   it('shows an error message on fetch failure', async () => {
     const mod = await import('../api')
     vi.mocked(mod.fetchPendingApprovals).mockRejectedValueOnce(new Error('boom'))
-    render(<PendingApprovals />)
+    render(<PendingApprovals />, { wrapper: createWrapper() })
     await waitFor(() => {
       expect(screen.getByText(/boom/i)).toBeInTheDocument()
     })
