@@ -1,7 +1,18 @@
 import { Link, useLocation } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { fetchPendingApprovals, getAdminApiKey } from '../api'
 
 export function NavBar({ title }: { title: string }) {
   const location = useLocation()
+
+  // Fetch pending approvals count to show badge — only when authenticated
+  const { data: pendingApprovals } = useQuery({
+    queryKey: ['pending-approvals-nav'],
+    queryFn: fetchPendingApprovals,
+    refetchInterval: 10000, // Refresh every 10s
+    enabled: !!getAdminApiKey(),
+  })
+  const pendingCount = pendingApprovals?.length || 0
 
   return (
     <nav className="shrink-0 border-b border-neutral-800 px-4 py-2 flex items-center justify-between bg-black">
@@ -71,11 +82,16 @@ export function NavBar({ title }: { title: string }) {
         </Link>
         <Link
           to="/pending-approvals"
-          className={`text-[10px] uppercase tracking-wider transition-colors ${
+          className={`text-[10px] uppercase tracking-wider transition-colors relative ${
             location.pathname === '/pending-approvals' ? 'text-green-500' : 'text-neutral-500 hover:text-green-500'
           }`}
         >
           Approvals
+          {pendingCount > 0 && (
+            <span className="absolute -top-1 -right-2 bg-amber-500 text-black text-[8px] font-bold px-1 py-0.5 rounded-full min-w-[14px] text-center">
+              {pendingCount > 9 ? '9+' : pendingCount}
+            </span>
+          )}
         </Link>
       </div>
     </nav>

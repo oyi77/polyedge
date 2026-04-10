@@ -338,14 +338,16 @@ async def update_credentials(body: CredentialsUpdate, _: None = Depends(require_
     logger.info(f"Credentials updated: {list(env_updates.keys())}")
 
     # Restart polyedge-bot to pick up new credentials
+    import asyncio as _asyncio
     import subprocess as _subprocess
 
     try:
-        _subprocess.run(
-            ["pm2", "restart", "polyedge-bot"],
-            capture_output=True,
-            timeout=10,
+        _proc = await _asyncio.create_subprocess_exec(
+            "pm2", "restart", "polyedge-bot",
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
         )
+        await _asyncio.wait_for(_proc.communicate(), timeout=10)
         logger.info("polyedge-bot restarted to apply new credentials")
     except Exception as _e:
         logger.warning(f"Could not restart polyedge-bot: {_e}")
@@ -384,7 +386,7 @@ async def get_admin_system(
     db_trade_count = db.query(Trade).count()
     db_signal_count = db.query(Signal).count()
 
-    uptime = (datetime.utcnow() - request.app.state.start_time if hasattr(request.app.state, 'start_time') else datetime.utcnow()).total_seconds()
+    uptime = (datetime.utcnow() - (request.app.state.start_time if hasattr(request.app.state, 'start_time') else datetime.utcnow())).total_seconds()
 
     has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
     has_api_key = bool(settings.POLYMARKET_API_KEY)

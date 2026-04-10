@@ -34,6 +34,7 @@ class Orchestrator:
         self._copy_trader = None   # CopyTrader
         self._copy_task: Optional[asyncio.Task] = None
         self._running = False
+        self._condition_cache: dict[str, str] = {}
 
     # =========================================================================
     # Lifecycle
@@ -67,26 +68,38 @@ class Orchestrator:
 
         load_all_strategies()  # trigger auto-registration
 
-        # Seed default strategy configs if table is empty
+        # Upsert default strategy configs — add any missing rows (safe to run on existing DBs)
         db = SessionLocal()
         try:
-            if db.query(StrategyConfig).count() == 0:
-                defaults = [
-                    StrategyConfig(strategy_name="copy_trader", enabled=True, interval_seconds=60,
-                                  params=json.dumps({"max_wallets": 20, "min_score": 60.0, "poll_interval": 60})),
-                    StrategyConfig(strategy_name="weather_emos", enabled=False, interval_seconds=300,
-                                  params=json.dumps({"min_edge": 0.05, "max_position_usd": 100, "calibration_window_days": 40})),
-                    StrategyConfig(strategy_name="kalshi_arb", enabled=False, interval_seconds=30,
-                                  params=json.dumps({"min_edge": 0.02, "allow_live_execution": False})),
-                    StrategyConfig(strategy_name="btc_oracle", enabled=False, interval_seconds=30,
-                                  params=json.dumps({"min_edge": 0.03, "max_minutes_to_resolution": 10})),
-                    StrategyConfig(strategy_name="btc_5m", enabled=False, interval_seconds=60,
-                                  params=json.dumps({"WARNING": "EXPERIMENTAL — documented -49.5% live ROI. Do not enable without re-validation."})),
-                ]
-                for d in defaults:
-                    db.add(d)
+            defaults = [
+                ("copy_trader",        True,  60,  {"max_wallets": 20, "min_score": 60.0, "poll_interval": 60}),
+                ("weather_emos",       False, 300, {"min_edge": 0.05, "max_position_usd": 100, "calibration_window_days": 40}),
+                ("kalshi_arb",         False, 30,  {"min_edge": 0.02, "allow_live_execution": False}),
+                ("btc_oracle",         False, 30,  {"min_edge": 0.03, "max_minutes_to_resolution": 10}),
+                ("btc_5m",             False, 60,  {"WARNING": "Dedicated BTC scan job — controlled by SCAN_INTERVAL_SECONDS setting, not this config."}),
+                ("btc_momentum",       False, 60,  {"WARNING": "EXPERIMENTAL — documented -49.5% live ROI. Do not enable without re-validation."}),
+                ("general_scanner",    False, 300, {"min_volume": 50000, "min_edge": 0.05, "max_position_usd": 150}),
+                ("bond_scanner",       False, 180, {"min_price": 0.92, "max_price": 0.98, "max_position_usd": 200}),
+                ("realtime_scanner",   False, 60,  {"min_edge": 0.03, "max_position_usd": 100}),
+                ("whale_pnl_tracker",  False, 120, {"min_wallet_pnl": 10000, "max_position_usd": 100}),
+                ("market_maker",       False, 30,  {"spread": 0.02, "max_position_usd": 200}),
+            ]
+            added = 0
+            for name, enabled, interval, params in defaults:
+                exists = db.query(StrategyConfig).filter(
+                    StrategyConfig.strategy_name == name
+                ).first()
+                if not exists:
+                    db.add(StrategyConfig(
+                        strategy_name=name,
+                        enabled=enabled,
+                        interval_seconds=interval,
+                        params=json.dumps(params),
+                    ))
+                    added += 1
+            if added:
                 db.commit()
-                logger.info(f"Seeded {len(defaults)} default strategy configs")
+                logger.info(f"Seeded {added} missing strategy configs")
         finally:
             db.close()
 
@@ -99,6 +112,11 @@ class Orchestrator:
         # 5. Start scheduler (BTC + weather interval jobs)
         from backend.core.scheduler import start_scheduler
         start_scheduler()
+
+        # 6. Phase 2 modules (whale listener, news feed, auto-trader, arb detector)
+        self._phase2 = init_phase2_modules()
+        if self._phase2:
+            logger.info(f"Phase 2 modules active: {list(self._phase2.keys())}")
 
         logger.info("Orchestrator started.")
 
@@ -232,7 +250,7 @@ class Orchestrator:
             return None
 
         trade = signal.source_trade
-        token_id = _condition_to_token(trade.condition_id, trade.outcome)
+        token_id = await self._condition_to_token(trade.condition_id, trade.outcome)
 
         if signal.our_side == "SELL":
             # Exit: sell entire mirrored position — size=0.0 means full close
@@ -277,6 +295,52 @@ class Orchestrator:
         start_scheduler()
         logger.info("Trading resumed via Telegram")
 
+    # =========================================================================
+    # Token resolution (async, dict-cached)
+    # =========================================================================
+
+    async def _condition_to_token(self, condition_id: str, outcome: str) -> str:
+        """
+        Map condition_id + outcome to a CLOB token ID via Gamma API.
+        Dict-cached — the mapping is immutable (condition_id to token_id never changes).
+        outcome: "YES" or "NO"
+        """
+        cache_key = f"{condition_id}:{outcome}"
+        if cache_key in self._condition_cache:
+            return self._condition_cache[cache_key]
+
+        import httpx as _httpx
+        try:
+            async with _httpx.AsyncClient() as client:
+                resp = await client.get(
+                    "https://gamma-api.polymarket.com/markets",
+                    params={"conditionId": condition_id},
+                    timeout=10.0,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                logger.warning(f"No market found for condition_id={condition_id}, using fallback")
+                result = condition_id
+                self._condition_cache[cache_key] = result
+                return result
+
+            market = data[0]
+            tokens = market.get("tokens", [])
+            # tokens[0] = YES token, tokens[1] = NO token
+            if outcome.upper() == "YES" and len(tokens) > 0:
+                result = str(tokens[0].get("token_id", condition_id))
+            elif outcome.upper() == "NO" and len(tokens) > 1:
+                result = str(tokens[1].get("token_id", condition_id))
+            else:
+                result = condition_id
+
+            self._condition_cache[cache_key] = result
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to resolve token_id for {condition_id}/{outcome}: {e}")
+            return condition_id
+
 
 # =========================================================================
 # Helpers
@@ -304,42 +368,6 @@ async def _auto_execute_weather(signals: list, clob: Optional[PolymarketCLOB]) -
             )
         except Exception as e:
             logger.warning(f"Auto-execute failed: {e}")
-
-
-from functools import lru_cache as _lru_cache
-
-@_lru_cache(maxsize=1024)
-def _condition_to_token(condition_id: str, outcome: str) -> str:
-    """
-    Map condition_id + outcome to a CLOB token ID via Gamma API.
-    Cached — the mapping is immutable (condition_id to token_id never changes).
-    outcome: "YES" or "NO"
-    """
-    import httpx as _httpx
-    try:
-        resp = _httpx.get(
-            "https://gamma-api.polymarket.com/markets",
-            params={"conditionId": condition_id},
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not data:
-            logger.warning(f"No market found for condition_id={condition_id}, using fallback")
-            return condition_id
-
-        market = data[0]
-        tokens = market.get("tokens", [])
-        # tokens[0] = YES token, tokens[1] = NO token
-        if outcome.upper() == "YES" and len(tokens) > 0:
-            return str(tokens[0].get("token_id", condition_id))
-        elif outcome.upper() == "NO" and len(tokens) > 1:
-            return str(tokens[1].get("token_id", condition_id))
-
-        return condition_id
-    except Exception as e:
-        logger.warning(f"Failed to resolve token_id for {condition_id}/{outcome}: {e}")
-        return condition_id
 
 
 # =========================================================================

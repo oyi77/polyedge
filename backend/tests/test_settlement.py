@@ -206,7 +206,8 @@ class TestDirectionAliases:
 
 
 class TestBankrollUpdate:
-    def test_bankroll_increases_on_win(self, db):
+    @pytest.mark.asyncio
+    async def test_bankroll_increases_on_win(self, db):
         """After settling a winning trade, paper_bankroll should increase."""
         from backend.core.settlement import update_bot_state_with_settlements
 
@@ -232,16 +233,14 @@ class TestBankrollUpdate:
         trade.trading_mode = "paper"
         db.flush()
 
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(
-            update_bot_state_with_settlements(db, [trade])
-        )
+        await update_bot_state_with_settlements(db, [trade])
 
         db.refresh(state)
         assert state.paper_bankroll > settings.INITIAL_BANKROLL
         assert state.paper_pnl > 0.0
 
-    def test_bankroll_decreases_on_loss(self, db):
+    @pytest.mark.asyncio
+    async def test_bankroll_decreases_on_loss(self, db):
         """After settling a losing trade, paper_bankroll should decrease."""
         from backend.core.settlement import update_bot_state_with_settlements
 
@@ -266,10 +265,7 @@ class TestBankrollUpdate:
         trade.trading_mode = "paper"
         db.flush()
 
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(
-            update_bot_state_with_settlements(db, [trade])
-        )
+        await update_bot_state_with_settlements(db, [trade])
 
         db.refresh(state)
         assert state.paper_bankroll < settings.INITIAL_BANKROLL
@@ -281,39 +277,40 @@ class TestBankrollUpdate:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 class TestProcessSettledTrade:
-    def test_marks_trade_as_settled(self, db):
+    async def test_marks_trade_as_settled(self, db):
         trade = _make_trade(db)
         pnl = 6.0
-        result = process_settled_trade(trade, True, 1.0, pnl, db)
+        result = await process_settled_trade(trade, True, 1.0, pnl, db)
         assert result is True
         assert trade.settled is True
         assert trade.settlement_value == pytest.approx(1.0)
         assert trade.pnl == pytest.approx(pnl)
         assert trade.result == "win"
 
-    def test_marks_trade_as_loss(self, db):
+    async def test_marks_trade_as_loss(self, db):
         trade = _make_trade(db)
         pnl = -4.0
-        result = process_settled_trade(trade, True, 0.0, pnl, db)
+        result = await process_settled_trade(trade, True, 0.0, pnl, db)
         assert result is True
         assert trade.result == "loss"
         assert trade.pnl == pytest.approx(pnl)
 
-    def test_marks_trade_as_push(self, db):
+    async def test_marks_trade_as_push(self, db):
         trade = _make_trade(db)
-        result = process_settled_trade(trade, True, 1.0, 0.0, db)
+        result = await process_settled_trade(trade, True, 1.0, 0.0, db)
         assert result is True
         assert trade.result == "push"
 
-    def test_returns_false_when_not_settled(self, db):
+    async def test_returns_false_when_not_settled(self, db):
         trade = _make_trade(db)
-        result = process_settled_trade(trade, False, None, None, db)
+        result = await process_settled_trade(trade, False, None, None, db)
         assert result is False
 
-    def test_creates_settlement_event(self, db):
+    async def test_creates_settlement_event(self, db):
         trade = _make_trade(db)
-        process_settled_trade(trade, True, 1.0, 6.0, db)
+        await process_settled_trade(trade, True, 1.0, 6.0, db)
         db.flush()
         events = db.query(SettlementEvent).filter(
             SettlementEvent.market_ticker == trade.market_ticker
@@ -322,10 +319,10 @@ class TestProcessSettledTrade:
         assert events[0].resolved_outcome == "up"
         assert events[0].pnl == pytest.approx(6.0)
 
-    def test_settlement_timestamp_set(self, db):
+    async def test_settlement_timestamp_set(self, db):
         trade = _make_trade(db)
         before = datetime.utcnow()
-        process_settled_trade(trade, True, 1.0, 6.0, db)
+        await process_settled_trade(trade, True, 1.0, 6.0, db)
         assert trade.settlement_time is not None
         assert trade.settlement_time >= before
 

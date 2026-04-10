@@ -57,8 +57,8 @@ class ErrorBoundary extends React.Component<
 export default function App() {
   return (
     <ErrorBoundary>
-      <TradeNotifications />
       <BrowserRouter>
+        <TradeNotifications />
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/dashboard" element={<Dashboard />} />

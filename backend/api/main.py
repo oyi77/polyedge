@@ -39,7 +39,7 @@ try:
     from eth_account import Account
 except ImportError:
     Account = None
-    logger.warning("eth_account not available - wallet creation disabled")
+    print("WARNING: eth_account not available - wallet creation disabled")
 from backend.core.signals import scan_for_signals, TradingSignal
 from backend.data.btc_markets import fetch_active_btc_markets
 from backend.data.crypto import fetch_crypto_price, compute_btc_microstructure
@@ -47,7 +47,7 @@ from backend.core.errors import handle_errors
 from backend.core.event_bus import event_bus, publish_event
 from backend.api.ws_manager import market_ws, whale_ws, broadcast_market_tick, broadcast_whale_tick
 from backend.api.auth import router as auth_router, require_admin
-from backend.api.markets import router as markets_router
+from backend.api.markets import router as markets_router, _weather_signal_to_response
 from backend.api.trading import (
     router as trading_router,
     _signal_to_response,
@@ -277,6 +277,7 @@ async def startup():
         if not state:
             state = BotState(
                 bankroll=settings.INITIAL_BANKROLL,
+                paper_bankroll=settings.INITIAL_BANKROLL,
                 total_trades=0,
                 winning_trades=0,
                 total_pnl=0.0,
@@ -338,17 +339,13 @@ async def shutdown():
     logger.info("Shutdown initiated — stopping scheduler...")
     app.state.shutting_down = True
 
-    # Stop APScheduler gracefully
+    # Stop APScheduler gracefully (sets running=False immediately, cancels worker task)
     stop_scheduler()
 
-    # Wait up to 30s for in-flight operations
-    deadline = 30
-    waited = 0
-    while waited < deadline:
-        if _scheduler is None or not getattr(_scheduler, "running", False):
-            break
-        await asyncio.sleep(0.5)
-        waited += 0.5
+    # Give in-flight strategy jobs a grace period to complete before closing DB.
+    # scheduler.shutdown(wait=False) cancels the scheduler but doesn't await running
+    # coroutines. A 3-second grace period covers the typical strategy cycle duration.
+    await asyncio.sleep(3.0)
 
     # Close database connections
     try:
@@ -608,8 +605,10 @@ class CopySignalResponse(BaseModel):
 
 
 @app.get("/api/events/stream")
-async def events_stream(request: Request):
+async def events_stream(request: Request, token: str = ""):
     """Server-Sent Events stream for real-time trade notifications."""
+    if settings.ADMIN_API_KEY and token != settings.ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
     from fastapi.responses import StreamingResponse
     import json as _json
 
@@ -680,7 +679,10 @@ async def ws_whales(websocket: WebSocket):
 
 
 @app.websocket("/ws/events")
-async def websocket_events(websocket: WebSocket):
+async def websocket_events(websocket: WebSocket, token: str = ""):
+    if settings.ADMIN_API_KEY and token != settings.ADMIN_API_KEY:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
     await ws_manager.connect(websocket)
 
     try:

@@ -120,7 +120,7 @@ class TestCheckMarketSettlement:
     async def test_settled_trade_returns_pnl(self):
         trade = make_trade(direction="up", entry_price=0.60, size=100.0)
 
-        with patch("backend.core.settlement.fetch_polymarket_resolution", new_callable=AsyncMock) as mock_fetch:
+        with patch("backend.core.settlement_helpers.fetch_polymarket_resolution", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (True, 1.0)
             is_settled, settlement_value, pnl = await check_market_settlement(trade)
 
@@ -132,7 +132,7 @@ class TestCheckMarketSettlement:
     async def test_unresolved_market_returns_none(self):
         trade = make_trade(direction="up", entry_price=0.60, size=100.0)
 
-        with patch("backend.core.settlement.fetch_polymarket_resolution", new_callable=AsyncMock) as mock_fetch:
+        with patch("backend.core.settlement_helpers.fetch_polymarket_resolution", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (False, None)
             is_settled, settlement_value, pnl = await check_market_settlement(trade)
 

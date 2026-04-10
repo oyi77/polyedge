@@ -75,11 +75,24 @@ export function CopyTraderMonitor() {
         <div className="border border-neutral-800 bg-neutral-900/20 p-3">
           <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-2">Recent Copy Signals</div>
           <div className="space-y-1">
-            {data.recent_signals.map((sig, i) => (
-              <div key={i} className="text-[10px] text-neutral-400 font-mono">
-                {JSON.stringify(sig)}
-              </div>
-            ))}
+            {data.recent_signals.map((sig, i) => {
+              const ticker = (sig.market_ticker || sig.ticker) as string | undefined
+              const decision = sig.decision as string | undefined
+              const confidence = (sig.confidence as number | undefined) || 0
+              const timestamp = sig.timestamp as string | undefined
+              return (
+                <div key={i} className="py-1 border-b border-neutral-800/50 last:border-0">
+                  <div className="flex justify-between items-center">
+                    <span className="font-mono text-xs text-neutral-300">{ticker ?? '--'}</span>
+                    <span className={`text-xs font-semibold ${decision === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{decision ?? '--'}</span>
+                    <span className="text-xs text-neutral-400">{Math.round(confidence * 100)}%</span>
+                    <span className="text-[10px] text-neutral-600 tabular-nums">
+                      {timestamp ? new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '--'}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

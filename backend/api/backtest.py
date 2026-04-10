@@ -128,11 +128,41 @@ async def get_backtest_history(
     db: Session = Depends(get_db)
 ):
     """Get history of backtest runs."""
+    total = db.query(BacktestRun).count()
+    runs = (
+        db.query(BacktestRun)
+        .order_by(BacktestRun.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     return {
-        "runs": [],
-        "total": 0,
+        "runs": [
+            {
+                "id": r.id,
+                "strategy_name": r.strategy_name,
+                "start_date": r.start_date.isoformat() if r.start_date else None,
+                "end_date": r.end_date.isoformat() if r.end_date else None,
+                "initial_bankroll": r.initial_bankroll,
+                "final_equity": r.final_equity,
+                "total_pnl": r.total_pnl,
+                "total_return_pct": r.total_return_pct,
+                "win_rate": r.win_rate,
+                "total_trades": r.total_trades,
+                "winning_trades": r.winning_trades,
+                "losing_trades": r.losing_trades,
+                "sharpe_ratio": r.sharpe_ratio,
+                "completed": r.completed,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "error_message": r.error_message,
+                "params": r.params,
+            }
+            for r in runs
+        ],
+        "total": total,
         "limit": limit,
-        "offset": offset
+        "offset": offset,
     }
 
 
@@ -278,7 +308,7 @@ def get_historical_signals(
             'market_type': signal.market_type,
             'direction': signal.direction,
             'model_probability': signal.model_probability,
-            'market_probability': signal.market_probability,
+            'market_probability': signal.market_price,
             'edge': signal.edge,
             'confidence': signal.confidence,
             'suggested_size': signal.suggested_size,

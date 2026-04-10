@@ -122,7 +122,11 @@ function handleSkipSignal(signalContext: SignalContext) {
   // Could add logging to track skipped signals
 }
 
-function mapEventToNotification(event: TradeEvent): Notification | null {
+function mapEventToNotification(
+  event: TradeEvent,
+  approvalMode: 'manual' | 'auto_approve' | 'auto_deny',
+  notificationDuration: number
+): Notification | null {
   const now = Date.now()
   const id = `${now}-${Math.random().toString(36).slice(2, 7)}`
 
@@ -131,6 +135,7 @@ function mapEventToNotification(event: TradeEvent): Notification | null {
   if (event.type === 'signal_found') {
     const ticker = String(event.data.market_ticker ?? event.data.ticker ?? event.data.symbol ?? event.data.condition_id ?? 'Unknown Market')
     const direction = String(event.data.direction ?? event.data.side ?? event.data.action ?? 'WAIT')
+    const modelProb = Number(event.data.model_probability ?? event.data.probability ?? 0.5)
     const confidence = event.data.confidence != null ? `${(Number(event.data.confidence) * 100).toFixed(0)}%` : 'N/A'
     const title = String(event.data.market_title ?? event.data.question ?? ticker)
     const platform = String(event.data.platform ?? event.data.source ?? 'Polymarket')
@@ -139,7 +144,7 @@ function mapEventToNotification(event: TradeEvent): Notification | null {
       market_title: title,
       platform,
       direction,
-      model_probability: Number(event.data.model_probability ?? event.data.probability ?? 0.5),
+      model_probability: modelProb,
       market_probability: Number(event.data.market_probability ?? event.data.yes_price ?? 0.5),
       edge: Number(event.data.edge ?? 0),
       confidence: Number(event.data.confidence ?? 0.5),
@@ -153,16 +158,20 @@ function mapEventToNotification(event: TradeEvent): Notification | null {
       actionable: Boolean(event.data.actionable ?? true),
       event_slug: event.data.event_slug ? String(event.data.event_slug) : undefined,
     }
+
+    // In manual mode, use longer duration for user to decide
+    const duration = approvalMode === 'manual' ? notificationDuration : TIER_DURATIONS.info
+
     return {
       id,
       type: 'signal_found',
-      title: `${direction.toUpperCase()} • ${confidence} conf`,
+      title: `${direction.toUpperCase()} • ${(modelProb * 100).toFixed(0)}% model • ${confidence} conf`,
       body: `${platform}: ${title.slice(0, 40)}${title.length > 40 ? '...' : ''}`,
       tier: 'info',
       side: 'neutral',
       ticker,
       signalContext,
-      expiresAt: now + TIER_DURATIONS.info,
+      expiresAt: now + duration,
       createdAt: now,
     }
   }
@@ -461,9 +470,11 @@ export function TradeNotifications() {
   const [signalConfig, setSignalConfig] = useState<{
     approvalMode: 'manual' | 'auto_approve' | 'auto_deny'
     minConfidence: number
+    notificationDuration: number
   }>({
     approvalMode: (import.meta.env.VITE_SIGNAL_APPROVAL_MODE as 'manual' | 'auto_approve' | 'auto_deny') || 'manual',
     minConfidence: 0.85,
+    notificationDuration: Number(import.meta.env.VITE_SIGNAL_NOTIFICATION_DURATION) || 10000,
   })
 
   useEffect(() => {
@@ -471,6 +482,7 @@ export function TradeNotifications() {
       setSignalConfig({
         approvalMode: cfg.approval_mode,
         minConfidence: cfg.min_confidence,
+        notificationDuration: cfg.notification_duration_ms || 30000, // Default to 30s for manual mode
       })
     }).catch(() => {
       // Fallback to env vars already set in initial state
@@ -479,25 +491,27 @@ export function TradeNotifications() {
 
   const handleEvent = useCallback(
     (event: TradeEvent) => {
-      const notif = mapEventToNotification(event)
+      // Filter signals below the minimum confidence threshold
+      if (event.type === 'signal_found') {
+        const confidence = Number(event.data.confidence ?? 0)
+        if (confidence < signalConfig.minConfidence) return
+      }
+
+      const notif = mapEventToNotification(event, signalConfig.approvalMode, signalConfig.notificationDuration)
       if (!notif) return
 
-      // Handle auto-approval for signals
+      // Auto-approval and auto-deny are handled server-side by the backend
+      // scheduler. The frontend only displays notifications.
       if (notif.type === 'signal_found' && notif.signalContext) {
-        if (signalConfig.approvalMode === 'auto_approve' && notif.signalContext.confidence >= signalConfig.minConfidence) {
-          handleApproveSignal(notif.signalContext)
-          console.log(`Auto-approved signal for ${notif.signalContext.market_ticker} (confidence: ${(notif.signalContext.confidence * 100).toFixed(1)}%)`)
-          return
-        } else if (signalConfig.approvalMode === 'auto_deny') {
-          handleSkipSignal(notif.signalContext)
-          console.log(`Auto-denied signal for ${notif.signalContext.market_ticker}`)
+        if (signalConfig.approvalMode === 'auto_approve' || signalConfig.approvalMode === 'auto_deny') {
+          // Do not execute trades from the frontend; just skip the notification
           return
         }
       }
 
       addNotification(notif)
     },
-    [addNotification, signalConfig.approvalMode, signalConfig.minConfidence]
+    [addNotification, signalConfig.approvalMode, signalConfig.minConfidence, signalConfig.notificationDuration]
   )
 
   useTradeEvents(handleEvent)

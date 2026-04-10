@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   fetchPendingApprovals,
   approvePendingTrade,
@@ -10,38 +11,33 @@ import {
 } from '../api'
 
 export default function PendingApprovals() {
-  const [items, setItems] = useState<PendingApproval[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+  const [actionError, setActionError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const data = await fetchPendingApprovals()
-      setItems(data)
-      setError(null)
-      setSelectedIds(new Set())
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setLoading(false)
-    }
-  }
+  const { data: items = [], isLoading: loading, error: queryError, refetch } = useQuery<PendingApproval[]>({
+    queryKey: ['pending-approvals'],
+    queryFn: fetchPendingApprovals,
+    refetchInterval: 15000,
+  })
 
-  useEffect(() => {
-    load()
-  }, [])
+  const error = actionError || (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null)
+
+  const invalidate = () => {
+    setSelectedIds(new Set())
+    queryClient.invalidateQueries({ queryKey: ['pending-approvals'] })
+  }
 
   const handleApprove = async (id: number) => {
     setBusyId(id)
+    setActionError(null)
     try {
       await approvePendingTrade(id)
-      await load()
+      invalidate()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setActionError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusyId(null)
     }
@@ -49,11 +45,12 @@ export default function PendingApprovals() {
 
   const handleReject = async (id: number) => {
     setBusyId(id)
+    setActionError(null)
     try {
       await rejectPendingTrade(id)
-      await load()
+      invalidate()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setActionError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusyId(null)
     }
@@ -80,11 +77,12 @@ export default function PendingApprovals() {
   const handleBatchApprove = async () => {
     if (selectedIds.size === 0) return
     setBatchBusy(true)
+    setActionError(null)
     try {
       await batchApprovePendingTrades(Array.from(selectedIds))
-      await load()
+      invalidate()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setActionError(e instanceof Error ? e.message : String(e))
     } finally {
       setBatchBusy(false)
     }
@@ -93,11 +91,12 @@ export default function PendingApprovals() {
   const handleBatchReject = async () => {
     if (selectedIds.size === 0) return
     setBatchBusy(true)
+    setActionError(null)
     try {
       await batchRejectPendingTrades(Array.from(selectedIds))
-      await load()
+      invalidate()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setActionError(e instanceof Error ? e.message : String(e))
     } finally {
       setBatchBusy(false)
     }
@@ -106,11 +105,12 @@ export default function PendingApprovals() {
   const handleClearAll = async () => {
     if (items.length === 0) return
     setBatchBusy(true)
+    setActionError(null)
     try {
       await clearAllPendingTrades()
-      await load()
+      invalidate()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setActionError(e instanceof Error ? e.message : String(e))
     } finally {
       setBatchBusy(false)
     }
@@ -128,7 +128,7 @@ export default function PendingApprovals() {
             </p>
           </div>
           <button
-            onClick={load}
+            onClick={() => refetch()}
             className="text-[10px] px-3 py-1 border border-neutral-700 text-neutral-400 hover:border-neutral-500 hover:text-neutral-300 transition-colors"
           >
             Refresh

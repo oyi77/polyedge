@@ -23,7 +23,7 @@ import httpx
 logger = logging.getLogger("trading_bot")
 
 # Import from extracted modules
-from backend.strategies.wallet_sync import WalletWatcher
+from backend.strategies.wallet_sync import WalletWatcher, WalletTrade
 from backend.strategies.order_executor import (
     LeaderboardScorer,
     ScoredTrader,
@@ -51,7 +51,7 @@ class CopyTrader:
         self._http: Optional[httpx.AsyncClient] = None
         self._watcher: Optional[WalletWatcher] = None
         self._scorer: Optional[LeaderboardScorer] = None
-        self._executor: Optional[OrderExecutor] = None
+        self._executor: OrderExecutor = OrderExecutor(bankroll)
         self._last_refresh: float = 0.0
         self._running = False
 
@@ -113,6 +113,11 @@ class CopyTrader:
 
         return signals
 
+    def _mirror_buy(self, trader, trade):
+        """Synchronous mirror_buy delegation — uses executor if started, else creates one."""
+        executor = self._executor or OrderExecutor(self.bankroll)
+        return executor.mirror_buy(trader, trade)
+
     async def run_loop(self, poll_interval: int = 60, on_signal=None):
         """
         Main polling loop. Calls on_signal(signals) for each batch of new signals.
@@ -154,10 +159,31 @@ class CopyTraderStrategy(BaseStrategy):
 
     def __init__(self, max_wallets: int = 20, min_score: float = 60.0):
         super().__init__()
+        # Resolve bankroll from DB (BotState) or fall back to default
+        bankroll = self._resolve_bankroll()
         self._engine = CopyTrader(
-            bankroll=10000, max_wallets=max_wallets, min_score=min_score
+            bankroll=bankroll, max_wallets=max_wallets, min_score=min_score
         )
         self._task: asyncio.Task | None = None
+
+    @staticmethod
+    def _resolve_bankroll() -> float:
+        """Read bankroll from BotState, respecting paper vs live mode."""
+        try:
+            from backend.models.database import SessionLocal, BotState
+            from backend.config import settings as _settings
+            db = SessionLocal()
+            try:
+                state = db.query(BotState).first()
+                if state:
+                    if _settings.TRADING_MODE == "paper":
+                        return float(state.paper_bankroll or state.bankroll)
+                    return float(state.bankroll)
+            finally:
+                db.close()
+        except Exception:
+            pass
+        return 1000.0  # safe default
 
     async def market_filter(self, markets):
         return markets
@@ -208,6 +234,11 @@ class CopyTraderStrategy(BaseStrategy):
 
         result = CycleResult(decisions_recorded=0, trades_attempted=0, trades_placed=0)
         try:
+            # Refresh bankroll from DB each cycle so it stays current
+            self._engine.bankroll = self._resolve_bankroll()
+            if self._engine._executor:
+                self._engine._executor.bankroll = self._engine.bankroll
+
             if not self._engine._running:
                 await self._engine.start()
 
@@ -255,6 +286,26 @@ class CopyTraderStrategy(BaseStrategy):
             ctx.db.commit()
             result.decisions_recorded = len(wallet_pool)
             result.trades_attempted = len(signals) if signals else 0
+
+            # Populate result.decisions so strategy_executor can place trades
+            for signal in (signals or []):
+                confidence = signal.trader_score / 100.0 if signal.trader_score else 0.5
+                edge = abs(signal.market_price - 0.5) if signal.market_price else 0.0
+                result.decisions.append({
+                    "decision": "BUY",
+                    "market_ticker": signal.source_trade.condition_id,
+                    "direction": signal.our_side.lower(),
+                    "confidence": confidence,
+                    "edge": edge,
+                    "size": signal.our_size,
+                    "entry_price": signal.market_price,
+                    "suggested_size": signal.our_size,
+                    "model_probability": confidence,
+                    "market_probability": signal.market_price,
+                    "platform": "polymarket",
+                    "strategy_name": "copy_trader",
+                    "reasoning": signal.reasoning,
+                })
 
         except Exception as e:
             result.errors.append(str(e))

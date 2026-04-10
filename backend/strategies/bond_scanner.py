@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from backend.strategies.base import BaseStrategy, CycleResult, StrategyContext
+from backend.strategies.base import BaseStrategy, CycleResult, MarketInfo, StrategyContext
 
 logger = logging.getLogger("trading_bot.bonds")
 
@@ -25,14 +25,17 @@ class BondScannerStrategy(BaseStrategy):
         "max_concurrent_bonds": 5,
     }
 
-    def market_filter(self) -> dict:
-        """Return filter criteria for Gamma API queries."""
-        return {
-            "active": True,
-            "closed": False,
-            "min_volume": self.default_params["min_volume"],
-            "max_days_to_resolution": self.default_params["max_days_to_resolution"],
-        }
+    async def market_filter(self, markets: list[MarketInfo]) -> list[MarketInfo]:
+        """Filter to bond-relevant markets (treasury, interest rate, fed, bond keywords)."""
+        bond_keywords = {"bond", "treasury", "interest rate", "fed", "yield", "debt ceiling", "t-bill"}
+        filtered = [
+            m for m in markets
+            if any(kw in m.question.lower() for kw in bond_keywords)
+        ]
+        # If no keyword matches, fall back to base class DB-driven filter
+        if not filtered:
+            return await super().market_filter(markets)
+        return filtered
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
         result = CycleResult(decisions_recorded=0, trades_attempted=0, trades_placed=0)
@@ -159,29 +162,45 @@ class BondScannerStrategy(BaseStrategy):
             bankroll = 100.0
             try:
                 from backend.models.database import BotState
+                from backend.config import settings as _settings
                 state = ctx.db.query(BotState).first()
                 if state:
-                    bankroll = float(state.bankroll)
+                    bankroll = float(state.bankroll) if _settings.TRADING_MODE != "paper" else float(state.paper_bankroll or state.bankroll)
             except Exception:
                 pass
 
             size = min(max_position_size, bankroll * 0.10)
-            edge = round(1.0 - qualifying_price, 4)
-            confidence = qualifying_price
+            # Expected value: win_prob * profit_if_win - loss_prob * cost_if_loss
+            # win_prob must differ from market price for non-zero edge.
+            # Bond scanner targets near-certain outcomes (>92c), so our model
+            # assigns higher resolution probability based on proximity to
+            # expiry and high price (market already pricing in near-certainty,
+            # but we believe the true probability is slightly higher).
+            # Scale confidence boost by how close to 1.0 the price already is.
+            proximity_boost = (qualifying_price - 0.90) * 0.5  # e.g. 0.95 -> 0.025 boost
+            win_prob = min(qualifying_price + max(proximity_boost, 0.01), 0.99)
+            edge = round(win_prob * (1.0 - qualifying_price) - (1.0 - win_prob) * qualifying_price, 4)
+            confidence = win_prob
 
             decision = {
-                "market_slug": slug,
+                "market_ticker": slug,
                 "market_question": market.get("question") or market.get("title") or slug,
                 "direction": str(qualifying_outcome).lower(),
-                "price": qualifying_price,
+                "decision": "BUY",
+                "entry_price": qualifying_price,
                 "size": size,
+                "suggested_size": size,
                 "edge": edge,
                 "confidence": confidence,
+                "model_probability": qualifying_price,
+                "market_probability": qualifying_price,
+                "platform": "polymarket",
+                "strategy_name": self.name,
                 "days_to_resolution": round(days_to_resolution, 2),
                 "volume": volume,
-                "strategy": self.name,
             }
             decisions.append(decision)
+            result.decisions.append(decision)
 
             result.decisions_recorded += 1
             result.trades_attempted += 1

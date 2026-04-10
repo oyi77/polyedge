@@ -422,8 +422,10 @@ class PolyEdgeBot:
         try:
             from backend.models.database import SessionLocal, Trade
             db = SessionLocal()
-            pending = db.query(Trade).filter(Trade.settled == False).order_by(Trade.timestamp.desc()).all()
-            db.close()
+            try:
+                pending = db.query(Trade).filter(Trade.settled == False).order_by(Trade.timestamp.desc()).all()
+            finally:
+                db.close()
 
             if not pending:
                 await update.message.reply_text(
@@ -546,8 +548,10 @@ class PolyEdgeBot:
                     pass
             from backend.models.database import SessionLocal, Trade
             db = SessionLocal()
-            trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(n).all()
-            db.close()
+            try:
+                trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(n).all()
+            finally:
+                db.close()
             if not trades:
                 await update.message.reply_text("📊 <b>Recent Trades</b>\n\nNo trades found.", parse_mode=ParseMode.HTML)
                 return
@@ -574,9 +578,11 @@ class PolyEdgeBot:
             from backend.models.database import SessionLocal, Trade
             from backend.config import settings
             db = SessionLocal()
-            pending = db.query(Trade).filter(Trade.settled == False).all()
-            settled = db.query(Trade).filter(Trade.settled == True).all()
-            db.close()
+            try:
+                pending = db.query(Trade).filter(Trade.settled == False).all()
+                settled = db.query(Trade).filter(Trade.settled == True).all()
+            finally:
+                db.close()
             total_pnl = sum(t.pnl or 0.0 for t in settled)
             exposure = sum(t.size for t in pending)
             equity = settings.INITIAL_BANKROLL + total_pnl
@@ -604,8 +610,8 @@ class PolyEdgeBot:
             return
         await update.message.reply_text("⚙️ Running settlement check...")
         try:
-            from backend.core.scheduler import settlement_check_job
-            await settlement_check_job()
+            from backend.core.scheduler import settlement_job
+            await settlement_job()
             await update.message.reply_text("✅ Settlement check complete.")
         except Exception as e:
             await update.message.reply_text(f"❌ Settlement error: {e}")
@@ -615,8 +621,10 @@ class PolyEdgeBot:
         try:
             from backend.models.database import SessionLocal, Trade
             db = SessionLocal()
-            all_trades = db.query(Trade).filter(Trade.settled == True).all()
-            db.close()
+            try:
+                all_trades = db.query(Trade).filter(Trade.settled == True).all()
+            finally:
+                db.close()
             if not all_trades:
                 await update.message.reply_text("📊 No settled trades yet.")
                 return

@@ -17,10 +17,14 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         now = time.time()
         window_start = now - 60
 
-        # Clean old entries
+        # Clean old entries for this IP
         self._requests[client_ip] = [
             t for t in self._requests[client_ip] if t > window_start
         ]
+
+        # Evict empty IP entries periodically to prevent memory leak
+        if len(self._requests) > 10000:
+            self._requests = defaultdict(list, {k: v for k, v in self._requests.items() if v})
 
         if len(self._requests[client_ip]) >= self.requests_per_minute:
             logger.warning("Rate limit exceeded for %s", client_ip)

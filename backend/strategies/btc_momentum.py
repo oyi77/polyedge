@@ -22,7 +22,7 @@ EXPERIMENTAL_WARNING = (
 
 
 class BtcMomentumStrategy(BaseStrategy):
-    name = "btc_5m"
+    name = "btc_momentum"
     description = f"BTC 5-min momentum (EXPERIMENTAL). {EXPERIMENTAL_WARNING}"
     category = "experimental"
     default_params = {
@@ -57,9 +57,10 @@ class BtcMomentumStrategy(BaseStrategy):
 
             for signal in actionable:
                 decision = "BUY" if signal.passes_threshold else "SKIP"
+                market_id = getattr(signal.market, "market_id", "unknown")
                 record_decision(
                     ctx.db, self.name,
-                    getattr(signal.market, "market_id", "unknown"),
+                    market_id,
                     decision,
                     confidence=getattr(signal, "edge", 0.0),
                     signal_data={
@@ -75,6 +76,21 @@ class BtcMomentumStrategy(BaseStrategy):
                 result.decisions_recorded += 1
                 if decision == "BUY":
                     result.trades_attempted += 1
+                    result.decisions.append({
+                        "decision": "BUY",
+                        "market_ticker": market_id,
+                        "direction": signal.direction,
+                        "confidence": getattr(signal, "edge", 0.0),
+                        "edge": signal.edge,
+                        "size": None,
+                        "entry_price": signal.market_probability,
+                        "suggested_size": None,
+                        "model_probability": signal.model_probability,
+                        "market_probability": signal.market_probability,
+                        "platform": "polymarket",
+                        "strategy_name": self.name,
+                        "experimental_warning": True,
+                    })
 
         except Exception as e:
             result.errors.append(str(e))

@@ -110,15 +110,6 @@ export default function Dashboard() {
   const weatherSignals = data?.weather_signals ?? []
   const weatherForecasts = data?.weather_forecasts ?? []
 
-  const stats = data?.stats ?? {
-    is_running: false,
-    last_run: null,
-    total_trades: 0,
-    total_pnl: 0,
-    bankroll: 10000,
-    winning_trades: 0,
-    win_rate: 0
-  }
   const equityCurve = data?.equity_curve ?? []
   const calibration = data?.calibration ?? null
 
@@ -165,7 +156,7 @@ export default function Dashboard() {
             {unifiedStats.isRunning ? 'Live' : 'Idle'}
           </span>
           {(() => {
-            const mode = (stats as any).trading_mode || 'paper'
+            const mode = data?.stats?.trading_mode || 'paper'
             const cfg: Record<string, { label: string; cls: string }> = {
               paper: { label: 'Paper', cls: 'bg-amber-500/10 text-amber-400 border-amber-500/20' },
               testnet: { label: 'Testnet', cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' },
