@@ -122,7 +122,8 @@ async def execute_decision(
                             return None
                     except Exception as clob_err:
                         logger.error(
-                            f"[{strategy_name}] CLOB execution error for {market_ticker}: {clob_err}"
+                            f"[strategy_executor.execute_decision] {type(clob_err).__name__}: CLOB execution error for {market_ticker}: {clob_err}",
+                            exc_info=True,
                         )
                         return None
                 else:
@@ -201,8 +202,10 @@ async def execute_decision(
                         "mode": settings.TRADING_MODE,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    f"[strategy_executor.execute_decision] {type(e).__name__}: event broadcast failed (non-fatal): {e}"
+                )
 
             logger.info(
                 f"[{strategy_name}] Trade created: {direction.upper()} {market_ticker} "
@@ -212,12 +215,14 @@ async def execute_decision(
 
     except Exception as exc:
         logger.exception(
-            f"[{strategy_name}] execute_decision failed for {market_ticker}: {exc}"
+            f"[strategy_executor.execute_decision] {type(exc).__name__}: execute_decision failed for {market_ticker}: {exc}"
         )
         try:
             db.rollback()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                f"[strategy_executor.execute_decision] {type(e).__name__}: db.rollback failed (non-fatal): {e}"
+            )
         return None
     finally:
         if owns_db:

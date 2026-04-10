@@ -175,8 +175,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         engine.dispose()
         logger.info("Database connections closed")
-    except Exception:
-        logger.exception("Error closing database connections")
+    except Exception as e:
+        logger.exception(
+            f"[api.lifespan] {type(e).__name__}: Error closing database connections"
+        )
 
     logger.info("Shutdown complete")
 
@@ -239,8 +241,10 @@ class ConnectionManager:
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
-            except Exception:
-                logger.exception("Failed to broadcast message to WebSocket connection")
+            except Exception as e:
+                logger.exception(
+                    f"[api.ConnectionManager.broadcast] {type(e).__name__}: Failed to broadcast message to WebSocket connection"
+                )
 
 
 ws_manager = ConnectionManager()
@@ -447,9 +451,9 @@ async def get_dashboard(
                 volume_24h=0,
                 last_updated=datetime.now(timezone.utc),
             )
-    except Exception:
+    except Exception as e:
         logger.warning(
-            "Failed to fetch BTC microstructure data, falling back to CoinGecko"
+            f"[api.get_dashboard] {type(e).__name__}: Failed to fetch BTC microstructure data, falling back to CoinGecko"
         )
     if not btc_price_data:
         try:
@@ -463,8 +467,10 @@ async def get_dashboard(
                     volume_24h=btc.volume_24h,
                     last_updated=btc.last_updated,
                 )
-        except Exception:
-            logger.warning("Failed to fetch BTC price from CoinGecko")
+        except Exception as e:
+            logger.warning(
+                f"[api.get_dashboard] {type(e).__name__}: Failed to fetch BTC price from CoinGecko"
+            )
 
     # Fetch windows
     windows = []
@@ -486,8 +492,10 @@ async def get_dashboard(
             )
             for m in markets
         ]
-    except Exception:
-        logger.warning("Failed to fetch active BTC markets")
+    except Exception as e:
+        logger.warning(
+            f"[api.get_dashboard] {type(e).__name__}: Failed to fetch active BTC markets"
+        )
 
     # Signals — return ALL signals, mark which are actionable
     signals = []
@@ -496,8 +504,10 @@ async def get_dashboard(
         signals = [
             _signal_to_response(s, actionable=s.passes_threshold) for s in raw_signals
         ]
-    except Exception:
-        logger.warning("Failed to scan for trading signals")
+    except Exception as e:
+        logger.warning(
+            f"[api.get_dashboard] {type(e).__name__}: Failed to scan for trading signals"
+        )
 
     # Recent trades (with TradeContext enrichment)
     trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
@@ -580,8 +590,10 @@ async def get_dashboard(
                             ensemble_agreement=forecast.ensemble_agreement,
                         )
                     )
-        except Exception:
-            logger.warning("Failed to fetch weather forecasts data")
+        except Exception as e:
+            logger.warning(
+                f"[api.get_dashboard] {type(e).__name__}: Failed to fetch weather forecasts data"
+            )
 
     return DashboardData(
         stats=stats,
@@ -685,8 +697,8 @@ async def ws_markets(websocket: WebSocket, token: str = ""):
             await websocket.send_json({"type": "heartbeat"})
     except WebSocketDisconnect:
         market_ws.disconnect(websocket)
-    except Exception:
-        logger.exception("Market WebSocket error")
+    except Exception as e:
+        logger.exception(f"[api.ws_markets] {type(e).__name__}: Market WebSocket error")
         market_ws.disconnect(websocket)
 
 
@@ -703,8 +715,8 @@ async def ws_whales(websocket: WebSocket, token: str = ""):
             await websocket.send_json({"type": "heartbeat"})
     except WebSocketDisconnect:
         whale_ws.disconnect(websocket)
-    except Exception:
-        logger.exception("Whale WebSocket error")
+    except Exception as e:
+        logger.exception(f"[api.ws_whales] {type(e).__name__}: Whale WebSocket error")
         whale_ws.disconnect(websocket)
 
 
@@ -749,8 +761,10 @@ async def websocket_events(websocket: WebSocket, token: str = ""):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
-    except Exception:
-        logger.exception("Events WebSocket error")
+    except Exception as e:
+        logger.exception(
+            f"[api.websocket_events] {type(e).__name__}: Events WebSocket error"
+        )
         ws_manager.disconnect(websocket)
 
 

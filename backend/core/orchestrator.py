@@ -1,4 +1,5 @@
 """PolyEdge top-level orchestrator — wires together CLOB, Telegram, scheduler, and strategies."""
+
 import asyncio
 import logging
 import signal
@@ -33,6 +34,7 @@ class Orchestrator:
 
         if settings.TELEGRAM_BOT_TOKEN:
             from backend.bot.telegram_bot import bot_from_settings
+
             self._bot = bot_from_settings()
             self._bot.on_copy_trade = self._execute_weather_signal
             self._bot.on_pause = self._on_pause
@@ -40,6 +42,7 @@ class Orchestrator:
             self._bot.on_mode_switch = self.on_mode_switch
             await self._bot.start()
             from backend.bot.notifier import set_bot
+
             set_bot(self._bot)
 
         from backend.strategies.registry import load_all_strategies
@@ -51,30 +54,92 @@ class Orchestrator:
         db = SessionLocal()
         try:
             defaults = [
-                ("copy_trader",        True,  60,  {"max_wallets": 20, "min_score": 60.0, "poll_interval": 60}),
-                ("weather_emos",       False, 300, {"min_edge": 0.05, "max_position_usd": 100, "calibration_window_days": 40}),
-                ("kalshi_arb",         False, 30,  {"min_edge": 0.02, "allow_live_execution": False}),
-                ("btc_oracle",         False, 30,  {"min_edge": 0.03, "max_minutes_to_resolution": 10}),
-                ("btc_5m",             False, 60,  {"WARNING": "Dedicated BTC scan job — controlled by SCAN_INTERVAL_SECONDS setting, not this config."}),
-                ("btc_momentum",       False, 60,  {"WARNING": "EXPERIMENTAL — documented -49.5% live ROI. Do not enable without re-validation."}),
-                ("general_scanner",    False, 300, {"min_volume": 50000, "min_edge": 0.05, "max_position_usd": 150}),
-                ("bond_scanner",       False, 180, {"min_price": 0.92, "max_price": 0.98, "max_position_usd": 200}),
-                ("realtime_scanner",   False, 60,  {"min_edge": 0.03, "max_position_usd": 100}),
-                ("whale_pnl_tracker",  False, 120, {"min_wallet_pnl": 10000, "max_position_usd": 100}),
-                ("market_maker",       False, 30,  {"spread": 0.02, "max_position_usd": 200}),
+                (
+                    "copy_trader",
+                    True,
+                    60,
+                    {"max_wallets": 20, "min_score": 60.0, "poll_interval": 60},
+                ),
+                (
+                    "weather_emos",
+                    False,
+                    300,
+                    {
+                        "min_edge": 0.05,
+                        "max_position_usd": 100,
+                        "calibration_window_days": 40,
+                    },
+                ),
+                (
+                    "kalshi_arb",
+                    False,
+                    30,
+                    {"min_edge": 0.02, "allow_live_execution": False},
+                ),
+                (
+                    "btc_oracle",
+                    False,
+                    30,
+                    {"min_edge": 0.03, "max_minutes_to_resolution": 10},
+                ),
+                (
+                    "btc_5m",
+                    False,
+                    60,
+                    {
+                        "WARNING": "Dedicated BTC scan job — controlled by SCAN_INTERVAL_SECONDS setting, not this config."
+                    },
+                ),
+                (
+                    "btc_momentum",
+                    False,
+                    60,
+                    {
+                        "WARNING": "EXPERIMENTAL — documented -49.5% live ROI. Do not enable without re-validation."
+                    },
+                ),
+                (
+                    "general_scanner",
+                    False,
+                    300,
+                    {"min_volume": 50000, "min_edge": 0.05, "max_position_usd": 150},
+                ),
+                (
+                    "bond_scanner",
+                    False,
+                    180,
+                    {"min_price": 0.92, "max_price": 0.98, "max_position_usd": 200},
+                ),
+                (
+                    "realtime_scanner",
+                    False,
+                    60,
+                    {"min_edge": 0.03, "max_position_usd": 100},
+                ),
+                (
+                    "whale_pnl_tracker",
+                    False,
+                    120,
+                    {"min_wallet_pnl": 10000, "max_position_usd": 100},
+                ),
+                ("market_maker", False, 30, {"spread": 0.02, "max_position_usd": 200}),
             ]
             added = 0
             for name, enabled, interval, params in defaults:
-                exists = db.query(StrategyConfig).filter(
-                    StrategyConfig.strategy_name == name
-                ).first()
+                exists = (
+                    db.query(StrategyConfig)
+                    .filter(StrategyConfig.strategy_name == name)
+                    .first()
+                )
                 if not exists:
-                    db.add(StrategyConfig(
-                        strategy_name=name,
-                        enabled=enabled,
-                        interval_seconds=interval,
-                        params=json.dumps(params),
-                    ))
+                    db.add(
+                        StrategyConfig(
+                            strategy_name=name,
+                            enabled=enabled,
+                            interval_seconds=interval,
+                            params=json.dumps(params),
+                        )
+                    )
                     added += 1
             if added:
                 db.commit()
@@ -88,6 +153,7 @@ class Orchestrator:
         self._patch_weather_job()
 
         from backend.core.scheduler import start_scheduler
+
         start_scheduler()
 
         self._phase2 = init_phase2_modules()
@@ -110,6 +176,7 @@ class Orchestrator:
             await self._clob.__aexit__(None, None, None)
 
         from backend.core.scheduler import stop_scheduler
+
         stop_scheduler()
 
         logger.info("Orchestrator stopped.")
@@ -117,6 +184,7 @@ class Orchestrator:
     def _patch_weather_job(self) -> None:
         """Replace weather_scan_and_trade_job with a version that dispatches Telegram alerts."""
         import backend.core.scheduler as sched_mod
+
         bot = self._bot
         clob = self._clob
 
@@ -130,7 +198,9 @@ class Orchestrator:
             signals = await scan_for_weather_signals()
             actionable = [s for s in signals if s.passes_threshold]
 
-            log_event("data", f"Weather: {len(signals)} signals, {len(actionable)} actionable")
+            log_event(
+                "data", f"Weather: {len(signals)} signals, {len(actionable)} actionable"
+            )
 
             if not actionable:
                 return
@@ -140,9 +210,14 @@ class Orchestrator:
                 for signal in actionable[:3]:
                     try:
                         await bot.send_weather_signal(signal)
-                        log_event("info", f"Telegram alert sent: {signal.market.city_name} {signal.direction.upper()}")
+                        log_event(
+                            "info",
+                            f"Telegram alert sent: {signal.market.city_name} {signal.direction.upper()}",
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to send weather alert: {e}")
+                        logger.warning(
+                            f"[orchestrator.patched_weather_job] {type(e).__name__}: Failed to send weather alert: {e}"
+                        )
             else:
                 if settings.TRADING_MODE == "paper":
                     await _auto_execute_weather(actionable[:3], clob)
@@ -150,7 +225,9 @@ class Orchestrator:
             try:
                 await original_job()
             except Exception as e:
-                logger.debug(f"Original weather job error (non-fatal): {e}")
+                logger.debug(
+                    f"[orchestrator.patched_weather_job] {type(e).__name__}: Original weather job error (non-fatal): {e}"
+                )
 
         sched_mod.weather_scan_and_trade_job = patched_weather_job
 
@@ -178,7 +255,9 @@ class Orchestrator:
 
         result = await execute_decision(decision, "weather_copy", db=None)
         if result is None:
-            raise RuntimeError("Weather copy trade rejected by risk manager or duplicate")
+            raise RuntimeError(
+                "Weather copy trade rejected by risk manager or duplicate"
+            )
 
         logger.info(
             f"Weather trade executed: {signal.direction} ${signal.suggested_size:.2f} @ {price:.3f}"
@@ -193,16 +272,23 @@ class Orchestrator:
                 order_id = result.order_id if result else ""
 
                 if self._bot:
-                    await self._bot.send_copy_alert(sig, executed=executed, order_id=order_id)
+                    await self._bot.send_copy_alert(
+                        sig, executed=executed, order_id=order_id
+                    )
                 else:
                     logger.info(
                         f"Copy signal: {sig.our_side} ${sig.our_size:.2f} "
                         f"executed={executed} order={order_id}"
                     )
             except Exception as e:
-                logger.error(f"Copy signal execution error: {e}")
+                logger.error(
+                    f"[orchestrator._handle_copy_signals] {type(e).__name__}: Copy signal execution error: {e}",
+                    exc_info=True,
+                )
                 if self._bot:
-                    await self._bot.send_error_alert(str(e), context="Copy trade execution")
+                    await self._bot.send_error_alert(
+                        str(e), context="Copy trade execution"
+                    )
 
     async def _execute_copy_signal(self, signal):
         if not self._clob:
@@ -236,11 +322,13 @@ class Orchestrator:
 
     async def _on_pause(self) -> None:
         from backend.core.scheduler import stop_scheduler
+
         stop_scheduler()
         logger.info("Trading paused via Telegram")
 
     async def _on_resume(self) -> None:
         from backend.core.scheduler import start_scheduler
+
         start_scheduler()
         logger.info("Trading resumed via Telegram")
 
@@ -251,6 +339,7 @@ class Orchestrator:
             return self._condition_cache[cache_key]
 
         import httpx as _httpx
+
         try:
             async with _httpx.AsyncClient() as client:
                 resp = await client.get(
@@ -261,7 +350,9 @@ class Orchestrator:
             resp.raise_for_status()
             data = resp.json()
             if not data:
-                logger.warning(f"No market found for condition_id={condition_id}, using fallback")
+                logger.warning(
+                    f"No market found for condition_id={condition_id}, using fallback"
+                )
                 result = condition_id
                 self._condition_cache[cache_key] = result
                 return result
@@ -277,8 +368,10 @@ class Orchestrator:
 
             self._condition_cache[cache_key] = result
             return result
-        except Exception as e:
-            logger.warning(f"Failed to resolve token_id for {condition_id}/{outcome}: {e}")
+        except (httpx.HTTPError, KeyError, IndexError) as e:
+            logger.warning(
+                f"[orchestrator._condition_to_token] {type(e).__name__}: Failed to resolve token_id for {condition_id}/{outcome}: {e}"
+            )
             return condition_id
 
 
@@ -303,7 +396,9 @@ async def _auto_execute_weather(signals: list, clob: Optional[PolymarketCLOB]) -
                 f"order={result.order_id}"
             )
         except Exception as e:
-            logger.warning(f"Auto-execute failed: {e}")
+            logger.warning(
+                f"[orchestrator._auto_execute_weather] {type(e).__name__}: Auto-execute failed: {e}"
+            )
 
 
 async def main() -> None:
@@ -338,36 +433,49 @@ async def main() -> None:
 def init_phase2_modules() -> dict:
     """Initialize Phase 2 modules based on feature flags. Returns dict of active instances."""
     from backend.config import settings
+
     active: dict = {}
 
     if getattr(settings, "WHALE_LISTENER_ENABLED", False):
         try:
             from backend.data.polygon_listener import PolygonListener
+
             active["whale_listener"] = PolygonListener()
-        except Exception as e:
-            logger.warning(f"PolygonListener init failed: {e}")
+        except (ImportError, Exception) as e:
+            logger.warning(
+                f"[orchestrator.init_phase2] {type(e).__name__}: PolygonListener init failed: {e}"
+            )
 
     if getattr(settings, "NEWS_FEED_ENABLED", False):
         try:
             from backend.data.feed_aggregator import FeedAggregator
+
             active["news_feed"] = FeedAggregator()
-        except Exception as e:
-            logger.warning(f"FeedAggregator init failed: {e}")
+        except (ImportError, Exception) as e:
+            logger.warning(
+                f"[orchestrator.init_phase2] {type(e).__name__}: FeedAggregator init failed: {e}"
+            )
 
     if getattr(settings, "AUTO_TRADER_ENABLED", False):
         try:
             from backend.core.auto_trader import AutoTrader
             from backend.core.risk_manager import RiskManager
+
             active["auto_trader"] = AutoTrader(RiskManager())
-        except Exception as e:
-            logger.warning(f"AutoTrader init failed: {e}")
+        except (ImportError, Exception) as e:
+            logger.warning(
+                f"[orchestrator.init_phase2] {type(e).__name__}: AutoTrader init failed: {e}"
+            )
 
     if getattr(settings, "ARBITRAGE_DETECTOR_ENABLED", False):
         try:
             from backend.core.arbitrage_detector import ArbitrageDetector
+
             active["arbitrage"] = ArbitrageDetector()
-        except Exception as e:
-            logger.warning(f"ArbitrageDetector init failed: {e}")
+        except (ImportError, Exception) as e:
+            logger.warning(
+                f"[orchestrator.init_phase2] {type(e).__name__}: ArbitrageDetector init failed: {e}"
+            )
 
     return active
 

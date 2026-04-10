@@ -31,6 +31,7 @@ BTC_5M_SLUG_PATTERN = "btc-updown-5m"
 @dataclass
 class ScoredTrader:
     """Represents a scored trader from the leaderboard."""
+
     wallet: str
     pseudonym: str
     profit_30d: float
@@ -52,6 +53,7 @@ class ScoredTrader:
 @dataclass
 class CopySignal:
     """Represents a copy trading signal."""
+
     source_wallet: str
     source_trade: WalletTrade
     our_side: str
@@ -113,8 +115,10 @@ class LeaderboardScorer:
                             pass
 
             return total_value + realized_pnl if total_value > 0 else None
-        except Exception as e:
-            logger.debug(f"Failed to fetch positions for {wallet[:10]}...: {e}")
+        except (httpx.HTTPError, Exception) as e:
+            logger.debug(
+                f"[order_executor._fetch_actual_bankroll] {type(e).__name__}: Failed to fetch positions for {wallet[:10]}...: {e}"
+            )
             return None
 
     async def fetch_and_score(self, top_n: int = 50) -> list[ScoredTrader]:
@@ -124,8 +128,10 @@ class LeaderboardScorer:
             )
             resp.raise_for_status()
             entries = resp.json()
-        except Exception as e:
-            logger.error(f"Leaderboard fetch failed: {e}")
+        except (httpx.HTTPError, Exception) as e:
+            logger.error(
+                f"[order_executor.fetch_and_score] {type(e).__name__}: Leaderboard fetch failed: {e}"
+            )
             return []
 
         if not entries:
@@ -190,7 +196,9 @@ class LeaderboardScorer:
 class OrderExecutor:
     """Handles order mirroring logic for copy trading."""
 
-    def __init__(self, bankroll: float = 1000.0, http: Optional[httpx.AsyncClient] = None):
+    def __init__(
+        self, bankroll: float = 1000.0, http: Optional[httpx.AsyncClient] = None
+    ):
         self.bankroll = bankroll
         self._http = http
         # Cache: condition_id -> (slug, end_date_iso) or None
@@ -224,8 +232,10 @@ class OrderExecutor:
             result = (slug, end_date) if end_date else (slug, "")
             self._market_cache[condition_id] = result
             return result
-        except Exception as e:
-            logger.debug(f"Market meta fetch failed for {condition_id[:12]}: {e}")
+        except (httpx.HTTPError, Exception) as e:
+            logger.debug(
+                f"[order_executor._fetch_market_meta] {type(e).__name__}: Market meta fetch failed for {condition_id[:12]}: {e}"
+            )
             self._market_cache[condition_id] = None
             return None
 
@@ -260,8 +270,10 @@ class OrderExecutor:
                             f"Skipping copy: only {days_remaining}d to resolution (need {MIN_DAYS_TO_RESOLUTION}d) | {trade.title[:40]}"
                         )
                         return None
-                except Exception as e:
-                    logger.debug(f"Could not parse end_date '{end_date_iso}': {e}")
+                except ValueError as e:
+                    logger.debug(
+                        f"[order_executor.mirror_buy_async] {type(e).__name__}: Could not parse end_date '{end_date_iso}': {e}"
+                    )
 
         return self.mirror_buy(trader, trade)
 
@@ -281,7 +293,9 @@ class OrderExecutor:
 
         # Filter: skip BTC 5-min markets by title heuristic (slug not available here)
         if BTC_5M_SLUG_PATTERN in (trade.title or "").lower():
-            logger.debug(f"Skipping copy: BTC 5-min market in title | {trade.title[:40]}")
+            logger.debug(
+                f"Skipping copy: BTC 5-min market in title | {trade.title[:40]}"
+            )
             return None
 
         # Proportional sizing: (their trade size / their bankroll) * our bankroll

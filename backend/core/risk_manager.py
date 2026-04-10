@@ -1,4 +1,5 @@
 """Risk manager — validates trades against position size, exposure, drawdown, and confidence rules."""
+
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,10 +51,14 @@ class RiskManager:
 
         drawdown = self.check_drawdown(bankroll, db=db)
         if drawdown.is_breached:
-            return RiskDecision(False, f"drawdown breaker: {drawdown.breach_reason}", 0.0)
+            return RiskDecision(
+                False, f"drawdown breaker: {drawdown.breach_reason}", 0.0
+            )
 
         if market_ticker and self._has_unsettled_trade(market_ticker, db=db):
-            return RiskDecision(False, f"unsettled trade exists for {market_ticker}", 0.0)
+            return RiskDecision(
+                False, f"unsettled trade exists for {market_ticker}", 0.0
+            )
 
         max_position = bankroll * self.s.MAX_POSITION_FRACTION
         adjusted = min(size, max_position)
@@ -78,15 +83,25 @@ class RiskManager:
             day_start = now - timedelta(hours=24)
             week_start = now - timedelta(days=7)
 
-            daily_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
-                Trade.settled == True,
-                Trade.settlement_time >= day_start,
-            ).scalar() or 0.0
+            daily_pnl = (
+                db.query(func.coalesce(func.sum(Trade.pnl), 0.0))
+                .filter(
+                    Trade.settled == True,
+                    Trade.settlement_time >= day_start,
+                )
+                .scalar()
+                or 0.0
+            )
 
-            weekly_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
-                Trade.settled == True,
-                Trade.settlement_time >= week_start,
-            ).scalar() or 0.0
+            weekly_pnl = (
+                db.query(func.coalesce(func.sum(Trade.pnl), 0.0))
+                .filter(
+                    Trade.settled == True,
+                    Trade.settlement_time >= week_start,
+                )
+                .scalar()
+                or 0.0
+            )
 
             daily_limit = bankroll * self.s.DAILY_DRAWDOWN_LIMIT_PCT
             weekly_limit = bankroll * self.s.WEEKLY_DRAWDOWN_LIMIT_PCT
@@ -96,10 +111,10 @@ class RiskManager:
 
             if daily_pnl <= -daily_limit:
                 is_breached = True
-                breach_reason = f"24h loss ${abs(daily_pnl):.2f} exceeds {self.s.DAILY_DRAWDOWN_LIMIT_PCT*100:.0f}% limit (${daily_limit:.2f})"
+                breach_reason = f"24h loss ${abs(daily_pnl):.2f} exceeds {self.s.DAILY_DRAWDOWN_LIMIT_PCT * 100:.0f}% limit (${daily_limit:.2f})"
             elif weekly_pnl <= -weekly_limit:
                 is_breached = True
-                breach_reason = f"7d loss ${abs(weekly_pnl):.2f} exceeds {self.s.WEEKLY_DRAWDOWN_LIMIT_PCT*100:.0f}% limit (${weekly_limit:.2f})"
+                breach_reason = f"7d loss ${abs(weekly_pnl):.2f} exceeds {self.s.WEEKLY_DRAWDOWN_LIMIT_PCT * 100:.0f}% limit (${weekly_limit:.2f})"
 
             return DrawdownStatus(
                 daily_pnl=daily_pnl,
@@ -109,9 +124,18 @@ class RiskManager:
                 is_breached=is_breached,
                 breach_reason=breach_reason,
             )
-        except Exception:
-            logger.exception("Drawdown check failed, blocking trade (fail-closed)")
-            return DrawdownStatus(0.0, 0.0, self.s.DAILY_DRAWDOWN_LIMIT_PCT, self.s.WEEKLY_DRAWDOWN_LIMIT_PCT, True, "DB error during drawdown check")
+        except Exception as e:
+            logger.exception(
+                f"[risk_manager.check_drawdown] {type(e).__name__}: Drawdown check failed, blocking trade (fail-closed)"
+            )
+            return DrawdownStatus(
+                0.0,
+                0.0,
+                self.s.DAILY_DRAWDOWN_LIMIT_PCT,
+                self.s.WEEKLY_DRAWDOWN_LIMIT_PCT,
+                True,
+                "DB error during drawdown check",
+            )
         finally:
             if owns_db:
                 db.close()
@@ -121,14 +145,23 @@ class RiskManager:
         if owns_db:
             db = SessionLocal()
         try:
-            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            daily_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
-                Trade.settled == True,
-                Trade.settlement_time >= today_start,
-            ).scalar() or 0.0
+            today_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            daily_pnl = (
+                db.query(func.coalesce(func.sum(Trade.pnl), 0.0))
+                .filter(
+                    Trade.settled == True,
+                    Trade.settlement_time >= today_start,
+                )
+                .scalar()
+                or 0.0
+            )
             return daily_pnl <= -self.s.DAILY_LOSS_LIMIT
-        except Exception:
-            logger.exception("Risk check failed, blocking trade (fail-closed)")
+        except Exception as e:
+            logger.exception(
+                f"[risk_manager._daily_loss_exceeded] {type(e).__name__}: Risk check failed, blocking trade (fail-closed)"
+            )
             return True
         finally:
             if owns_db:
@@ -139,13 +172,20 @@ class RiskManager:
         if owns_db:
             db = SessionLocal()
         try:
-            count = db.query(func.count(Trade.id)).filter(
-                Trade.market_ticker == market_ticker,
-                Trade.settled == False,
-            ).scalar() or 0
+            count = (
+                db.query(func.count(Trade.id))
+                .filter(
+                    Trade.market_ticker == market_ticker,
+                    Trade.settled == False,
+                )
+                .scalar()
+                or 0
+            )
             return count > 0
-        except Exception:
-            logger.exception("Unsettled trade check failed, blocking trade")
+        except Exception as e:
+            logger.exception(
+                f"[risk_manager._has_unsettled_trade] {type(e).__name__}: Unsettled trade check failed, blocking trade"
+            )
             return True
         finally:
             if owns_db:
