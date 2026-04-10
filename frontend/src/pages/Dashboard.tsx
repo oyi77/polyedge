@@ -9,6 +9,7 @@ import { StatsCards } from '../components/StatsCards'
 import { LoginModal } from '../components/LoginModal'
 import { useAuth } from '../hooks/useAuth'
 import { useStats } from '../hooks/useStats'
+import { useWebSocket } from '../hooks/useWebSocket'
 
 // Dashboard tab components
 import { OverviewTab } from '../components/dashboard/OverviewTab'
@@ -63,6 +64,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>('Overview')
 
   const unifiedStats = useStats()
+  const { status: wsStatus } = useWebSocket('/ws/markets')
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['dashboard'],
@@ -249,8 +251,10 @@ export default function Dashboard() {
           <RefreshBar interval={10000} />
           <span className="text-[10px] text-neutral-700 font-mono">Copy · Weather · Kalshi · BTC Oracle · BTC 5m</span>
           <div className="flex items-center gap-1">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            <span className="text-[10px] text-neutral-600 font-mono">Connected</span>
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${wsStatus === 'open' ? 'bg-green-500' : 'bg-red-400'}`} />
+            <span className={`text-[10px] font-mono ${wsStatus === 'open' ? 'text-neutral-600' : 'text-red-400'}`}>
+              {wsStatus === 'open' ? 'Connected' : wsStatus === 'connecting' ? 'Connecting...' : 'Disconnected'}
+            </span>
           </div>
         </div>
       </footer>

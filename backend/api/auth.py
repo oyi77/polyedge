@@ -2,7 +2,7 @@
 from fastapi import Depends, HTTPException, Header, APIRouter, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import os
 
@@ -55,12 +55,14 @@ def _persist_env_updates(updates: dict[str, str]) -> None:
     """
     Atomic .env file update helper.
 
-    Reads existing .env, merges in updates, and writes back.
-    Handles key=value parsing and preserves comments.
+    Reads existing .env, merges in updates, and atomically replaces the file
+    using a temp-file + os.replace() pattern to prevent partial writes on crash.
 
     Args:
         updates: dict of env var names to their new values
     """
+    import tempfile
+
     env_path = ".env"
     env_lines: dict[str, str] = {}
 
@@ -76,10 +78,20 @@ def _persist_env_updates(updates: dict[str, str]) -> None:
     # Merge updates
     env_lines.update(updates)
 
-    # Write back
-    with open(env_path, "w") as f:
-        for k, v in env_lines.items():
-            f.write(f"{k}={v}\n")
+    # Atomic write: write to temp file in same dir, then rename
+    env_dir = os.path.dirname(os.path.abspath(env_path)) or "."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=env_dir, prefix=".env.tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            for k, v in env_lines.items():
+                f.write(f"{k}={v}\n")
+        os.replace(tmp_path, env_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _get_grouped_settings() -> dict:
@@ -296,6 +308,29 @@ async def switch_mode(body: ModeSwitch, _: None = Depends(require_admin)):
             status_code=400, detail="mode must be paper, testnet, or live"
         )
 
+    # Validate credentials before allowing mode switch
+    if new_mode == "live":
+        missing = [
+            k for k, v in {
+                "POLYMARKET_PRIVATE_KEY": settings.POLYMARKET_PRIVATE_KEY,
+                "POLYMARKET_API_KEY": settings.POLYMARKET_API_KEY,
+                "POLYMARKET_API_SECRET": settings.POLYMARKET_API_SECRET,
+                "POLYMARKET_API_PASSPHRASE": settings.POLYMARKET_API_PASSPHRASE,
+            }.items()
+            if not v
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot switch to live mode: missing credentials: {missing}",
+            )
+    elif new_mode == "testnet":
+        if not settings.POLYMARKET_PRIVATE_KEY:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot switch to testnet mode: POLYMARKET_PRIVATE_KEY required",
+            )
+
     old_mode = settings.TRADING_MODE
     settings.TRADING_MODE = new_mode
     _persist_env_updates({"TRADING_MODE": new_mode})
@@ -386,7 +421,7 @@ async def get_admin_system(
     db_trade_count = db.query(Trade).count()
     db_signal_count = db.query(Signal).count()
 
-    uptime = (datetime.utcnow() - (request.app.state.start_time if hasattr(request.app.state, 'start_time') else datetime.utcnow())).total_seconds()
+    uptime = (datetime.now(timezone.utc) - (request.app.state.start_time if hasattr(request.app.state, 'start_time') else datetime.now(timezone.utc))).total_seconds()
 
     has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
     has_api_key = bool(settings.POLYMARKET_API_KEY)

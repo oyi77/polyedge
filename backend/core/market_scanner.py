@@ -1,9 +1,4 @@
-"""
-Generic Polymarket market scanner.
-
-Fetches ALL active markets from Gamma API with pagination.
-Strategies use this as their market universe and apply their own filters.
-"""
+"""Polymarket market scanner — fetches active markets from Gamma API."""
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -36,12 +31,7 @@ async def fetch_all_active_markets(
     limit: int | None = None,
     timeout: float = 30.0,
 ) -> list[MarketInfo]:
-    """
-    Fetch ALL active, non-closed markets from Gamma API.
-    Paginates until exhaustion or limit is reached.
-    Rate limited to 5 concurrent requests via semaphore.
-    Retries 2x on transient 5xx errors.
-    """
+    """Fetch all active markets from Gamma API with pagination and retry."""
     results: list[MarketInfo] = []
     offset = 0
     page_size = 100
@@ -69,6 +59,9 @@ async def fetch_all_active_markets(
                     tokens = m.get("tokens", [])
                     yes_price = float(tokens[0].get("price", 0.5)) if tokens else 0.5
                     no_price = float(tokens[1].get("price", 0.5)) if len(tokens) > 1 else 1.0 - yes_price
+                    # Clamp to valid prediction market range — API can return 0 or values >1
+                    yes_price = max(0.01, min(0.99, yes_price))
+                    no_price = max(0.01, min(0.99, no_price))
                     results.append(MarketInfo(
                         ticker=m.get("conditionId") or m.get("id", ""),
                         slug=m.get("slug", ""),
@@ -85,7 +78,7 @@ async def fetch_all_active_markets(
                     logger.debug(f"market_scanner: skipping malformed market: {e}")
 
             if len(page) < page_size:
-                break  # last page
+                break
 
             offset += page_size
 
@@ -97,10 +90,7 @@ async def fetch_markets_by_keywords(
     keywords: list[str],
     limit: int | None = None,
 ) -> list[MarketInfo]:
-    """
-    Fetch active markets that contain any of the given keywords
-    in their question or slug (case-insensitive).
-    """
+    """Filter active markets by keyword match on question or slug."""
     all_markets = await fetch_all_active_markets(limit=limit or 2000)
     kw_lower = [k.lower() for k in keywords]
     return [

@@ -11,7 +11,6 @@ import logging
 from dataclasses import dataclass
 
 from backend.strategies.base import BaseStrategy, StrategyContext, CycleResult, MarketInfo
-from backend.core.decisions import record_decision
 
 logger = logging.getLogger("trading_bot")
 
@@ -56,55 +55,10 @@ class KalshiArbStrategy(BaseStrategy):
         return markets  # full scan — pair matching done in run_cycle
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
-        result = CycleResult(
+        return CycleResult(
             decisions_recorded=0,
             trades_attempted=0,
             trades_placed=0,
+            errors=["Kalshi integration not yet implemented"],
         )
 
-        # Gate: check for Kalshi credentials
-        kalshi_key = getattr(ctx.settings, "KALSHI_API_KEY", None)
-        if not kalshi_key:
-            record_decision(
-                ctx.db, self.name, "all_markets", "SKIP",
-                confidence=0.0,
-                signal_data={"reason": "no_credentials"},
-                reason="KALSHI_API_KEY not configured — strategy inactive"
-            )
-            result.decisions_recorded = 1
-            return result
-
-        # When credentials are available, scan for arb opportunities
-        # (full implementation pending Kalshi API access)
-        try:
-            opportunities = await self._scan_opportunities(ctx)
-            for opp in opportunities:
-                min_edge = ctx.params.get("min_edge", MIN_ARB_EDGE)
-                decision = "BUY" if opp.net_edge >= min_edge else "SKIP"
-                record_decision(
-                    ctx.db, self.name, opp.poly_ticker, decision,
-                    confidence=min(1.0, opp.net_edge * 10),
-                    signal_data={
-                        "poly_yes": opp.poly_yes_price,
-                        "kalshi_yes": opp.kalshi_yes_price,
-                        "gross_edge": opp.gross_edge,
-                        "net_edge": opp.net_edge,
-                        "kalshi_ticker": opp.kalshi_ticker,
-                    },
-                    reason=f"arb_edge={opp.net_edge:.3f}"
-                )
-                result.decisions_recorded += 1
-                if decision == "BUY":
-                    result.trades_attempted += 1
-        except Exception as e:
-            result.errors.append(str(e))
-            logger.error(f"KalshiArbStrategy error: {e}")
-
-        return result
-
-    async def _scan_opportunities(self, ctx: StrategyContext) -> list[ArbOpportunity]:
-        """
-        Placeholder: will query Kalshi API for matched markets and compare to Polymarket prices.
-        Currently returns empty list until Kalshi credentials and market mapping are configured.
-        """
-        return []

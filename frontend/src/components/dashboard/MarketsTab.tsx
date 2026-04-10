@@ -1,10 +1,12 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchPolymarketMarkets, type PolymarketMarket } from '../../api'
 
 export function MarketsTab() {
+  const [page, setPage] = useState(0)
   const { data: polymarketMarkets = [], isLoading } = useQuery({
-    queryKey: ['polymarket-markets-all'],
-    queryFn: () => fetchPolymarketMarkets(0, 5000),
+    queryKey: ['markets', page],
+    queryFn: () => fetchPolymarketMarkets(page * 50, 50),
     refetchInterval: 60_000,
   })
 
@@ -42,6 +44,19 @@ export function MarketsTab() {
             </tbody>
           </table>
         )}
+      </div>
+      <div className="flex items-center gap-4 mt-4 justify-center">
+        <button
+          onClick={() => setPage(p => Math.max(0, p - 1))}
+          disabled={page === 0}
+          className="px-3 py-1 rounded bg-gray-700 text-white disabled:opacity-40"
+        >Previous</button>
+        <span className="text-gray-400 text-sm">Page {page + 1}</span>
+        <button
+          onClick={() => setPage(p => p + 1)}
+          disabled={polymarketMarkets.length < 50}
+          className="px-3 py-1 rounded bg-gray-700 text-white disabled:opacity-40"
+        >Next</button>
       </div>
     </div>
   )

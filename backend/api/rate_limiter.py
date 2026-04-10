@@ -7,6 +7,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 logger = logging.getLogger("trading_bot.ratelimit")
 
 class RateLimiterMiddleware(BaseHTTPMiddleware):
+    """
+    In-process rate limiter using a sliding window per client IP.
+
+    LIMITATION: State is stored in-process memory and resets on every restart.
+    In multi-worker deployments (e.g. gunicorn with multiple workers), each worker
+    maintains its own counter, so the effective limit is requests_per_minute * num_workers.
+    For production multi-worker environments, replace with a shared backend such as
+    Redis (e.g. slowapi with redis) to enforce limits across all processes.
+    """
+
     def __init__(self, app, requests_per_minute: int = 100):
         super().__init__(app)
         self.requests_per_minute = requests_per_minute

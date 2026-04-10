@@ -3,7 +3,7 @@ import httpx
 import logging
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
@@ -431,7 +431,7 @@ async def fetch_crypto_price(symbol: str) -> Optional[CryptoPrice]:
                 change_7d=change_7d or 0,
                 market_cap=market_data.get("market_cap", {}).get("usd", 0),
                 volume_24h=market_data.get("total_volume", {}).get("usd", 0),
-                last_updated=datetime.utcnow()
+                last_updated=datetime.now(timezone.utc)
             )
 
         except httpx.HTTPStatusError as e:
@@ -484,7 +484,7 @@ async def fetch_multiple_prices(symbols: List[str]) -> Dict[str, CryptoPrice]:
                     change_7d=change_7d,
                     market_cap=coin.get("market_cap", 0) or 0,
                     volume_24h=coin.get("total_volume", 0) or 0,
-                    last_updated=datetime.utcnow()
+                    last_updated=datetime.now(timezone.utc)
                 )
 
             return results

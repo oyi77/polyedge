@@ -68,6 +68,7 @@ export interface Trade {
   strategy?: string
   signal_source?: string
   confidence?: number
+  trading_mode?: string
 }
 
 export interface PnlModeStats {
@@ -86,6 +87,7 @@ export interface BotStats {
   total_pnl: number
   is_running: boolean
   last_run: string | null
+  initial_bankroll: number
   trading_mode?: string
   paper?: PnlModeStats
   live?: PnlModeStats
@@ -152,4 +154,26 @@ export interface DashboardData {
   calibration: CalibrationSummary | null
   weather_signals: WeatherSignal[]
   weather_forecasts: WeatherForecast[]
+}
+
+export interface WalletConfig {
+  id: number
+  address: string
+  pseudonym: string
+  source: string
+  tags: string[]
+  enabled: boolean
+  added_at: string | null
+}
+
+export interface CreatedWallet {
+  address: string
+  message: string
+}
+
+export interface WalletBalance {
+  address: string
+  usdc_balance: number
+  last_updated: string | null
+  source: string
 }

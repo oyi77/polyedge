@@ -1,470 +1,154 @@
 {
-  "title": "PolyEdge Production Transformation (sisyphus polyedge-production-transformation.md)",
-  "description": "Convert sisyphus polyedge-production-transformation.md plan into structured stories. Existing RQ-001..RQ-018 cover the Phase-1 job queue layer. New PE-001..PE-014 cover the missing Phase 2-5 work: blockchain whale monitoring, news feeds, sentiment, dynamic whale discovery, auto-trader + risk manager, arbitrage detector, ML prediction scaffold, and the live trading terminal frontend.",
+  "title": "PolyEdge Security & Quality Fix Sprint",
+  "version": "8.0",
+  "date": "2026-04-10",
+  "status": "complete",
   "stories": [
     {
-      "id": "RQ-001",
-      "title": "Create JobQueue database model",
+      "id": "SEC-001",
+      "title": "Add require_admin to all unauthenticated endpoints",
       "passes": true,
-      "priority": 1,
       "acceptanceCriteria": [
-        "JobQueue table exists in backend/models/database.py with all fields: id, job_type, idempotency_key, priority, status, payload, retry_count, max_retries, scheduled_at, started_at, completed_at, error_message, created_at",
-        "Index idx_job_queue_status_priority exists on (status, priority)",
-        "UniqueConstraint uq_job_idempotency exists on (job_type, idempotency_key)",
-        "python -c \"from backend.models.database import JobQueue; print(JobQueue.__tablename__)\" outputs 'job_queue'",
-        "Table creation tested via Base.metadata.create_all()"
+        "GET /api/stats has Depends(require_admin)",
+        "GET /api/stats/strategies has Depends(require_admin)",
+        "GET /api/ai/status has Depends(require_admin)",
+        "GET /api/decisions has Depends(require_admin)",
+        "GET /api/decisions/export has Depends(require_admin)",
+        "GET /api/decisions/{id} has Depends(require_admin)",
+        "GET /api/strategies has Depends(require_admin)",
+        "GET /api/strategies/{name} has Depends(require_admin)",
+        "GET /api/events has Depends(require_admin)",
+        "GET /api/dashboard has Depends(require_admin)",
+        "GET /api/copy/leaderboard has Depends(require_admin)",
+        "GET /api/copy/signals has Depends(require_admin)",
+        "GET /api/copy-trader/positions has Depends(require_admin)",
+        "GET /api/copy-trader/status has Depends(require_admin)",
+        "GET /api/arbitrage/opportunities has Depends(require_admin)",
+        "GET /api/edge-performance has Depends(require_admin)",
+        "GET /api/whales/transactions has Depends(require_admin)",
+        "GET /api/news/feed has Depends(require_admin)",
+        "GET /api/predictions/{market_id} has Depends(require_admin)",
+        "GET /api/signal-config stays public (no secrets, by design)"
       ]
     },
     {
-      "id": "RQ-002",
-      "title": "Create abstract queue and cache interfaces",
+      "id": "SEC-002",
+      "title": "Whitelist sort parameter in /api/decisions to prevent injection",
       "passes": true,
-      "priority": 2,
       "acceptanceCriteria": [
-        "backend/queue/abstract.py exists with AbstractQueue class",
-        "AbstractQueue defines enqueue(), dequeue(), complete(), fail(), get_pending_count()",
-        "backend/queue/abstract.py exists with AbstractCache class",
-        "AbstractCache defines get(), set(), delete(), exists(), flush()",
-        "Factory functions create_queue() and create_cache() implemented",
-        "Interfaces documented with clear type hints"
+        "ALLOWED_SORT_COLUMNS set defined in system.py",
+        "sort param validated against whitelist before getattr",
+        "Invalid sort value falls back to created_at silently"
       ]
     },
     {
-      "id": "RQ-003",
-      "title": "Implement AsyncSQLiteQueue with thread pool",
+      "id": "SEC-003",
+      "title": "Make .env writes atomic via temp-file + os.replace",
       "passes": true,
-      "priority": 3,
       "acceptanceCriteria": [
-        "backend/queue/sqlite_queue.py implements AsyncSQLiteQueue extending AbstractQueue",
-        "ThreadPoolExecutor(max_workers=4) created as _db_executor for sync DB operations",
-        "run_in_thread() wrapper executes sync DB calls in thread pool",
-        "enqueue() inserts job record with status='pending', scheduled_at=now",
-        "dequeue() fetches next pending job ordered by priority (CASE statement)",
-        "dequeue() updates job status='processing', started_at=now",
-        "complete() updates job status='completed', completed_at=now",
-        "fail() updates job status='failed', error_message set, retry_count incremented",
-        "get_pending_count() returns count of jobs with status='pending'",
-        "All methods are async and properly await thread pool operations"
+        "_persist_env_updates in auth.py writes to temp file in same directory",
+        "os.replace() used for atomic rename",
+        "tempfile.mkstemp with delete=False pattern used"
       ]
     },
     {
-      "id": "RQ-004",
-      "title": "Add job timeout mechanism",
+      "id": "SEC-004",
+      "title": "Validate credentials before allowing live/testnet mode switch",
       "passes": true,
-      "priority": 4,
       "acceptanceCriteria": [
-        "JOB_TIMEOUT_SECONDS config added to backend/config.py (default=300)",
-        "Worker loop wraps dispatch_job() in asyncio.wait_for(timeout=settings.JOB_TIMEOUT_SECONDS)",
-        "TimeoutError caught and logged when job exceeds timeout",
-        "Job marked as failed with timeout error message",
-        "Worker continues processing next job after timeout (no slot exhaustion)",
-        "Test verifies hung job times out and worker continues"
+        "POST /api/admin/mode raises 400 with missing fields list when switching to live without all 4 Polymarket credentials",
+        "POST /api/admin/mode raises 400 when switching to testnet without POLYMARKET_PRIVATE_KEY",
+        "Paper mode switch always allowed"
       ]
     },
     {
-      "id": "RQ-005",
-      "title": "Implement job handlers for market scan and settlement",
+      "id": "SEC-005",
+      "title": "Add confirmation guard to /api/bot/reset",
       "passes": true,
-      "priority": 5,
       "acceptanceCriteria": [
-        "backend/queue/handlers.py created with market_scan() function",
-        "backend/queue/handlers.py created with settlement_check() function",
-        "backend/queue/handlers.py created with signal_generation() function",
-        "Each handler imports and uses existing scheduler functions (scan_and_trade_job, etc.)",
-        "Handlers properly handle exceptions and return results",
-        "Handlers are importable and don't block on startup"
+        "POST /api/bot/reset requires ResetRequest body with confirm: bool",
+        "Returns 400 if confirm is not true",
+        "Existing reset logic unchanged when confirm=true"
       ]
     },
     {
-      "id": "RQ-006",
-      "title": "Implement worker loop with graceful shutdown",
+      "id": "SEC-006",
+      "title": "Route simulate_trade through execute_decision for risk controls",
       "passes": true,
-      "priority": 6,
       "acceptanceCriteria": [
-        "backend/queue/worker.py created with Worker class",
-        "Worker._in_flight_jobs Set[int] tracks active job IDs",
-        "Worker.start() calls dequeue() in loop with max_concurrent=1 limit",
-        "Worker.start() dispatches jobs to handlers from backend/queue/handlers.py",
-        "Worker.stop() sets _running=False and waits for in-flight jobs (max 30s)",
-        "Worker.stop() calls _db_executor.shutdown(wait=True) for cleanup",
-        "MAX_CONCURRENT_JOBS config respected (default=1)",
-        "Worker logs job lifecycle events (start, complete, fail, timeout)"
+        "simulate_trade builds decision dict and calls execute_decision()",
+        "No direct Trade() construction in simulate_trade",
+        "Risk manager, duplicate check, bankroll deduction flow through execute_decision",
+        "Returns 404 if signal not found, 400 if trade rejected"
       ]
     },
     {
-      "id": "RQ-007",
-      "title": "Integrate queue worker with scheduler",
+      "id": "SEC-007",
+      "title": "Add token auth to /ws/markets and /ws/whales",
       "passes": true,
-      "priority": 7,
       "acceptanceCriteria": [
-        "JOB_WORKER_ENABLED config added to backend/config.py (default=False)",
-        "backend/core/scheduler.py modified to check settings.JOB_WORKER_ENABLED",
-        "When JOB_WORKER_ENABLED=True: scheduler.remove_job() called for existing APScheduler jobs",
-        "start_scheduler() starts worker when JOB_WORKER_ENABLED=True",
-        "APScheduler kept only as timer (no direct job execution when worker enabled)",
-        "No double-execution of jobs (verified via logs)",
-        "Worker process starts successfully with scheduler"
+        "/ws/markets closes with 1008 if ADMIN_API_KEY set and token wrong",
+        "/ws/whales closes with 1008 if ADMIN_API_KEY set and token wrong",
+        "Pattern matches existing /ws/events auth"
       ]
     },
     {
-      "id": "RQ-008",
-      "title": "Configure SQLite WAL mode for concurrent access",
+      "id": "FIX-001",
+      "title": "Fix DB session leak in copy_trading.py get_copy_signals",
       "passes": true,
-      "priority": 8,
       "acceptanceCriteria": [
-        "configure_sqlite_wal() function added to backend/models/database.py",
-        "SQLAlchemy event listener sets PRAGMA journal_mode=WAL on connect",
-        "PRAGMA busy_timeout=5000 set for better concurrency",
-        "PRAGMA synchronous=NORMAL set for queue workloads",
-        "WAL mode verified via sqlite3 job_queue.db \"PRAGMA journal_mode\" (outputs 'wal')",
-        "Multiple concurrent reads tested without blocking"
+        "get_copy_signals uses try/finally to close SessionLocal()",
+        "No bare db.close() outside finally"
       ]
     },
     {
-      "id": "RQ-009",
-      "title": "Create job queue migration script",
+      "id": "FIX-002",
+      "title": "Cap unbounded limit query params at 500",
       "passes": true,
-      "priority": 9,
       "acceptanceCriteria": [
-        "backend/queue/migrate_jobs.py created with migrate_apjobs_to_queue() function",
-        "Script reads existing APScheduler jobs from scheduler state",
-        "Script enqueues each job to JobQueue table via AsyncSQLiteQueue",
-        "Script logs migration progress (jobs migrated, failures)",
-        "Migration script executable via python -m backend.queue.migrate_jobs",
-        "Existing APScheduler jobs successfully migrated to persistent queue"
+        "GET /api/decisions limit: min(limit, 500)",
+        "GET /api/decisions/export limit: min(limit, 5000)",
+        "GET /api/events limit: min(limit, 500)",
+        "GET /api/copy/leaderboard limit: min(limit, 500)",
+        "GET /api/trades limit: min(limit, 500)"
       ]
     },
     {
-      "id": "RQ-010",
-      "title": "Test crash recovery and job persistence",
+      "id": "FIX-003",
+      "title": "Document in-process rate limiter limitation",
       "passes": true,
-      "priority": 10,
       "acceptanceCriteria": [
-        "backend/tests/test_queue/test_crash_recovery.py created",
-        "Test enqueues 10 jobs, kills process after 3 complete",
-        "Test restarts and verifies remaining 7 jobs execute",
-        "Test verifies job_queue table shows all 10 jobs completed",
-        "Test passes with kill -9 signal simulation",
-        "Jobs survive process crash with data integrity intact"
+        "rate_limiter.py comment notes dict resets on restart and multi-worker bypass",
+        "Comment suggests Redis-backed alternative for production"
       ]
     },
     {
-      "id": "RQ-011",
-      "title": "Test job timeout and graceful shutdown",
+      "id": "FIX-004",
+      "title": "Fix expired trade PnL for live mode",
       "passes": true,
-      "priority": 11,
       "acceptanceCriteria": [
-        "backend/tests/test_queue/test_worker.py created",
-        "Test creates job that sleeps 400s (>300s timeout)",
-        "Test verifies job times out and marked as failed",
-        "Test verifies worker continues processing after timeout",
-        "Test starts 5 long-running jobs and sends SIGTERM",
-        "Test verifies worker waits for jobs (max 30s) before shutdown",
-        "Test verifies _db_executor.shutdown(wait=True) called",
-        "All worker tests pass"
+        "Paper mode expired trade: pnl = trade.size (stake returned to paper bankroll)",
+        "Non-paper mode expired trade: pnl = 0 (on-chain handles real refund; no in-system double-credit)"
       ]
     },
     {
-      "id": "RQ-012",
-      "title": "Test queue operations and idempotency",
+      "id": "FIX-005",
+      "title": "Add WalletConfig/CreatedWallet/WalletBalance TypeScript types to types.ts",
       "passes": true,
-      "priority": 12,
       "acceptanceCriteria": [
-        "backend/tests/test_queue/test_sqlite_queue.py created",
-        "Test verifies enqueue() creates job record with correct fields",
-        "Test verifies dequeue() returns jobs in priority order (critical > high > medium > low)",
-        "Test verifies idempotency constraint prevents duplicate jobs",
-        "Test verifies complete() and fail() update job status correctly",
-        "Test verifies retry_count increments on failure",
-        "Test verifies get_pending_count() returns accurate count",
-        "All queue tests pass with >95% coverage"
+        "WalletConfig interface exported with id, address, pseudonym, source, tags, enabled, added_at",
+        "CreatedWallet interface exported with address, message",
+        "WalletBalance interface exported with address, usdc_balance, last_updated, source"
       ]
     },
     {
-      "id": "RQ-013",
-      "title": "Update Phase 1 plan with job queue work",
+      "id": "MED-001",
+      "title": "Sanitize raw exception strings in 500 error responses",
       "passes": true,
-      "priority": 13,
       "acceptanceCriteria": [
-        "phase-1-production-readiness.md updated to include job queue in Step 2",
-        "Revised Phase 1 effort: 5.5h → 8h (added SQLite queue + tests)",
-        "Job queue acceptance criteria added to Phase 1 plan",
-        "Plan references redis-and-job-queue-integration.md for details",
-        "grep -q 'job queue' phase-1-production-readiness.md returns 0"
-      ]
-    },
-    {
-      "id": "RQ-014",
-      "title": "Phase 2: Implement Redis cache with circuit breaker",
-      "passes": true,
-      "priority": 14,
-      "acceptanceCriteria": [
-        "backend/cache/redis_cache.py implements RedisCache extending AbstractCache",
-        "Redis connection pooling configured with redis.asyncio",
-        "CircuitBreaker class implements threshold=3, timeout=60 pattern",
-        "Circuit breaker tracks failures and opens after threshold",
-        "Circuit breaker falls back to SQLite when Redis unavailable",
-        "Redis cache get/set/delete operations use circuit breaker",
-        "CACHE_URL='redis://localhost:6379/0' config works",
-        "Test verifies cache falls back to SQLite on Redis failure"
-      ]
-    },
-    {
-      "id": "RQ-015",
-      "title": "Phase 2: Implement arq-based Redis queue",
-      "passes": true,
-      "priority": 15,
-      "acceptanceCriteria": [
-        "backend/queue/redis_queue.py implements RedisQueue via arq library",
-        "arq installed in requirements.txt",
-        "arq worker configured with max_jobs=1, job_timeout=300s",
-        "RedisQueue implements AbstractQueue interface (drop-in replacement)",
-        "Jobs can be enqueued to Redis and processed by arq workers",
-        "arq worker processes jobs from backend/queue/handlers.py",
-        "Test verifies Redis queue processes jobs correctly",
-        "Migration from SQLite to Redis tested"
-      ]
-    },
-    {
-      "id": "RQ-016",
-      "title": "Phase 2: Add queue latency monitoring",
-      "passes": true,
-      "priority": 16,
-      "acceptanceCriteria": [
-        "backend/monitoring/queue_metrics.py created",
-        "Queue latency p50, p95, p99 tracked and logged",
-        "Queue depth metric monitored (get_pending_count())",
-        "Job timeout rate tracked (timeouts / total jobs)",
-        "Error rate by job type tracked",
-        "Metrics logged or exposed for monitoring",
-        "Test verifies latency metrics collected accurately"
-      ]
-    },
-    {
-      "id": "RQ-017",
-      "title": "Phase 2: Create SQLite to Redis migration tool",
-      "passes": true,
-      "priority": 17,
-      "acceptanceCriteria": [
-        "backend/queue/migrate_to_redis.py created",
-        "Migration script drains SQLite queue before switching",
-        "Jobs migrate from SQLite to Redis without data loss",
-        "Hot migration supported (Redis worker takes over)",
-        "Rollback to SQLite tested and works",
-        "Migration can be reversed if needed",
-        "Test verifies migration completes successfully"
-      ]
-    },
-    {
-      "id": "RQ-018",
-      "title": "Update documentation with job queue architecture",
-      "passes": true,
-      "priority": 18,
-      "acceptanceCriteria": [
-        "README.md updated with job queue architecture section",
-        "README.md explains Phase 1 (SQLite) and Phase 2 (Redis) approach",
-        "README.md documents JOB_WORKER_ENABLED configuration",
-        "README.md documents crash recovery behavior",
-        "docs/architecture/adr-001-job-queue.md created with decision record",
-        "ADR documents SQLite-first decision and alternatives considered",
-        "ADR includes: Decision, Drivers, Alternatives, Why Chosen, Consequences, Follow-ups",
-        "Documentation verified for accuracy"
-      ]
-    },
-    {
-      "id": "PE-001",
-      "title": "Polygon blockchain whale listener",
-      "passes": true,
-      "priority": 19,
-      "acceptanceCriteria": [
-        "backend/data/polygon_listener.py exists with PolygonListener class",
-        "PolygonListener subscribes to Polygon WebSocket RPC (config: POLYGON_WS_URL, default wss://polygon-rpc.com)",
-        "Filters for ConditionalTokens contract address (config: CONDITIONAL_TOKENS_ADDRESS)",
-        "Parses log events to extract market positionId and trade size",
-        "Threshold filter: only emits trades >= MIN_WHALE_TRADE_USD (default 1000)",
-        "Persists alerts via WhaleTransaction model in backend/models/database.py",
-        "Graceful disconnect/reconnect with exponential backoff (max 5 retries before erroring out)",
-        "WhaleTransaction model has fields: id, tx_hash, wallet, market_id, side, size_usd, block_number, observed_at",
-        "Async test backend/tests/test_polygon_listener.py mocks websocket and verifies threshold filter + persistence"
-      ]
-    },
-    {
-      "id": "PE-002",
-      "title": "News feed aggregator",
-      "passes": true,
-      "priority": 20,
-      "acceptanceCriteria": [
-        "backend/data/feed_aggregator.py exists with FeedAggregator class",
-        "Configurable RSS feeds list (default: BBC, Reuters business, Federal Reserve, CoinDesk, Cointelegraph)",
-        "fetch_all() returns list of NewsItem dataclass {source, title, link, published_at, summary}",
-        "Uses feedparser library; deduplicates by link hash",
-        "Handles network errors gracefully (per-feed try/except, partial results allowed)",
-        "Test backend/tests/test_feed_aggregator.py mocks feedparser.parse and verifies dedup + error isolation"
-      ]
-    },
-    {
-      "id": "PE-003",
-      "title": "Sentiment analyzer using existing AI provider",
-      "passes": true,
-      "priority": 21,
-      "acceptanceCriteria": [
-        "backend/ai/sentiment_analyzer.py exists with SentimentAnalyzer class",
-        "Uses existing backend/ai/base.py AI provider (Groq/Claude/custom) for sentiment scoring",
-        "analyze(text) returns SentimentResult {score: float -1..1, label: positive|negative|neutral, confidence: float}",
-        "analyze_batch(texts) processes in parallel via asyncio.gather",
-        "Daily budget enforcement: respects settings.AI_DAILY_BUDGET_USD",
-        "Test backend/tests/test_sentiment_analyzer.py mocks AI provider and verifies parsing + batch concurrency"
-      ]
-    },
-    {
-      "id": "PE-004",
-      "title": "Dynamic whale discovery and scoring",
-      "passes": true,
-      "priority": 22,
-      "acceptanceCriteria": [
-        "backend/core/whale_scoring.py exists with calculate_whale_score(wallet_history) -> float [0..1]",
-        "Score formula: win_rate*0.35 + clamped_roi*0.30 + clamped_size*0.20 + clamped_freq*0.15",
-        "backend/core/whale_discovery.py exists with WhaleDiscovery.discover(min_trades=10) async method",
-        "Discovery seeds candidates from Polymarket leaderboard API or known WalletConfig rows",
-        "Persists results into existing WalletConfig.whale_score column (add column if missing)",
-        "Test backend/tests/test_whale_scoring.py covers edge cases: empty trades, all-loss, all-win, large size, formula correctness"
-      ]
-    },
-    {
-      "id": "PE-005",
-      "title": "Risk manager",
-      "passes": true,
-      "priority": 23,
-      "acceptanceCriteria": [
-        "backend/core/risk_manager.py exists with RiskManager class",
-        "validate_trade(size, current_exposure, bankroll, confidence) -> RiskDecision {allowed: bool, reason: str, adjusted_size: float}",
-        "Enforces MAX_POSITION_FRACTION (default 0.05), MAX_TOTAL_EXPOSURE_FRACTION (default 0.50)",
-        "Slippage cap via SLIPPAGE_TOLERANCE (default 0.02)",
-        "Uses settings.DAILY_LOSS_LIMIT to short-circuit when daily losses exceed limit",
-        "Test backend/tests/test_risk_manager.py covers: oversize trade rejection, daily loss circuit, slippage adjustment, low confidence rejection"
-      ]
-    },
-    {
-      "id": "PE-006",
-      "title": "Auto-trader with confidence gating",
-      "passes": true,
-      "priority": 24,
-      "acceptanceCriteria": [
-        "backend/core/auto_trader.py exists with AutoTrader class",
-        "execute_signal(signal, risk_manager) async method handling auto-approval and execution",
-        "AUTO_APPROVE_MIN_CONFIDENCE config (default 0.85) — trades above this auto-execute",
-        "Trades below threshold create a PendingApproval record (new table/column) for manual review",
-        "Uses existing polymarket_clob.clob_from_settings for live execution; paper mode skips network call",
-        "Records all decisions via record_decision() helper",
-        "Test backend/tests/test_auto_trader.py mocks risk_manager and clob; verifies auto-execute branch and pending-approval branch"
-      ]
-    },
-    {
-      "id": "PE-007",
-      "title": "Arbitrage detector",
-      "passes": true,
-      "priority": 25,
-      "acceptanceCriteria": [
-        "backend/core/arbitrage_detector.py exists with ArbitrageDetector class",
-        "detect_yes_no_arb(market) finds markets where YES + NO price < 0.95 (correlated arbitrage)",
-        "detect_cross_market(market_a, market_b) finds same-event arb across platforms",
-        "calculate_profit_after_fees(opportunity, fee_pct=0.02) returns net profit",
-        "scan_all(markets) returns list of ArbOpportunity sorted by profit",
-        "Test backend/tests/test_arbitrage_detector.py covers: profitable arb, unprofitable after fees, no opportunity"
-      ]
-    },
-    {
-      "id": "PE-008",
-      "title": "ML prediction engine scaffold",
-      "passes": true,
-      "priority": 26,
-      "acceptanceCriteria": [
-        "backend/ai/prediction_engine.py exists with PredictionEngine class (interface only — no training in this story)",
-        "predict(features: Dict[str, float]) -> Prediction {probability_yes: float, confidence: float, model_version: str}",
-        "Initial implementation uses a deterministic baseline (logistic of weighted features) so the interface is callable end-to-end",
-        "extract_features(market, signal_data) helper returns the canonical feature dict",
-        "backend/ai/training/__init__.py + data_collector.py + feature_engineering.py + model_trainer.py + model_evaluator.py exist as stubs with class signatures and docstrings",
-        "Test backend/tests/test_prediction_engine.py verifies predict() returns probability in [0,1] and confidence in [0,1] for sample features"
-      ]
-    },
-    {
-      "id": "PE-009",
-      "title": "Live WebSocket hook + market view (frontend)",
-      "passes": true,
-      "priority": 27,
-      "acceptanceCriteria": [
-        "frontend/src/hooks/useWebSocket.ts exists, returns {data, status, sendMessage}, reconnects on disconnect with exponential backoff",
-        "frontend/src/components/LiveMarketView.tsx exists, subscribes via useWebSocket, animates price changes (CSS transition)",
-        "useWebSocket connects to /ws/markets endpoint (existing _broadcast_event channel in backend/api/main.py)",
-        "Vitest test frontend/src/test/useWebSocket.test.ts mocks WebSocket and verifies reconnect logic + message dispatch",
-        "Vitest test frontend/src/test/LiveMarketView.test.tsx renders without crash and displays placeholder when no data"
-      ]
-    },
-    {
-      "id": "PE-010",
-      "title": "Trading terminal page + opportunity scanner (frontend)",
-      "passes": true,
-      "priority": 28,
-      "acceptanceCriteria": [
-        "frontend/src/pages/TradingTerminal.tsx exists, lazy-loaded route /trading-terminal in App.tsx",
-        "TradingTerminal composes LiveMarketView + OpportunityScanner + WhaleActivityFeed",
-        "frontend/src/components/OpportunityScanner.tsx lists arbitrage opportunities sorted by profit",
-        "frontend/src/components/WhaleActivityFeed.tsx subscribes to /ws/whales channel and shows recent whale alerts",
-        "NavBar gets a Trading Terminal link",
-        "Vitest tests for TradingTerminal, OpportunityScanner, WhaleActivityFeed each render without crash"
-      ]
-    },
-    {
-      "id": "PE-011",
-      "title": "Backend API endpoints for new features",
-      "passes": true,
-      "priority": 29,
-      "acceptanceCriteria": [
-        "GET /api/whales/transactions returns recent WhaleTransaction rows (limit query param, default 50)",
-        "GET /api/arbitrage/opportunities returns ArbitrageDetector.scan_all output",
-        "GET /api/news/feed returns FeedAggregator.fetch_all() result",
-        "GET /api/predictions/{market_id} returns PredictionEngine.predict result for a market",
-        "POST /api/auto-trader/approve/{trade_id} approves a pending trade (require_admin auth)",
-        "All endpoints return JSON and have httpx tests in backend/tests/test_api_phase2.py"
-      ]
-    },
-    {
-      "id": "PE-012",
-      "title": "PWA manifest + service worker",
-      "passes": true,
-      "priority": 30,
-      "acceptanceCriteria": [
-        "frontend/public/manifest.json exists with name, short_name, icons, theme_color, background_color, start_url",
-        "frontend/src/sw.ts exists implementing basic offline cache for static assets",
-        "frontend/index.html links the manifest with <link rel=\"manifest\">",
-        "Service worker registers in frontend/src/main.tsx in production mode only (import.meta.env.PROD)",
-        "vite.config.ts builds successfully with PWA artifacts (npm run build exits 0)"
-      ]
-    },
-    {
-      "id": "PE-013",
-      "title": "Wire new modules into orchestrator + scheduler",
-      "passes": true,
-      "priority": 31,
-      "acceptanceCriteria": [
-        "backend/core/orchestrator.py wires PolygonListener, FeedAggregator, AutoTrader, ArbitrageDetector with feature flags",
-        "Feature flags added to backend/config.py: WHALE_LISTENER_ENABLED, NEWS_FEED_ENABLED, AUTO_TRADER_ENABLED, ARBITRAGE_DETECTOR_ENABLED (all default False)",
-        "backend/core/scheduler.py adds optional jobs for news_feed_scan and arbitrage_scan when flags enabled",
-        "Modules only initialize when their flag is True (no import errors when flags off)",
-        "Test backend/tests/test_orchestrator_wiring.py imports orchestrator with all flags False and asserts no exceptions"
-      ]
-    },
-    {
-      "id": "PE-014",
-      "title": "End-to-end smoke + verification",
-      "passes": true,
-      "priority": 32,
-      "acceptanceCriteria": [
-        "python -m pytest backend/tests/ -q runs to completion with 0 failures",
-        "npm --prefix frontend run test -- --run completes with 0 failures",
-        "npm --prefix frontend run build completes successfully",
-        "python -c 'from backend.api.main import app; print(len(app.routes))' runs without ImportError",
-        "All RQ-* and PE-* stories in this PRD are passes:true"
+        "Backtest endpoints catch exceptions and return generic message without raw str(e)",
+        "Strategy run-now endpoint returns generic message on failure",
+        "Exception detail logged server-side, not exposed to client"
       ]
     }
   ]

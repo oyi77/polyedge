@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend.config import settings
 from backend.models.database import SessionLocal, Trade, DecisionLog, BotState
@@ -82,7 +82,7 @@ async def auto_improve_job():
 async def _write_outcomes_to_brain(db, bigbrain):
     """Write recent trade outcomes to BigBrain."""
     try:
-        week_ago = datetime.utcnow() - timedelta(days=7)
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
         trades = (
             db.query(Trade)

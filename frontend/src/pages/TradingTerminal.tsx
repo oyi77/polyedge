@@ -4,12 +4,14 @@ import WhaleActivityFeed from '../components/WhaleActivityFeed';
 
 export default function TradingTerminal() {
   return (
-    <div className="trading-terminal" style={{ display: 'grid', gap: '1rem', gridTemplateColumns: '1fr 1fr' }}>
-      <h1 style={{ gridColumn: '1 / -1' }}>Trading Terminal</h1>
-      <LiveMarketView />
-      <OpportunityScanner />
-      <div style={{ gridColumn: '1 / -1' }}>
-        <WhaleActivityFeed />
+    <div className="min-h-screen bg-gray-900 text-white p-6">
+      <h1 className="text-xl font-semibold text-neutral-100 mb-6">Trading Terminal</h1>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <LiveMarketView />
+        <OpportunityScanner />
+        <div className="lg:col-span-2">
+          <WhaleActivityFeed />
+        </div>
       </div>
     </div>
   );

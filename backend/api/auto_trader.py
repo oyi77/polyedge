@@ -1,7 +1,7 @@
 """Auto-trader routes - pending approvals, approve/reject trades."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db, SessionLocal, PendingApproval
@@ -50,7 +50,7 @@ async def approve_pending_trade(trade_id: int, _admin=Depends(require_admin)):
         if not row:
             raise HTTPException(status_code=404, detail="not found")
         row.status = "approved"
-        row.decided_at = datetime.utcnow()
+        row.decided_at = datetime.now(timezone.utc)
         db.commit()
         return {"id": row.id, "status": row.status}
     finally:
@@ -66,7 +66,7 @@ async def reject_pending_trade(trade_id: int, _admin=Depends(require_admin)):
         if not row:
             raise HTTPException(status_code=404, detail="not found")
         row.status = "rejected"
-        row.decided_at = datetime.utcnow()
+        row.decided_at = datetime.now(timezone.utc)
         db.commit()
         return {"id": row.id, "status": row.status}
     finally:
@@ -89,7 +89,7 @@ async def batch_approve_trades(
             )
             .all()
         )
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for row in rows:
             row.status = "approved"
             row.decided_at = now
@@ -118,7 +118,7 @@ async def batch_reject_trades(
             )
             .all()
         )
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for row in rows:
             row.status = "rejected"
             row.decided_at = now
@@ -139,7 +139,7 @@ async def clear_all_approvals(_admin=Depends(require_admin)):
         rows = (
             db.query(PendingApproval).filter(PendingApproval.status == "pending").all()
         )
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for row in rows:
             row.status = "rejected"
             row.decided_at = now

@@ -1,6 +1,8 @@
 """Database models and connection for BTC 5-min trading bot."""
 
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
+
 from sqlalchemy import (
     create_engine,
     Column,
@@ -22,6 +24,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import inspect
 
 from backend.config import settings
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.DATABASE_URL,
@@ -57,7 +61,7 @@ class Trade(Base):
     __tablename__ = "trades"
 
     id = Column(Integer, primary_key=True, index=True)
-    signal_id = Column(Integer, index=True)
+    signal_id = Column(Integer, ForeignKey("signals.id", ondelete="SET NULL"), nullable=True, index=True)
     market_ticker = Column(String, index=True)
     platform = Column(String)
     event_slug = Column(String, nullable=True)
@@ -67,7 +71,7 @@ class Trade(Base):
     direction = Column(String)  # "up" or "down"
     entry_price = Column(Float)
     size = Column(Float)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Settlement
     settled = Column(Boolean, default=False)
@@ -89,16 +93,15 @@ class Trade(Base):
     signal_source = Column(String, nullable=True)
     confidence = Column(Float, nullable=True)
 
+    # Partial fill tracking
+    filled_size = Column(Float, nullable=True)  # actual fill amount, None = assumed full fill
+
     # On-chain order tracking (testnet / live modes)
     clob_order_id = Column(
         String, nullable=True
     )  # Order ID returned by Polymarket CLOB
     clob_idempotency_key = Column(String, nullable=True)  # UUID idempotency key per order attempt
 
-    # Unique constraint to prevent duplicate trades for same market window
-    __table_args__ = (
-        UniqueConstraint("event_slug", "settled", name="uq_market_window_trade"),
-    )
 
 
 class BtcPriceSnapshot(Base):
@@ -107,7 +110,7 @@ class BtcPriceSnapshot(Base):
     __tablename__ = "btc_price_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     price = Column(Float)
     source = Column(String, default="coingecko")
 
@@ -147,7 +150,7 @@ class Signal(Base):
     market_ticker = Column(String, index=True)
     platform = Column(String)
     market_type = Column(String, default="btc", index=True)  # "btc" or "weather"
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     direction = Column(String)
     model_probability = Column(Float)
@@ -184,7 +187,7 @@ class AILog(Base):
     __tablename__ = "ai_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     provider = Column(String, index=True)
     model = Column(String)
 
@@ -208,7 +211,7 @@ class ScanLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(String, unique=True, index=True)
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)
 
     categories_scanned = Column(JSON)
@@ -236,7 +239,7 @@ class CopyTraderEntry(Base):
     side = Column(String, nullable=False)  # "YES" or "NO"
     size = Column(Float, nullable=False)
     pnl = Column(Float, nullable=True, default=0.0)
-    opened_at = Column(DateTime, default=datetime.utcnow)
+    opened_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("wallet", "condition_id", "side", name="uq_copy_entry"),
@@ -251,7 +254,7 @@ class SettlementEvent(Base):
     market_ticker = Column(String, nullable=False, index=True)
     resolved_outcome = Column(String)  # "up", "down", "yes", "no"
     pnl = Column(Float)
-    settled_at = Column(DateTime, default=datetime.utcnow)
+    settled_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     source = Column(String, default="polymarket")  # "polymarket" or "kalshi"
 
 
@@ -265,7 +268,7 @@ class DecisionLog(Base):
     signal_data = Column(Text, nullable=True)  # JSON string
     reason = Column(Text, nullable=True)
     outcome = Column(String, nullable=True)  # WIN, LOSS, PUSH — filled at settlement
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class MarketWatch(Base):
@@ -276,8 +279,8 @@ class MarketWatch(Base):
     source = Column(String, nullable=True)  # strategy name or "user"
     config = Column(Text, nullable=True)  # JSON string
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class WalletConfig(Base):
@@ -289,7 +292,7 @@ class WalletConfig(Base):
     tags = Column(Text, nullable=True)  # JSON array string
     enabled = Column(Boolean, default=True)
     notes = Column(Text, nullable=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     whale_score = Column(Float, nullable=True)
     balance_cache = Column(Text, nullable=True)  # JSON: {"usdc_balance", "last_updated"}
 
@@ -301,7 +304,7 @@ class StrategyConfig(Base):
     enabled = Column(Boolean, default=False)
     params = Column(Text, nullable=True)  # JSON string
     interval_seconds = Column(Integer, default=60)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class TradeContext(Base):
@@ -312,7 +315,7 @@ class TradeContext(Base):
     confidence = Column(Float, nullable=True)
     entry_signal = Column(Text, nullable=True)  # JSON string
     exit_signal = Column(Text, nullable=True)  # JSON string
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class JobQueue(Base):
@@ -330,11 +333,11 @@ class JobQueue(Base):
     payload = Column(JSON, nullable=False)
     retry_count = Column(Integer, default=0)
     max_retries = Column(Integer, default=3)
-    scheduled_at = Column(DateTime, default=datetime.utcnow)
+    scheduled_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("idx_job_queue_status_priority", "status", "priority"),
@@ -351,7 +354,7 @@ class WhaleTransaction(Base):
     side = Column(String, nullable=True)  # buy/sell
     size_usd = Column(Float, nullable=False)
     block_number = Column(Integer, nullable=True)
-    observed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    observed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class PendingApproval(Base):
@@ -363,14 +366,14 @@ class PendingApproval(Base):
     confidence = Column(Float, nullable=False)
     signal_data = Column(JSON, nullable=True)
     status = Column(String, default="pending")  # pending|approved|rejected
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     decided_at = Column(DateTime, nullable=True)
 
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     actor = Column(String, default="system")  # "system", "admin", "strategy:btc_5min"
     action = Column(String)  # "trade_executed", "config_changed", "bot_started", etc.
     details = Column(JSON, nullable=True)
@@ -425,8 +428,8 @@ def ensure_schema():
                             "UPDATE trades SET trading_mode = 'paper' WHERE trading_mode IS NULL"
                         )
                     )
-        except Exception:
-            pass  # Silently skip if column doesn't exist yet
+        except Exception as e:
+            logger.warning(f"Schema migration: could not backfill trading_mode: {e}")
 
     # Add paper tracking columns to bot_state
     try:
@@ -442,6 +445,7 @@ def ensure_schema():
                 ("paper_trades", "INTEGER DEFAULT 0"),
                 ("paper_wins", "INTEGER DEFAULT 0"),
                 ("misc_data", "TEXT"),
+                ("active_wallet", "TEXT"),
             ]:
                 if col not in bot_state_columns:
                     try:
@@ -451,8 +455,8 @@ def ensure_schema():
                                     f"ALTER TABLE bot_state ADD COLUMN {col} {coltype}"
                                 )
                             )
-                    except Exception:
-                        pass  # column already exists
+                    except Exception as e:
+                        logger.warning(f"Schema migration: could not add bot_state column {col}: {e}")
 
     # Add calibration columns to signals table
     try:
@@ -475,8 +479,8 @@ def ensure_schema():
                             conn.execute(
                                 text(f"ALTER TABLE signals ADD COLUMN {col} {coltype}")
                             )
-                    except Exception:
-                        pass  # column already exists
+                    except Exception as e:
+                        logger.warning(f"Schema migration: could not add signals column {col}: {e}")
 
     # Add edge discovery tracking columns to signals table
     with engine.connect() as conn:
@@ -490,8 +494,8 @@ def ensure_schema():
                         conn.execute(
                             text(f"ALTER TABLE signals ADD COLUMN {col} {coltype}")
                         )
-                except Exception:
-                    pass  # column already exists
+                except Exception as e:
+                    logger.warning(f"Schema migration: could not add signals edge-track column {col}: {e}")
 
     # Add per-track bankroll and PNL tracking to bot_state
     try:
@@ -521,8 +525,8 @@ def ensure_schema():
                             conn.execute(
                                 text(f"ALTER TABLE bot_state ADD COLUMN {col} {coltype}")
                             )
-                    except Exception:
-                        pass  # column already exists
+                    except Exception as e:
+                        logger.warning(f"Schema migration: could not add bot_state per-track column {col}: {e}")
 
     # Ensure copy_trader_entries table exists
     try:
@@ -540,8 +544,8 @@ def ensure_schema():
                 with engine.connect() as conn:
                     with conn.begin():
                         conn.execute(text("ALTER TABLE copy_trader_entries ADD COLUMN pnl REAL DEFAULT 0.0"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Schema migration: could not add copy_trader_entries pnl column: {e}")
 
     # Ensure settlement_events table exists
     if "settlement_events" not in copy_entry_tables:
@@ -561,8 +565,8 @@ def ensure_schema():
             with engine.connect() as conn:
                 with conn.begin():
                     conn.execute(text("ALTER TABLE wallet_config ADD COLUMN whale_score FLOAT"))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Schema migration: could not add wallet_config whale_score column: {e}")
 
     # Add new columns to trades table if missing
     inspector = inspect(engine)
@@ -574,11 +578,35 @@ def ensure_schema():
             "ALTER TABLE trades ADD COLUMN confidence REAL",
             "ALTER TABLE trades ADD COLUMN clob_order_id TEXT",
             "ALTER TABLE trades ADD COLUMN clob_idempotency_key TEXT",
+            "ALTER TABLE trades ADD COLUMN filled_size REAL",
         ]:
             col_name = col_def.split("ADD COLUMN ")[1].split()[0]
             if col_name not in existing_cols:
                 with conn.begin():
                     conn.execute(text(col_def))
+
+    # Create indexes for hot query paths
+    try:
+        with engine.connect() as conn:
+            with conn.begin():
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_trades_settled_mode ON trades(settled, trading_mode)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_trades_ticker_settled ON trades(market_ticker, settled)"))
+    except Exception as e:
+        logger.warning(f"Could not create trades indexes: {e}")
+
+    try:
+        with engine.connect() as conn:
+            with conn.begin():
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_approvals_status ON pending_approvals(status)"))
+    except Exception as e:
+        logger.warning(f"Could not create pending_approvals index: {e}")
+
+    try:
+        with engine.connect() as conn:
+            with conn.begin():
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_settlement_events_trade_id ON settlement_events(trade_id)"))
+    except Exception as e:
+        logger.warning(f"Could not create settlement_events index: {e}")
 
 
 def log_audit(action: str, actor: str = "system", details: dict = None):

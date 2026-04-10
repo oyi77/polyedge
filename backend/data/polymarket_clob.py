@@ -9,9 +9,9 @@ Auth: EIP-712 L1 (derive API keys) + HMAC-SHA256 L2 (per-request headers).
 All order sizes in USDC. All prices in [0.01, 0.99].
 """
 import asyncio
+import hashlib
 import logging
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -39,15 +39,39 @@ CHAIN_ID_AMOY = 80002
 MIN_ORDER_USDC = 1.0
 
 
-def _check_idempotency(key: str) -> bool:
-    """Return True if an order with this idempotency key already exists in the DB."""
+# Keys currently being processed (in-flight guard against concurrent duplicate calls)
+_inflight_keys: set[str] = set()
+_inflight_lock = asyncio.Lock()
+
+
+async def _check_and_claim_idempotency(key: str) -> bool:
+    """
+    Return True (duplicate) if key is already in-flight or in the DB.
+    Claims the key in the in-flight set atomically to prevent concurrent duplicates.
+    Caller must release via _release_idempotency_key() after the order is recorded.
+    """
+    async with _inflight_lock:
+        if key in _inflight_keys:
+            return True
+        _inflight_keys.add(key)
+
+    # Check DB for cross-process/restart duplicates
     from backend.models.database import SessionLocal, Trade
     db = SessionLocal()
     try:
         existing = db.query(Trade).filter(Trade.clob_idempotency_key == key).first()
-        return existing is not None
+        if existing is not None:
+            async with _inflight_lock:
+                _inflight_keys.discard(key)
+            return True
+        return False
     finally:
         db.close()
+
+
+def _release_idempotency_key(key: str) -> None:
+    """Remove key from in-flight set after order is recorded (or failed)."""
+    _inflight_keys.discard(key)
 
 
 @dataclass
@@ -175,15 +199,47 @@ class PolymarketCLOB:
             await self._http.aclose()
             self._http = None
 
+    def _l2_headers(self, method: str, request_path: str, body: str = "") -> dict:
+        """Generate Polymarket L2 HMAC auth headers.
+
+        Raises ValueError if API credentials are not set.
+        """
+        import hashlib
+        import hmac
+        import time
+
+        if not self.api_key:
+            raise ValueError("api_key required for L2 auth headers")
+        if not self.api_secret:
+            raise ValueError("api_secret required for L2 auth headers")
+        if not self.api_passphrase:
+            raise ValueError("api_passphrase required for L2 auth headers")
+
+        timestamp = str(int(time.time()))
+        message = timestamp + method.upper() + request_path + (body or "")
+        signature = hmac.new(
+            self.api_secret.encode("utf-8"),
+            message.encode("utf-8"),
+            digestmod=hashlib.sha256,
+        ).hexdigest()
+
+        headers = {
+            "POLY_TIMESTAMP": timestamp,
+            "POLY_SIGNATURE": signature,
+            "POLY_API_KEY": self.api_key,
+            "POLY_PASSPHRASE": self.api_passphrase,
+        }
+        if self._account:
+            headers["POLY_ADDRESS"] = self._account.address
+        return headers
+
     # =========================================================================
     # Public read-only endpoints (no auth)
     # =========================================================================
 
     async def get_order_book(self, token_id: str) -> OrderBook:
         """Fetch live order book for a token."""
-        if clob_breaker.state == "OPEN":
-            raise CircuitOpenError("polymarket_clob")
-        try:
+        async def _fetch_book():
             resp = await self._http.get(f"{self._clob_host}/book", params={"token_id": token_id})
             resp.raise_for_status()
             data = resp.json()
@@ -199,13 +255,9 @@ class PolymarketCLOB:
             elif asks:
                 mid = float(asks[0]["price"])
 
-            await clob_breaker._on_success()
             return OrderBook(token_id=token_id, bids=bids, asks=asks, mid_price=mid)
-        except CircuitOpenError:
-            raise
-        except Exception:
-            await clob_breaker._on_failure()
-            raise
+
+        return await clob_breaker.call(_fetch_book)
 
     async def get_mid_price(self, token_id: str) -> float:
         """Get mid-price for a token (fast, single endpoint)."""
@@ -307,10 +359,20 @@ class PolymarketCLOB:
         if size < MIN_ORDER_USDC:
             return OrderResult(success=False, error=f"Size ${size:.2f} below minimum ${MIN_ORDER_USDC}")
 
-        idempotency_key = str(uuid.uuid4())
-        if _check_idempotency(idempotency_key):
-            logger.warning(f"Duplicate idempotency key {idempotency_key}, skipping order")
-            return OrderResult(success=False, error="Duplicate idempotency key")
+        # Fail fast for live/testnet mode without credentials (before touching the DB)
+        if not self.is_paper:
+            if not self._clob_client:
+                return OrderResult(success=False, error="ClobClient not initialised — private_key required")
+            if not self._clob_client.creds:
+                return OrderResult(success=False, error="API credentials required — call create_or_derive_api_creds() first")
+
+        # Deterministic key: same params within a 5-min window = same key → deduplicated.
+        bucket = int(time.time()) // 300
+        raw = f"{token_id}:{side}:{price:.4f}:{size:.4f}:{bucket}"
+        idempotency_key = hashlib.sha256(raw.encode()).hexdigest()[:32]
+        if await _check_and_claim_idempotency(idempotency_key):
+            logger.warning(f"Duplicate order detected (key={idempotency_key}), skipping")
+            return OrderResult(success=False, error="Duplicate order: same params already placed this window")
         logger.info(f"Order idempotency_key={idempotency_key} | {side} {size} @ {price} token={token_id[:16]}...")
 
         if self.is_paper:
@@ -323,22 +385,27 @@ class PolymarketCLOB:
                 f"[PAPER] {side} {size:.2f} USDC @ {price:.3f} "
                 f"(mid={mid:.3f}) token={token_id[:16]}..."
             )
-            return OrderResult(
+            result = OrderResult(
                 success=True,
                 order_id=f"paper_{int(time.time())}",
                 fill_price=mid,
                 fill_size=size,
                 idempotency_key=idempotency_key,
             )
+            _release_idempotency_key(idempotency_key)
+            return result
 
         # Live/testnet mode — use py-clob-client
         if not self._clob_client:
+            _release_idempotency_key(idempotency_key)
             return OrderResult(success=False, error="ClobClient not initialised — private_key required")
         if not self._clob_client.creds:
+            _release_idempotency_key(idempotency_key)
             return OrderResult(success=False, error="API credentials required — call create_or_derive_api_creds() first")
 
         if clob_breaker.state == "OPEN":
             logger.warning("CLOB circuit OPEN, rejecting order placement")
+            _release_idempotency_key(idempotency_key)
             return OrderResult(success=False, error="Circuit breaker OPEN for polymarket_clob")
 
         mode_label = "[TESTNET]" if self.mode == "testnet" else "[LIVE]"
@@ -371,6 +438,9 @@ class PolymarketCLOB:
             logger.error(f"Order failed: {error_msg}")
             await clob_breaker._on_failure()
             return OrderResult(success=False, error=error_msg)
+        finally:
+            # Always release in-flight guard so same params can be retried later
+            _release_idempotency_key(idempotency_key)
 
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an open order. Delegates to py-clob-client."""

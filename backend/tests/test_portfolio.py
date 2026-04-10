@@ -1,6 +1,6 @@
 """Tests for portfolio optimizer and strategy attribution."""
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 from backend.core.portfolio_optimizer import (
@@ -45,7 +45,7 @@ def _make_trade(
     t.pnl = pnl
     t.result = result
     t.settled = settled
-    t.timestamp = timestamp or datetime.utcnow()
+    t.timestamp = timestamp or datetime.now(timezone.utc)
     t.edge_at_entry = edge_at_entry
     return t
 
@@ -141,7 +141,7 @@ class TestAttributionSumsTo100:
     """test_attribution_sums_to_100 — contribution_pct sums correctly."""
 
     def test_contribution_pct_sums_to_100(self):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         trades = [
             _make_trade(strategy="a", pnl=30.0, timestamp=now),
             _make_trade(strategy="b", pnl=70.0, timestamp=now),
@@ -151,7 +151,7 @@ class TestAttributionSumsTo100:
         assert abs(total_pct - 100.0) < 1e-6
 
     def test_zero_total_pnl_gives_zero_contribution(self):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         trades = [
             _make_trade(strategy="a", pnl=0.0, timestamp=now),
             _make_trade(strategy="b", pnl=0.0, timestamp=now),
@@ -161,7 +161,7 @@ class TestAttributionSumsTo100:
             assert a.contribution_pct == 0.0
 
     def test_unsettled_trades_excluded(self):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         trades = [
             _make_trade(strategy="a", pnl=50.0, settled=True, timestamp=now),
             _make_trade(strategy="b", pnl=50.0, settled=False, timestamp=now),
@@ -172,7 +172,7 @@ class TestAttributionSumsTo100:
         assert "b" not in strategies
 
     def test_out_of_period_trades_excluded(self):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         old = now - timedelta(days=10)
         trades = [
             _make_trade(strategy="a", pnl=50.0, timestamp=now),

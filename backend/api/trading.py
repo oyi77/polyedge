@@ -12,6 +12,7 @@ from backend.models.database import get_db, Signal, Trade, BotState, TradeContex
 from backend.core.signals import scan_for_signals, TradingSignal
 from backend.core.errors import handle_errors
 from backend.core.event_bus import publish_event
+from backend.api.auth import require_admin
 
 router = APIRouter(tags=["trading"])
 
@@ -155,7 +156,7 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
 
 @router.get("/api/signals", response_model=List[SignalResponse])
 @handle_errors(default_response=[])
-async def get_signals():
+async def get_signals(_: str = Depends(require_admin)):
     """Get current BTC trading signals."""
     signals = await scan_for_signals()
     return [_signal_to_response(s) for s in signals]
@@ -168,6 +169,7 @@ async def get_signals_history(
     market_type: Optional[str] = None,
     direction: Optional[str] = None,
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin),
 ):
     """Return historical signals from the database with outcome data."""
     query = db.query(Signal)
@@ -206,7 +208,7 @@ async def get_signals_history(
 
 @router.get("/api/signals/actionable", response_model=List[SignalResponse])
 @handle_errors(default_response=[])
-async def get_actionable_signals():
+async def get_actionable_signals(_: str = Depends(require_admin)):
     """Get only signals that pass the edge threshold."""
     signals = await scan_for_signals()
     actionable = [s for s in signals if s.passes_threshold]
@@ -220,8 +222,9 @@ async def get_actionable_signals():
 
 @router.get("/api/trades", response_model=List[TradeResponse])
 async def get_trades(
-    limit: int = 50, status: Optional[str] = None, db: Session = Depends(get_db)
+    limit: int = 50, status: Optional[str] = None, db: Session = Depends(get_db), _: str = Depends(require_admin)
 ):
+    limit = min(limit, 500)
     query = db.query(Trade)
     if status:
         query = query.filter(Trade.result == status)
@@ -267,7 +270,7 @@ async def get_trades(
 
 
 @router.get("/api/equity-curve")
-async def get_equity_curve(db: Session = Depends(get_db)):
+async def get_equity_curve(db: Session = Depends(get_db), _: str = Depends(require_admin)):
     trades = (
         db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
     )
@@ -292,7 +295,9 @@ async def get_equity_curve(db: Session = Depends(get_db)):
 
 
 @router.post("/api/simulate-trade")
-async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
+async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Execute a manual trade for a given signal ticker, routed through risk controls."""
+    from backend.core.strategy_executor import execute_decision
     from backend.core.scheduler import log_event
 
     signals = await scan_for_signals()
@@ -301,65 +306,37 @@ async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")
 
-    state = db.query(BotState).first()
-    if not state:
-        raise HTTPException(status_code=500, detail="Bot state not initialized")
-
     entry_price = (
         signal.market.up_price if signal.direction == "up" else signal.market.down_price
     )
+    token_id = getattr(signal.market, "up_token_id" if signal.direction == "up" else "down_token_id", None)
 
-    trade = Trade(
-        market_ticker=signal.market.market_id,
-        platform="polymarket",
-        event_slug=signal.market.slug,
-        direction=signal.direction,
-        entry_price=entry_price,
-        size=min(signal.suggested_size, state.bankroll * 0.05),
-        model_probability=signal.model_probability,
-        market_price_at_entry=signal.market_probability,
-        edge_at_entry=signal.edge,
-    )
+    decision = {
+        "market_ticker": signal.market.market_id,
+        "slug": signal.market.slug,
+        "event_slug": signal.market.slug,
+        "direction": signal.direction,
+        "size": signal.suggested_size,
+        "entry_price": entry_price,
+        "edge": signal.edge,
+        "confidence": signal.confidence,
+        "model_probability": signal.model_probability,
+        "token_id": token_id,
+        "platform": "polymarket",
+        "reasoning": f"manual simulate: edge {signal.edge:.3f} {signal.direction} @ {entry_price:.0%}",
+        "market_type": "btc",
+    }
 
-    db.add(trade)
+    result = await execute_decision(decision, "simulate", db=db)
+    if result is None:
+        raise HTTPException(status_code=400, detail="Trade rejected by risk controls or duplicate")
 
-    # Create trade context for signal tracking
-    context = TradeContext(
-        trade_id=trade.id,
-        strategy="signal_scan",
-        signal_source="manual_approve",
-        confidence=signal.confidence,
-        entry_signal=str({
-            "edge": signal.edge,
-            "model_probability": signal.model_probability,
-            "market_probability": signal.market_probability,
-            "direction": signal.direction,
-        }),
-    )
-    db.add(context)
-
-    db.commit()
-
-    publish_event(
-        "trade_opened",
-        {
-            "trade_id": trade.id,
-            "market_ticker": trade.market_ticker,
-            "direction": trade.direction,
-            "size": trade.size,
-            "entry_price": trade.entry_price,
-            "mode": settings.TRADING_MODE,
-        },
-    )
-
-    log_event(
-        "trade", f"Manual BTC trade: {signal.direction.upper()} {signal.market.slug}"
-    )
-    return {"status": "ok", "trade_id": trade.id, "size": trade.size}
+    log_event("trade", f"Manual BTC trade: {signal.direction.upper()} {signal.market.slug}")
+    return {"status": "ok", "trade_id": result["id"], "size": result["size"]}
 
 
 @router.post("/api/settle-trades")
-async def settle_trades_endpoint(db: Session = Depends(get_db)):
+async def settle_trades_endpoint(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     from backend.core.settlement import (
         settle_pending_trades,
         update_bot_state_with_settlements,
@@ -384,7 +361,7 @@ async def settle_trades_endpoint(db: Session = Depends(get_db)):
 
 
 @router.get("/api/calibration")
-async def get_calibration(db: Session = Depends(get_db)):
+async def get_calibration(db: Session = Depends(get_db), _: str = Depends(require_admin)):
     """Return calibration data: predicted probability vs actual win rate."""
     signals = db.query(Signal).filter(Signal.outcome_correct.isnot(None)).all()
 
@@ -430,7 +407,7 @@ async def get_calibration(db: Session = Depends(get_db)):
 
 @router.get("/api/settlements")
 async def get_settlements(
-    limit: int = 100, offset: int = 0, db: Session = Depends(get_db)
+    limit: int = 100, offset: int = 0, db: Session = Depends(get_db), _: str = Depends(require_admin)
 ):
     events = (
         db.query(SettlementEvent)

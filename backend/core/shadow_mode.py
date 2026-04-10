@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger("trading_bot.shadow")
@@ -50,7 +50,7 @@ class ShadowRunner:
             entry_price=entry_price,
             size=size,
             model_probability=model_prob,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             strategy=strategy,
         )
         self._trades.append(trade)

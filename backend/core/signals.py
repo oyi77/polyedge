@@ -1,6 +1,6 @@
 """Signal generator for BTC 5-minute Up/Down markets."""
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from dataclasses import dataclass, field
 import asyncio
@@ -32,7 +32,7 @@ class TradingSignal:
     # Metadata
     sources: List[str] = field(default_factory=list)
     reasoning: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     # BTC price context
     btc_price: float = 0.0
@@ -49,20 +49,8 @@ def calculate_edge(
     model_prob: float,
     market_price: float
 ) -> tuple[float, str]:
-    """
-    Calculate edge and determine direction.
-
-    For BTC 5-min markets:
-    - "up" is equivalent to "yes" (outcomePrices[0])
-    - "down" is equivalent to "no" (outcomePrices[1])
-
-    Returns:
-        (edge, direction) where direction is "up" or "down"
-    """
-    # Edge for UP bet
+    """Calculate edge and direction ("up"/"down") for a BTC 5-min market."""
     up_edge = model_prob - market_price
-
-    # Edge for DOWN bet
     down_edge = (1 - model_prob) - (1 - market_price)
 
     if up_edge >= down_edge:
@@ -78,16 +66,7 @@ def calculate_kelly_size(
     direction: str,
     bankroll: float
 ) -> float:
-    """
-    Calculate position size using fractional Kelly criterion.
-
-    Kelly formula: f = (p * b - q) / b
-    where:
-        f = fraction of bankroll to bet
-        p = probability of winning
-        q = probability of losing (1 - p)
-        b = odds (payout ratio)
-    """
+    """Calculate position size using fractional Kelly criterion."""
     if direction == "up":
         win_prob = probability
         price = market_price
@@ -103,33 +82,20 @@ def calculate_kelly_size(
     lose_prob = 1 - win_prob
     kelly = (win_prob * odds - lose_prob) / odds
 
-    # Apply fractional Kelly
     kelly *= settings.KELLY_FRACTION
 
-    # Cap at maximum per-trade limit
-    max_fraction = 0.05  # 5% max per trade
+    max_fraction = 0.05
     kelly = min(kelly, max_fraction)
-
     kelly = max(kelly, 0)
 
     size = kelly * bankroll
-
-    # Hard cap from config
     size = min(size, settings.MAX_TRADE_SIZE)
 
     return size
 
 
 async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
-    """
-    Generate a trading signal for a BTC 5-min Up/Down market.
-
-    Uses real 1-minute candle data from Binance to compute:
-    - RSI (mean reversion), Momentum (trend), VWAP deviation,
-      SMA crossover, and market skew as a weighted composite.
-    - Convergence filter: requires 3/4 indicators to agree.
-    - Entry price filter: only enter when price ≤ MAX_ENTRY_PRICE.
-    """
+    """Generate a trading signal for a BTC 5-min Up/Down market."""
     try:
         micro = await compute_btc_microstructure()
     except Exception as e:
@@ -141,15 +107,10 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
 
     market_up_prob = market.up_price
 
-    # Skip resolved markets
     if market_up_prob < 0.02 or market_up_prob > 0.98:
         return None
 
-    # --- Entry price filter: only trade when price ≤ 50c ---
-    entry_price = market_up_prob  # will be overridden per-direction below
-    # We check after direction is determined
-
-    # --- Individual indicator signals (each returns a bias from -1 to +1) ---
+    entry_price = market_up_prob
 
     # 1) RSI: mean reversion — oversold (< 30) = UP, overbought (> 70) = DOWN
     if micro.rsi < 30:
@@ -165,22 +126,19 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
     rsi_signal = max(-1.0, min(1.0, rsi_signal))
 
     # 2) Momentum: weighted blend of 1m, 5m, 15m changes
-    #    Positive momentum = UP bias
     mom_blend = micro.momentum_1m * 0.5 + micro.momentum_5m * 0.35 + micro.momentum_15m * 0.15
-    # Normalise: ±0.1% is a strong 5-min signal for BTC
     momentum_signal = max(-1.0, min(1.0, mom_blend / 0.10))
 
-    # 3) VWAP deviation: price above VWAP = UP momentum, below = DOWN
+    # 3) VWAP deviation
     vwap_signal = max(-1.0, min(1.0, micro.vwap_deviation / 0.05))
 
-    # 4) SMA crossover: sma5 > sma15 = bullish
+    # 4) SMA crossover
     sma_signal = max(-1.0, min(1.0, micro.sma_crossover / 0.03))
 
-    # 5) Market skew: contrarian — if market says UP strongly, fade it
+    # 5) Market skew: contrarian fade
     market_skew = market_up_prob - 0.50
     skew_signal = max(-1.0, min(1.0, -market_skew * 4))
 
-    # --- Convergence filter: count how many indicators agree on direction ---
     indicator_signs = [
         rsi_signal,
         momentum_signal,
@@ -190,10 +148,8 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
     up_votes = sum(1 for s in indicator_signs if s > 0.05)
     down_votes = sum(1 for s in indicator_signs if s < -0.05)
 
-    # Convergence: require 2/4 indicators to agree — these are noisy 50/50 markets
     has_convergence = up_votes >= 2 or down_votes >= 2
 
-    # --- Weighted composite ---
     w = settings
     composite = (
         rsi_signal * w.WEIGHT_RSI
@@ -203,61 +159,40 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
         + skew_signal * w.WEIGHT_MARKET_SKEW
     )
 
-    # Convert composite (-1..+1) to probability (0.35..0.65)
-    # Wider range lets us express real edge when indicators converge
     model_up_prob = 0.50 + composite * 0.15
     model_up_prob = max(0.35, min(0.65, model_up_prob))
 
-    # Calculate edge and direction
     edge, direction = calculate_edge(model_up_prob, market_up_prob)
 
-    # --- Entry price filter: only buy the cheap side (≤ MAX_ENTRY_PRICE) ---
     if direction == "up":
         entry_price = market_up_prob
     else:
         entry_price = market.down_price
 
-    # Time-remaining filter: only trade windows in the sweet spot
-    now = datetime.utcnow()
-    # Handle timezone-aware window_end
+    now = datetime.now(timezone.utc)
     window_end = market.window_end
-    if window_end.tzinfo is not None:
-        window_end = window_end.replace(tzinfo=None)
+    if window_end.tzinfo is None:
+        window_end = window_end.replace(tzinfo=timezone.utc)
     time_remaining = (window_end - now).total_seconds()
     time_ok = settings.MIN_TIME_REMAINING <= time_remaining <= settings.MAX_TIME_REMAINING
 
     passes_filters = has_convergence and entry_price <= settings.MAX_ENTRY_PRICE and time_ok
 
-    # Zero out edge if filters fail (signal still returned for UI visibility)
     if not passes_filters:
         edge = 0.0
 
-    # Confidence: based on signal strength, convergence, and edge magnitude
-    # Higher edge + stronger convergence = higher confidence
     convergence_strength = max(up_votes, down_votes) / 4.0
-
-    # Base confidence from convergence (0.3 to 0.6)
     base_confidence = 0.3 + convergence_strength * 0.3
-
-    # Add edge component (up to 0.2 for very high edges)
-    edge_component = min(0.2, abs(edge) / 0.2)  # 20% edge = max bonus
-
-    # Composite indicator strength (up to 0.1)
+    edge_component = min(0.2, abs(edge) / 0.2)
     composite_component = min(0.1, abs(composite) * 0.5)
 
-    # Volatility adjustment: only penalize extreme low volatility (< 1%)
-    # Normal volatility doesn't reduce confidence
     if micro.volatility > 0:
-        # Only reduce confidence for very low volatility (< 1%)
-        vol_adjustment = min(1.0, micro.volatility / 0.01)  # Normalizes 1% to 1.0
-        vol_adjustment = max(0.8, vol_adjustment)  # Floor at 0.8 (80%)
+        vol_adjustment = max(0.8, min(1.0, micro.volatility / 0.01))
     else:
-        vol_adjustment = 0.8  # 80% when volatility is 0
+        vol_adjustment = 0.8
 
-    # Calculate final confidence (capped at 0.95)
     confidence = min(0.95, (base_confidence + edge_component + composite_component) * vol_adjustment)
 
-    # Kelly sizing
     bankroll = settings.INITIAL_BANKROLL
     suggested_size = calculate_kelly_size(
         edge=abs(edge),
@@ -267,7 +202,6 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
         bankroll=bankroll,
     )
 
-    # Build reasoning
     filter_status = "ACTIONABLE" if passes_filters else "FILTERED"
     filter_reasons = []
     if not has_convergence:

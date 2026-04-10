@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 interface MarketTick {
@@ -7,19 +8,58 @@ interface MarketTick {
   volume: number;
 }
 
+const TICK_BUFFER = 10;
+
 export default function LiveMarketView({ url = '/ws/markets' }: { url?: string }) {
   const { data, status } = useWebSocket<MarketTick>(url);
+  const [ticks, setTicks] = useState<MarketTick[]>([]);
+  const prevRef = useRef<MarketTick | null>(null);
+
+  useEffect(() => {
+    if (data && data !== prevRef.current) {
+      prevRef.current = data;
+      setTicks(prev => [data, ...prev].slice(0, TICK_BUFFER));
+    }
+  }, [data]);
+
+  const connected = status === 'open';
+  const disconnected = status === 'closed' || status === 'error';
+
   return (
-    <div className="live-market-view" data-status={status}>
-      <h3>Live Markets <span className={`status status-${status}`}>{status}</span></h3>
-      {data ? (
-        <div className="market-tick" style={{ transition: 'background-color 0.4s ease' }}>
-          <div><strong>{data.market_id}</strong></div>
-          <div>YES: {(data.yes_price * 100).toFixed(1)}% | NO: {(data.no_price * 100).toFixed(1)}%</div>
-          <div>Volume: ${data.volume.toLocaleString()}</div>
-        </div>
+    <div className="bg-gray-800 rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-neutral-200 uppercase tracking-wider">Live Markets</h3>
+        <span className={`text-[10px] font-medium uppercase px-1.5 py-0.5 rounded ${
+          connected
+            ? 'bg-green-500/10 text-green-400'
+            : disconnected
+            ? 'bg-red-500/10 text-red-400'
+            : 'bg-yellow-500/10 text-yellow-400'
+        }`}>
+          {status}
+        </span>
+      </div>
+
+      {disconnected && (
+        <p className="text-red-400 text-sm mb-2">WebSocket disconnected — reconnecting…</p>
+      )}
+
+      {ticks.length === 0 ? (
+        <p className="text-gray-400 text-sm">Waiting for market data...</p>
       ) : (
-        <div className="live-market-empty">Waiting for market data…</div>
+        <ul className="space-y-2">
+          {ticks.map((tick, i) => (
+            <li
+              key={`${tick.market_id}-${i}`}
+              className="flex items-center justify-between bg-gray-900/60 rounded px-3 py-2 text-xs"
+            >
+              <span className="text-neutral-200 font-medium truncate max-w-[40%]">{tick.market_id}</span>
+              <span className="text-green-400">YES {(tick.yes_price * 100).toFixed(1)}¢</span>
+              <span className="text-red-400">NO {(tick.no_price * 100).toFixed(1)}¢</span>
+              <span className="text-neutral-500">${tick.volume.toLocaleString()}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

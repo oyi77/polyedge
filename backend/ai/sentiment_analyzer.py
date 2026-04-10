@@ -46,7 +46,7 @@ class SentimentAnalyzer:
         if hasattr(self.client, "complete") and asyncio.iscoroutinefunction(self.client.complete):
             return await self.client.complete(prompt)
         if hasattr(self.client, "complete"):
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, self.client.complete, prompt)
         raise RuntimeError("AI client has no compatible complete() method")
 

@@ -26,7 +26,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend.strategies.base import BaseStrategy, StrategyContext, CycleResult, MarketInfo
 from backend.core.decisions import record_decision
@@ -123,7 +123,7 @@ class WhalePNLTrackerStrategy(BaseStrategy):
 
                         # Track this position to avoid duplicate signals
                         self._tracked_positions[position.condition_id] = position
-                        self._last_signal_times[position.ticker] = datetime.utcnow().timestamp()
+                        self._last_signal_times[position.ticker] = datetime.now(timezone.utc).timestamp()
 
                         logger.info(
                             f"[{self.name}] {decision} signal: {position.ticker} "
@@ -231,11 +231,11 @@ class WhalePNLTrackerStrategy(BaseStrategy):
         last_signal = self._last_signal_times.get(position.ticker, 0)
         cooldown_seconds = cooldown_minutes * 60
 
-        if datetime.utcnow().timestamp() - last_signal < cooldown_seconds:
+        if datetime.now(timezone.utc).timestamp() - last_signal < cooldown_seconds:
             return False
 
         # Check position age (skip old positions)
-        position_age = datetime.utcnow() - position.opened_at
+        position_age = datetime.now(timezone.utc) - position.opened_at
         if position_age > timedelta(hours=1):
             return False
 

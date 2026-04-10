@@ -4,7 +4,7 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Dict, List, Optional
 import statistics
 import time
@@ -162,7 +162,7 @@ class EnsembleForecast:
     mean_low: float = 0.0
     std_low: float = 0.0
     num_members: int = 0
-    fetched_at: datetime = field(default_factory=datetime.utcnow)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self):
         if self.member_highs:

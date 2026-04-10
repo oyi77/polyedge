@@ -2,13 +2,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 import json as _json
+import logging
 
 from backend.models.database import get_db, WalletConfig, BotState, SessionLocal
 from backend.api.auth import require_admin
-import logging
+from backend.config import settings
+from backend.data.polymarket_clob import PolymarketCLOB
 
 logger = logging.getLogger("trading_bot")
 router = APIRouter(tags=["wallets"])
@@ -158,7 +160,7 @@ async def create_wallet(_: None = Depends(require_admin)):
         acct = Account.create()
         return {
             "address": acct.address,
-            "private_key": acct.key.hex(),
+            "message": "Wallet created. Store your private key securely — it cannot be retrieved from this API.",
         }
     except ImportError:
         raise HTTPException(status_code=501, detail="eth_account not installed — wallet creation disabled")
@@ -209,9 +211,10 @@ async def set_active_wallet(
 async def get_wallet_balance(
     address: str,
     db: Session = Depends(get_db),
+    force_refresh: bool = False,
     _: None = Depends(require_admin),
 ):
-    """Get wallet balance (from cache or Polymarket API)."""
+    """Get wallet balance (fetches live from Polymarket if authenticated, otherwise uses cache)."""
     row = db.query(WalletConfig).filter(WalletConfig.address == address).first()
     if not row:
         return {
@@ -222,7 +225,69 @@ async def get_wallet_balance(
             "error": "Wallet not found",
         }
 
-    # Try cache first
+    # If not forcing refresh and we have a valid cache, use it
+    if not force_refresh and row.balance_cache:
+        try:
+            cached = _json.loads(row.balance_cache)
+            # Cache is valid for 5 minutes
+            last_updated = cached.get("last_updated")
+            if last_updated:
+                from datetime import timedelta
+                cache_age = datetime.now(timezone.utc) - datetime.fromisoformat(last_updated)
+                if cache_age < timedelta(minutes=5):
+                    return {
+                        "address": address,
+                        "usdc_balance": cached.get("usdc_balance", 0.0),
+                        "last_updated": last_updated,
+                        "source": "cache",
+                    }
+        except Exception:
+            pass
+
+    # Try to fetch live balance from Polymarket if we have credentials.
+    # NOTE: The CLOB client is authenticated with the bot's private key, so it
+    # can only return the bot's own balance. For other addresses we skip the
+    # live fetch and fall back to cache.
+    bot_address = None
+    if settings.POLYMARKET_PRIVATE_KEY:
+        try:
+            from eth_account import Account as _Acct
+            bot_address = _Acct.from_key(settings.POLYMARKET_PRIVATE_KEY).address.lower()
+        except Exception:
+            pass
+
+    if settings.POLYMARKET_PRIVATE_KEY and bot_address and address.lower() == bot_address:
+        try:
+            async with PolymarketCLOB(
+                private_key=settings.POLYMARKET_PRIVATE_KEY,
+                api_key=settings.POLYMARKET_API_KEY,
+                api_secret=settings.POLYMARKET_API_SECRET,
+                api_passphrase=settings.POLYMARKET_API_PASSPHRASE,
+                mode=settings.TRADING_MODE,
+            ) as clob:
+                balance_data = await clob.get_wallet_balance()
+
+                if balance_data.get("error") is None:
+                    usdc_balance = balance_data.get("usdc_balance", 0.0)
+                    last_updated = datetime.now(timezone.utc).isoformat()
+
+                    # Update cache in DB
+                    row.balance_cache = _json.dumps({
+                        "usdc_balance": usdc_balance,
+                        "last_updated": last_updated,
+                    })
+                    db.commit()
+
+                    return {
+                        "address": address,
+                        "usdc_balance": usdc_balance,
+                        "last_updated": last_updated,
+                        "source": "polymarket",
+                    }
+        except Exception as e:
+            logger.warning(f"Failed to fetch live balance for {address[:10]}...: {e}")
+
+    # Fallback to cache or return 0
     if row.balance_cache:
         try:
             cached = _json.loads(row.balance_cache)
@@ -257,13 +322,13 @@ async def update_wallet_balance(
 
     row.balance_cache = _json.dumps({
         "usdc_balance": body.usdc_balance,
-        "last_updated": datetime.utcnow().isoformat(),
+        "last_updated": datetime.now(timezone.utc).isoformat(),
     })
     db.commit()
 
     return {
         "address": address,
         "usdc_balance": body.usdc_balance,
-        "last_updated": datetime.utcnow().isoformat(),
+        "last_updated": datetime.now(timezone.utc).isoformat(),
         "source": body.source or "manual",
     }

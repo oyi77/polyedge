@@ -1,9 +1,10 @@
 """Arbitrage detection routes."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import List, Dict
 import time as _time
 import logging
 
+from backend.api.auth import require_admin
 from backend.core.arbitrage_detector import ArbitrageDetector
 from backend.core.market_scanner import fetch_all_active_markets
 
@@ -15,7 +16,7 @@ _arb_cache: Dict = {"timestamp": 0.0, "data": []}
 
 
 @router.get("/api/arbitrage/opportunities")
-async def get_arbitrage_opportunities():
+async def get_arbitrage_opportunities(_: None = Depends(require_admin)):
     """Live arbitrage scan over recent Polymarket Gamma markets, cached 60s."""
     now = _time.time()
     if now - _arb_cache["timestamp"] < 60 and _arb_cache["data"]:

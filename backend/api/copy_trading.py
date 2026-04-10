@@ -6,6 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db, Signal, SessionLocal, CopyTraderEntry
+from backend.api.auth import require_admin
 import logging
 
 logger = logging.getLogger("trading_bot")
@@ -38,8 +39,9 @@ class CopySignalResponse(BaseModel):
 
 
 @router.get("/api/copy/leaderboard", response_model=List[ScoredTraderResponse])
-async def get_copy_leaderboard(limit: int = 100):
+async def get_copy_leaderboard(limit: int = 100, _: None = Depends(require_admin)):
     """Return top traders from Polymarket Data API leaderboard."""
+    limit = min(limit, 500)
     import httpx
 
     DATA_API = "https://data-api.polymarket.com"
@@ -128,10 +130,11 @@ async def get_copy_leaderboard(limit: int = 100):
 
 
 @router.get("/api/copy/signals", response_model=List[CopySignalResponse])
-async def get_copy_signals(limit: int = 20):
+async def get_copy_signals(limit: int = 20, _: None = Depends(require_admin)):
     """Return recent copy trade signals from the DB."""
+    limit = min(limit, 500)
+    db = SessionLocal()
     try:
-        db = SessionLocal()
         signals = (
             db.query(Signal)
             .filter(Signal.market_type == "copy")
@@ -139,7 +142,6 @@ async def get_copy_signals(limit: int = 20):
             .limit(limit)
             .all()
         )
-        db.close()
         return [
             CopySignalResponse(
                 source_wallet=s.sources[0] if s.sources else "",
@@ -157,10 +159,12 @@ async def get_copy_signals(limit: int = 20):
         ]
     except Exception:
         return []
+    finally:
+        db.close()
 
 
 @router.get("/api/copy-trader/positions")
-async def get_copy_trader_positions(db: Session = Depends(get_db)):
+async def get_copy_trader_positions(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Return recent copy trader position entries from DB."""
     entries = (
         db.query(CopyTraderEntry)
@@ -181,7 +185,7 @@ async def get_copy_trader_positions(db: Session = Depends(get_db)):
 
 
 @router.get("/api/copy-trader/status")
-async def get_copy_trader_status(db: Session = Depends(get_db)):
+async def get_copy_trader_status(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Return copy trader status including tracked wallets and recent signals."""
     try:
         wallet_entries = db.query(

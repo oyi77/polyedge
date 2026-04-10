@@ -1,5 +1,6 @@
 """Configuration settings for the BTC 5-min trading bot."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -154,6 +155,25 @@ class Settings(BaseSettings):
     # Cache Settings
     CACHE_URL: str = "sqlite:///./cache.db"  # or "redis://localhost:6379/0"
     CACHE_TTL_SECONDS: int = 300  # 5 minutes
+
+    @model_validator(mode="after")
+    def _validate_live_trading_credentials(self) -> "Settings":
+        if self.TRADING_MODE == "live":
+            missing = [
+                name
+                for name, value in [
+                    ("POLYMARKET_PRIVATE_KEY", self.POLYMARKET_PRIVATE_KEY),
+                    ("POLYMARKET_API_SECRET", self.POLYMARKET_API_SECRET),
+                    ("POLYMARKET_API_PASSPHRASE", self.POLYMARKET_API_PASSPHRASE),
+                ]
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    "TRADING_MODE=live requires POLYMARKET_PRIVATE_KEY, "
+                    "POLYMARKET_API_SECRET, and POLYMARKET_API_PASSPHRASE to be set"
+                )
+        return self
 
     @property
     def SIMULATION_MODE(self) -> bool:

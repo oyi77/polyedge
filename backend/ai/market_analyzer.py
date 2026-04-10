@@ -1,4 +1,5 @@
 """AI market analyzer with multi-provider routing for prediction markets."""
+import asyncio
 import json
 import logging
 import re
@@ -13,11 +14,11 @@ logger = logging.getLogger("trading_bot.ai")
 
 @dataclass
 class AIAnalysis:
-    probability: float  # model's estimated probability [0, 1]
-    confidence: float  # how confident the model is [0, 1]
-    reasoning: str  # explanation
-    provider: str  # which AI was used
-    cost_usd: float  # estimated cost
+    probability: float
+    confidence: float
+    reasoning: str
+    provider: str
+    cost_usd: float
 
 
 def _build_prompt(
@@ -45,17 +46,12 @@ REASONING: [brief explanation]"""
 
 
 def _parse_ai_response(response: str) -> tuple[float, float, str]:
-    """Extract probability, confidence, reasoning from LLM text response.
-
-    Handles structured PROBABILITY/CONFIDENCE/REASONING format and JSON.
-    Returns (probability, confidence, reasoning). Falls back to (0.5, 0.0, response)
-    on parse failure.
-    """
-    # Try JSON first
-    json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
-    if json_match:
+    """Parse PROBABILITY/CONFIDENCE/REASONING text or JSON from an LLM response."""
+    start = response.find('{')
+    if start != -1:
         try:
-            data = json.loads(json_match.group())
+            decoder = json.JSONDecoder()
+            data, _ = decoder.raw_decode(response, start)
             prob = float(data.get("probability", data.get("prob", 0.5)))
             conf = float(data.get("confidence", data.get("conf", 0.0)))
             reasoning = str(data.get("reasoning", data.get("reason", response)))
@@ -65,7 +61,6 @@ def _parse_ai_response(response: str) -> tuple[float, float, str]:
         except (ValueError, KeyError):
             pass
 
-    # Try structured text format
     prob: Optional[float] = None
     conf: Optional[float] = None
     reasoning = ""
@@ -91,12 +86,10 @@ def _parse_ai_response(response: str) -> tuple[float, float, str]:
     if prob is not None and conf is not None:
         return (prob, conf, reasoning or response)
 
-    # Fallback: return neutral values so callers can detect parse failure via confidence=0
     return (0.5, 0.0, response)
 
 
 async def _call_groq(prompt: str) -> Optional[str]:
-    """Call Groq API using the existing GroqClassifier pattern."""
     start_time = time.time()
     try:
         from backend.config import settings
@@ -109,7 +102,8 @@ async def _call_groq(prompt: str) -> Optional[str]:
 
         model = settings.GROQ_MODEL
         client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
@@ -160,7 +154,6 @@ async def _call_groq(prompt: str) -> Optional[str]:
 
 
 async def _call_claude(prompt: str) -> Optional[str]:
-    """Call Claude API using the existing ClaudeAnalyzer pattern."""
     start_time = time.time()
     model = "claude-sonnet-4-20250514"
     try:
@@ -173,7 +166,8 @@ async def _call_claude(prompt: str) -> Optional[str]:
             return None
 
         client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
+        message = await asyncio.to_thread(
+            client.messages.create,
             model=model,
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
@@ -222,10 +216,7 @@ async def _call_claude(prompt: str) -> Optional[str]:
 
 
 async def check_ai_budget() -> dict:
-    """Return current AI spend vs daily budget.
-
-    Returns dict with keys: spent_today, limit, remaining, can_call.
-    """
+    """Return current AI spend vs daily budget."""
     from backend.config import settings
 
     ai_logger = get_ai_logger()
@@ -249,14 +240,7 @@ async def analyze_market(
     category: str = "",
     context: str = "",
 ) -> Optional[AIAnalysis]:
-    """Analyze a prediction market and return an AIAnalysis.
-
-    Routing strategy:
-    - Use Groq (cheap) for initial screening.
-    - If Groq returns an edge > 5% vs current_price, escalate to Claude.
-    - Respects AI_DAILY_BUDGET_USD; returns None if budget exceeded.
-    - Returns None on API error or response parse failure.
-    """
+    """Analyze a market: screen with Groq, escalate to Claude if edge > 5%."""
     budget = await check_ai_budget()
     if not budget["can_call"]:
         logger.warning(
@@ -266,20 +250,17 @@ async def analyze_market(
 
     prompt = _build_prompt(question, current_price, volume, category, context)
 
-    # --- Groq screening pass ---
     groq_response = await _call_groq(prompt)
     if groq_response is None:
         return None
 
     groq_prob, groq_conf, groq_reasoning = _parse_ai_response(groq_response)
     if groq_conf == 0.0 and groq_prob == 0.5:
-        # Parse failed
         logger.warning("Failed to parse Groq response")
         return None
 
     groq_edge = abs(groq_prob - current_price)
 
-    # If edge is <= 5%, stick with Groq result
     if groq_edge <= 0.05:
         ai_logger = get_ai_logger()
         daily_stats = ai_logger.get_daily_stats()
@@ -292,7 +273,6 @@ async def analyze_market(
             cost_usd=cost,
         )
 
-    # --- Escalate to Claude for higher-edge signals ---
     budget = await check_ai_budget()
     if not budget["can_call"]:
         logger.warning("Budget exhausted before Claude escalation, returning Groq result")
@@ -306,7 +286,6 @@ async def analyze_market(
 
     claude_response = await _call_claude(prompt)
     if claude_response is None:
-        # Fall back to Groq result
         return AIAnalysis(
             probability=groq_prob,
             confidence=groq_conf,
@@ -317,7 +296,6 @@ async def analyze_market(
 
     claude_prob, claude_conf, claude_reasoning = _parse_ai_response(claude_response)
     if claude_conf == 0.0 and claude_prob == 0.5:
-        # Claude parse failed, fall back to Groq
         return AIAnalysis(
             probability=groq_prob,
             confidence=groq_conf,

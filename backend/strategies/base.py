@@ -41,6 +41,9 @@ class MarketInfo:
     end_date: str | None
     volume: float
     liquidity: float
+    yes_price: float = 0.5
+    no_price: float = 0.5
+    question: str = ""
     metadata: dict = field(default_factory=dict)
 
 
@@ -52,6 +55,7 @@ class CycleResult:
     trades_attempted: int
     trades_placed: int
     errors: list[str] = field(default_factory=list)
+    decisions: list = field(default_factory=list)
     cycle_duration_ms: float = 0.0
 
 

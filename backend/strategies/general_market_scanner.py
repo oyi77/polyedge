@@ -23,6 +23,7 @@ class GeneralMarketScanner(BaseStrategy):
         "max_position_size": 8.0,
         "scan_limit": 20,
         "categories": "politics,sports,crypto,science,culture",
+        "max_ai_calls_per_cycle": 5,
     }
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
@@ -35,6 +36,7 @@ class GeneralMarketScanner(BaseStrategy):
         min_price = float(params["min_price"])
         max_position_size = float(params["max_position_size"])
         scan_limit = int(params["scan_limit"])
+        max_ai_calls_per_cycle = int(params.get("max_ai_calls_per_cycle", 5))
         allowed_categories_raw = params.get("categories", "")
         allowed_categories = {
             c.strip().lower()
@@ -84,12 +86,14 @@ class GeneralMarketScanner(BaseStrategy):
         bankroll = 100.0
         try:
             from backend.models.database import BotState
+            from backend.config import settings as _settings
             state = ctx.db.query(BotState).first()
             if state:
-                bankroll = float(state.bankroll)
+                bankroll = float(state.bankroll) if _settings.TRADING_MODE != "paper" else float(state.paper_bankroll or state.bankroll)
         except Exception:
             pass
 
+        ai_calls_this_cycle = 0
         for market in markets:
             # Volume filter
             volume = float(market.get("volume", 0) or 0)
@@ -141,7 +145,13 @@ class GeneralMarketScanner(BaseStrategy):
             slug = market.get("slug") or market.get("conditionId") or ""
             question = market.get("question") or market.get("title") or slug
 
-            # AI analysis
+            # AI analysis — enforce per-cycle call cap
+            if ai_calls_this_cycle >= max_ai_calls_per_cycle:
+                ctx.logger.debug(
+                    f"AI call cap reached ({max_ai_calls_per_cycle}), using technical signals for remaining markets"
+                )
+                continue
+
             try:
                 ai_result = await analyze_market(
                     question=question,
@@ -152,6 +162,8 @@ class GeneralMarketScanner(BaseStrategy):
             except Exception as e:
                 ctx.logger.debug(f"[general_scanner] AI analysis failed for {slug}: {e}")
                 continue
+
+            ai_calls_this_cycle += 1
 
             if not ai_result:
                 continue
@@ -189,20 +201,24 @@ class GeneralMarketScanner(BaseStrategy):
             reasoning = getattr(ai_result, "reasoning", "") or ""
 
             decision = {
-                "market_slug": slug,
+                "market_ticker": slug,
                 "market_question": question,
                 "direction": direction,
-                "price": entry_price,
+                "decision": "BUY",
+                "entry_price": entry_price,
                 "size": size,
+                "suggested_size": size,
                 "edge": round(edge, 4),
                 "confidence": getattr(ai_result, "confidence", 0.0),
-                "ai_probability": ai_prob,
-                "market_price": market_price,
+                "model_probability": ai_prob,
+                "market_probability": market_price,
+                "platform": "polymarket",
+                "strategy_name": self.name,
                 "volume": volume,
                 "reasoning": reasoning,
-                "strategy": self.name,
             }
 
+            result.decisions.append(decision)
             result.decisions_recorded += 1
             result.trades_attempted += 1
 

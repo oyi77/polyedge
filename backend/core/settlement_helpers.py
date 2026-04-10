@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
@@ -470,7 +470,7 @@ async def process_settled_trade(
     trade.settled = True
     trade.settlement_value = settlement_value
     trade.pnl = pnl
-    trade.settlement_time = datetime.utcnow()
+    trade.settlement_time = datetime.now(timezone.utc)
     if pnl is not None and pnl > 0:
         trade.result = "win"
     elif pnl is not None and pnl < 0:
@@ -544,7 +544,7 @@ async def process_settled_trade(
             linked_signal.actual_outcome = actual_outcome
             linked_signal.outcome_correct = linked_signal.direction == actual_outcome
             linked_signal.settlement_value = settlement_value
-            linked_signal.settled_at = datetime.utcnow()
+            linked_signal.settled_at = datetime.now(timezone.utc)
             market_type = getattr(trade, "market_type", "btc") or "btc"
             if market_type == "weather" and linked_signal.sources:
                 await _try_calibrate_weather(linked_signal, settlement_value)
@@ -569,7 +569,7 @@ async def process_settled_trade(
                 "pnl": pnl,
                 "edge": getattr(trade, "edge_at_entry", 0.0),
                 "confidence": getattr(trade, "confidence", 0.5),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         )
     except Exception:

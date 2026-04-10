@@ -73,10 +73,10 @@ async def test_cache_hit():
 
 
 async def test_cache_stale_on_all_fail():
-    """All sources fail — stale cache entry is returned with from_cache=True."""
-    agg = DataAggregator(cache_ttl=0.01)  # very short TTL
-    # Seed cache manually
-    agg._cache["price"] = (55.0, time.monotonic() - 999)
+    """All sources fail — stale cache within max_stale_age is returned."""
+    agg = DataAggregator(cache_ttl=0.01, max_stale_age=600)  # 600s max stale age
+    # Seed cache with 5s-old data (within max_stale_age)
+    agg._cache["price"] = (55.0, time.monotonic() - 5)
 
     agg.register_source("price", _make_source("bad", raises=ConnectionError("offline"), priority=0))
 
@@ -85,6 +85,18 @@ async def test_cache_stale_on_all_fail():
     assert result.from_cache is True
     assert result.data == 55.0
     assert result.source == "stale_cache"
+
+
+async def test_cache_too_stale_raises():
+    """All sources fail and stale cache exceeds max_stale_age — DataQualityError is raised."""
+    agg = DataAggregator(cache_ttl=0.01, max_stale_age=300)
+    # Seed cache with 999s-old data (exceeds max_stale_age)
+    agg._cache["price"] = (55.0, time.monotonic() - 999)
+
+    agg.register_source("price", _make_source("bad", raises=ConnectionError("offline"), priority=0))
+
+    with pytest.raises(DataQualityError):
+        await agg.fetch("price")
 
 
 async def test_no_cache_raises():

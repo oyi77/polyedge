@@ -12,7 +12,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, AsyncGenerator
 import asyncio
 import os
@@ -262,8 +262,8 @@ class EventResponse(BaseModel):
 # Startup / Shutdown
 @app.on_event("startup")
 async def startup():
-    from datetime import datetime as _dt
-    app.state.start_time = _dt.utcnow()
+    from datetime import datetime as _dt, timezone as _tz
+    app.state.start_time = _dt.now(_tz.utc)
     logger.info("=" * 60)
     logger.info("BTC 5-MIN TRADING BOT v3.0")
     logger.info("=" * 60)
@@ -379,7 +379,7 @@ async def health_check(db: Session = Depends(get_db)):
     return {
         "status": "ok" if all_healthy else "degraded",
         "strategies": healths,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "bot_running": bot_state.is_running if bot_state else False,
     }
 
@@ -398,7 +398,7 @@ async def metrics():
 
 
 @app.get("/api/dashboard", response_model=DashboardData)
-async def get_dashboard(db: Session = Depends(get_db)):
+async def get_dashboard(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Get all dashboard data in one call."""
     stats = await get_stats(db)
 
@@ -425,7 +425,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
                 change_7d=0,
                 market_cap=0,
                 volume_24h=0,
-                last_updated=datetime.utcnow(),
+                last_updated=datetime.now(timezone.utc),
             )
     except Exception:
         logger.warning("Failed to fetch BTC microstructure data, falling back to CoinGecko")
@@ -620,7 +620,7 @@ async def events_stream(request: Request, token: str = ""):
         for event in event_bus.get_history():
             yield f"data: {_json.dumps(event)}\n\n"
         # Send connected heartbeat immediately
-        yield f"data: {_json.dumps({'type': 'connected', 'timestamp': datetime.utcnow().isoformat()})}\n\n"
+        yield f"data: {_json.dumps({'type': 'connected', 'timestamp': datetime.now(timezone.utc).isoformat()})}\n\n"
         try:
             while True:
                 if await request.is_disconnected():
@@ -649,8 +649,11 @@ async def events_stream(request: Request, token: str = ""):
 
 
 @app.websocket("/ws/markets")
-async def ws_markets(websocket: WebSocket):
+async def ws_markets(websocket: WebSocket, token: str = ""):
     """WebSocket endpoint for live market price updates."""
+    if settings.ADMIN_API_KEY and token != settings.ADMIN_API_KEY:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
     await market_ws.connect(websocket)
     try:
         while True:
@@ -664,8 +667,11 @@ async def ws_markets(websocket: WebSocket):
 
 
 @app.websocket("/ws/whales")
-async def ws_whales(websocket: WebSocket):
+async def ws_whales(websocket: WebSocket, token: str = ""):
     """WebSocket endpoint for whale trade notifications."""
+    if settings.ADMIN_API_KEY and token != settings.ADMIN_API_KEY:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
     await whale_ws.connect(websocket)
     try:
         while True:
@@ -688,7 +694,7 @@ async def websocket_events(websocket: WebSocket, token: str = ""):
     try:
         await websocket.send_json(
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "type": "success",
                 "message": "Connected to BTC trading bot",
             }
@@ -711,7 +717,7 @@ async def websocket_events(websocket: WebSocket, token: str = ""):
                 last_event_count = len(current_events)
 
             await websocket.send_json(
-                {"type": "heartbeat", "timestamp": datetime.utcnow().isoformat()}
+                {"type": "heartbeat", "timestamp": datetime.now(timezone.utc).isoformat()}
             )
 
     except WebSocketDisconnect:

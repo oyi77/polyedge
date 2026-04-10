@@ -1,3 +1,4 @@
+from datetime import timezone
 """Integration tests for /api/dashboard, /api/stats, and /api/signals endpoints.
 
 Uses the shared conftest.py fixtures (client, db) backed by in-memory SQLite.
@@ -35,7 +36,7 @@ def _mock_btc_price():
     price.market_cap = 1_200_000_000_000.0
     price.volume_24h = 40_000_000_000.0
     from datetime import datetime
-    price.last_updated = datetime.utcnow()
+    price.last_updated = datetime.now(timezone.utc)
     return price
 
 

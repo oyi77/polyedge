@@ -15,7 +15,8 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 
-from backend.strategies.base import BaseStrategy, StrategyContext, CycleResult, MarketInfo
+from backend.strategies.base import BaseStrategy, StrategyContext, CycleResult
+from backend.core.market_scanner import MarketInfo
 from backend.core.decisions import record_decision
 
 logger = logging.getLogger("trading_bot")
@@ -97,7 +98,7 @@ class BtcOracleStrategy(BaseStrategy):
         ]
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
-        result = CycleResult()
+        result = CycleResult(decisions_recorded=0, trades_attempted=0, trades_placed=0)
         min_edge = ctx.params.get("min_edge", self.default_params["min_edge"])
         max_minutes = ctx.params.get("max_minutes_to_resolution", self.default_params["max_minutes_to_resolution"])
 

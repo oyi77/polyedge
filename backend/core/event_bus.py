@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Callable, Awaitable
 
 
@@ -72,7 +72,7 @@ class EventBus:
         """
         payload = {
             "type": event_type,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": data,
         }
         self._history.append(payload)

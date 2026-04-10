@@ -32,10 +32,11 @@ def test_combine_all_components(gen):
     assert 0.01 <= result.combined_probability <= 0.99
     assert 0.0 <= result.confidence <= 1.0
 
-    # Manually compute expected: 0.4*0.7 + 0.3*0.6 + 0.15*(0.5+0.5*0.15)
+    # Normalized weights (total_weight = 0.40+0.30+0.15 = 0.85):
     # orderbook_prob = 0.5 + 0.5*0.15 = 0.575
-    # combined = 0.4*0.7 + 0.3*0.6 + 0.15*0.575 = 0.28 + 0.18 + 0.08625 = 0.54625
-    assert abs(result.combined_probability - 0.54625) < 1e-6
+    # combined = (0.40*0.7 + 0.30*0.6 + 0.15*0.575) / 0.85
+    #          = (0.28 + 0.18 + 0.08625) / 0.85 = 0.54625 / 0.85 ≈ 0.642647
+    assert abs(result.combined_probability - 0.54625 / 0.85) < 1e-6
 
     # All four keys present in breakdown
     assert "technical" in result.component_breakdown
@@ -53,10 +54,10 @@ def test_combine_without_ai(gen):
         wash_trade_score=0,
         market_price=0.5,
     )
-    # With ai_prob=None: technical weight = 0.40 + 0.30 = 0.70
+    # With ai_prob=None: active weights technical=0.40, orderbook=0.15, total=0.55
     # orderbook_prob = 0.5 + 0.0*0.15 = 0.5
-    # combined = 0.70*0.7 + 0.15*0.5 = 0.49 + 0.075 = 0.565
-    assert abs(result_no_ai.combined_probability - 0.565) < 1e-6
+    # combined = (0.40*0.7 + 0.15*0.5) / 0.55 = (0.28 + 0.075) / 0.55 = 0.355 / 0.55 ≈ 0.645455
+    assert abs(result_no_ai.combined_probability - 0.355 / 0.55) < 1e-6
 
     # "ai" key should not be in breakdown (weight is 0, not added)
     assert "ai" not in result_no_ai.component_breakdown

@@ -1,7 +1,7 @@
 """AI call logging for monitoring and debugging."""
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, asdict
@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AICallRecord:
-    """Record of an AI API call."""
     timestamp: str
     provider: str
     model: str
@@ -27,14 +26,7 @@ class AICallRecord:
 
 
 class AICallLogger:
-    """
-    Comprehensive logger for all AI API calls.
-
-    Logs to:
-    1. File (JSON lines format)
-    2. Database (if session provided)
-    3. Console (debug level)
-    """
+    """Log AI API calls to file, database, and console."""
 
     # Approximate costs per 1M tokens (as of early 2025)
     COSTS = {
@@ -50,10 +42,9 @@ class AICallLogger:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_to_db = log_to_db
-        self._log_file = self.log_dir / f"ai_calls_{datetime.now().strftime('%Y%m%d')}.jsonl"
+        self._log_file = self.log_dir / f"ai_calls_{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl"
 
     def estimate_cost(self, model: str, tokens_used: int) -> float:
-        """Estimate cost of an API call in USD."""
         if model not in self.COSTS:
             return 0.0
 
@@ -75,28 +66,10 @@ class AICallLogger:
         success: bool = True,
         error: Optional[str] = None
     ) -> AICallRecord:
-        """
-        Log an AI API call.
-
-        Args:
-            provider: "claude" or "groq"
-            model: Model name/ID
-            prompt: Input prompt
-            response: Model response
-            latency_ms: Call latency in milliseconds
-            tokens_used: Total tokens used
-            related_market: Market ticker if applicable
-            call_type: Type of call (classification, analysis, etc.)
-            success: Whether call succeeded
-            error: Error message if failed
-
-        Returns:
-            AICallRecord for the logged call
-        """
         cost_usd = self.estimate_cost(model, tokens_used)
 
         record = AICallRecord(
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             provider=provider,
             model=model,
             prompt=prompt[:1000],  # Truncate long prompts
@@ -110,10 +83,8 @@ class AICallLogger:
             error=error
         )
 
-        # Log to file
         self._write_to_file(record)
 
-        # Log to console
         log_msg = (
             f"AI Call: {provider}/{model} | {call_type} | "
             f"{latency_ms:.0f}ms | {tokens_used} tokens | ${cost_usd:.4f}"
@@ -126,7 +97,6 @@ class AICallLogger:
         return record
 
     def _write_to_file(self, record: AICallRecord):
-        """Write record to JSON lines file."""
         try:
             with open(self._log_file, "a") as f:
                 f.write(json.dumps(asdict(record)) + "\n")
@@ -134,7 +104,6 @@ class AICallLogger:
             logger.error(f"Failed to write AI log: {e}")
 
     async def log_to_database(self, record: AICallRecord, db_session):
-        """Write record to database."""
         if not self.log_to_db:
             return
 
@@ -158,7 +127,6 @@ class AICallLogger:
             logger.error(f"Failed to log AI call to database: {e}")
 
     def get_daily_stats(self) -> Dict[str, Any]:
-        """Get statistics for today's AI calls."""
         stats = {
             "total_calls": 0,
             "total_tokens": 0,
@@ -186,13 +154,11 @@ class AICallLogger:
                         if not record.get("success", True):
                             stats["errors"] += 1
 
-                        # By provider
                         provider = record.get("provider", "unknown")
                         if provider not in stats["by_provider"]:
                             stats["by_provider"][provider] = 0
                         stats["by_provider"][provider] += 1
 
-                        # By call type
                         call_type = record.get("call_type", "unknown")
                         if call_type not in stats["by_call_type"]:
                             stats["by_call_type"][call_type] = 0
@@ -210,12 +176,10 @@ class AICallLogger:
         return stats
 
 
-# Global logger instance
 _ai_logger: Optional[AICallLogger] = None
 
 
 def get_ai_logger() -> AICallLogger:
-    """Get or create the global AI logger instance."""
     global _ai_logger
     if _ai_logger is None:
         _ai_logger = AICallLogger()

@@ -33,9 +33,26 @@ async def test_auto_execute_high_confidence(rm_allow, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_low_confidence_creates_pending(rm_allow, monkeypatch):
+async def test_low_confidence_skips_in_auto_mode(rm_allow, monkeypatch):
+    """Low confidence in non-manual mode must skip (not queue) to prevent auto-approve bypassing."""
     from backend.config import settings
     monkeypatch.setattr(settings, "AUTO_APPROVE_MIN_CONFIDENCE", 0.85)
+    monkeypatch.setattr(settings, "SIGNAL_APPROVAL_MODE", "auto_approve")
+    trader = AutoTrader(rm_allow)
+    result = await trader.execute_signal(
+        {"confidence": 0.6, "size": 100, "market_id": "m1", "side": "BUY"},
+        bankroll=10000, current_exposure=0,
+    )
+    assert not result.executed
+    assert not result.pending_approval  # must skip, not queue
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_queues_in_manual_mode(rm_allow, monkeypatch):
+    """Low confidence in manual mode must queue for human review."""
+    from backend.config import settings
+    monkeypatch.setattr(settings, "AUTO_APPROVE_MIN_CONFIDENCE", 0.85)
+    monkeypatch.setattr(settings, "SIGNAL_APPROVAL_MODE", "manual")
     trader = AutoTrader(rm_allow)
     result = await trader.execute_signal(
         {"confidence": 0.6, "size": 100, "market_id": "m1", "side": "BUY"},

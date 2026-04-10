@@ -39,6 +39,9 @@ class AutoTrader:
             return ExecutionResult(False, False, decision.reason)
 
         if confidence < settings.AUTO_APPROVE_MIN_CONFIDENCE:
+            if settings.SIGNAL_APPROVAL_MODE != "manual":
+                # In auto_approve or auto_deny mode, skip low-confidence signals instead of queuing
+                return ExecutionResult(False, False, f"skipped low-confidence signal (conf {confidence:.2f})")
             pending_id = self._create_pending(signal, decision.adjusted_size)
             return ExecutionResult(False, True, f"queued for manual approval (conf {confidence:.2f})", pending_id=pending_id)
 

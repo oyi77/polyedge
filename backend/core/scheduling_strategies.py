@@ -1,16 +1,8 @@
-"""Scheduling strategies - background job functions for the trading bot.
+"""Background job functions scheduled by APScheduler."""
 
-This module contains all the async job functions that are scheduled by APScheduler.
-Each job is a standalone async function that performs a specific task.
-"""
-
-import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import func
-
-# Module-level lock to serialize BotState bankroll updates across all jobs
-_bankroll_lock = asyncio.Lock()
 
 from backend.config import settings
 from backend.models.database import (
@@ -34,14 +26,9 @@ async def _process_signal_with_approval(
     trades_executed: int,
     max_trades: int,
 ) -> int:
-    """
-    Process a signal through the approval workflow.
-
-    Returns updated trades_executed count.
-    """
+    """Process a signal through the approval workflow. Returns updated trades_executed count."""
     from backend.core.scheduler import log_event
 
-    # Open trade always blocks re-entry regardless of approval mode
     existing_trade = (
         db.query(Trade)
         .filter(Trade.event_slug == signal.market.slug, Trade.settled == False)
@@ -54,8 +41,6 @@ async def _process_signal_with_approval(
     if trades_executed >= max_trades:
         return trades_executed
 
-    # Get approval mode before checking pending — in auto modes, stale pending
-    # entries left over from a previous manual session must not block execution.
     approval_mode = settings.SIGNAL_APPROVAL_MODE
 
     existing_pending = (
@@ -69,11 +54,9 @@ async def _process_signal_with_approval(
 
     if existing_pending:
         if approval_mode == "manual":
-            # Manual mode: respect existing pending, do not duplicate
             logger.debug(f"Skipping {signal.market.slug}: already has pending approval")
             return trades_executed
         else:
-            # Auto mode: stale pending entries should not block — auto-expire them
             existing_pending.status = "expired"
             db.flush()
             logger.debug(
@@ -81,7 +64,6 @@ async def _process_signal_with_approval(
             )
     min_confidence = settings.AUTO_APPROVE_MIN_CONFIDENCE
 
-    # Calculate trade size
     MAX_TRADE_FRACTION = 0.03
     MIN_TRADE_SIZE = 10
     bankroll = (
@@ -96,7 +78,6 @@ async def _process_signal_with_approval(
         log_event("warning", f"Bankroll too low: ${state.bankroll:.2f}")
         return trades_executed
 
-    # Map signal to approval format
     approval_signal = {
         "market_id": signal.market.market_id,
         "market_title": f"BTC {signal.market.window_start.strftime('%H:%M')} - {signal.market.window_end.strftime('%H:%M')} UTC",
@@ -115,9 +96,7 @@ async def _process_signal_with_approval(
         "down_token_id": signal.market.down_token_id,
     }
 
-    # Handle based on approval mode
     if approval_mode == "auto_deny":
-        # Auto-deny: skip all signals
         record_decision(
             db,
             "btc_5m",
@@ -138,178 +117,62 @@ async def _process_signal_with_approval(
 
     elif approval_mode == "auto_approve":
         if signal.confidence >= min_confidence:
-            # Auto-approve high confidence signals
             return await _execute_trade(signal, state, db, trade_size, trades_executed)
         else:
-            # Low confidence in auto_approve mode: skip, do not queue
             log_event(
                 "info",
                 f"Auto-approve: skipping low-confidence signal ({signal.confidence:.2f} < {min_confidence}) for {signal.market.slug}",
             )
             return trades_executed
 
-    # Manual mode only: queue for approval
     return await _queue_for_approval(
         signal, state, db, trade_size, approval_signal, trades_executed
     )
 
 
 async def _execute_trade(signal, state, db, trade_size, trades_executed: int) -> int:
-    """Execute a trade immediately."""
+    """Execute a BTC trade by delegating to strategy_executor.execute_decision()."""
     from backend.core.scheduler import log_event
-    from backend.data.polymarket_clob import clob_from_settings
-    from sqlalchemy.exc import IntegrityError
+    from backend.core.strategy_executor import execute_decision
 
-    # Map up/down to yes/no for storage
     entry_price = (
         signal.market.up_price if signal.direction == "up" else signal.market.down_price
     )
-
-    trade = Trade(
-        market_ticker=signal.market.market_id,
-        platform="polymarket",
-        event_slug=signal.market.slug,
-        direction=signal.direction,
-        entry_price=entry_price,
-        size=trade_size,
-        model_probability=signal.model_probability,
-        market_price_at_entry=signal.market_probability,
-        edge_at_entry=signal.edge,
-        trading_mode=settings.TRADING_MODE,
+    token_id = (
+        signal.market.up_token_id
+        if signal.direction == "up"
+        else signal.market.down_token_id
     )
 
-    try:
-        db.add(trade)
-        db.flush()  # get trade.id
-    except IntegrityError:
-        # Duplicate trade for this market window - skip
-        logger.debug(
-            f"Skipping {signal.market.slug}: trade already exists for this window"
-        )
-        db.rollback()
+    decision = {
+        "market_ticker": signal.market.market_id,
+        "slug": signal.market.slug,
+        "event_slug": signal.market.slug,
+        "direction": signal.direction,
+        "size": trade_size,
+        "entry_price": entry_price,
+        "edge": signal.edge,
+        "confidence": signal.confidence,
+        "model_probability": signal.model_probability,
+        "token_id": token_id,
+        "platform": "polymarket",
+        "reasoning": f"edge {signal.edge:.3f} >= threshold, {signal.direction} @ {entry_price:.0%}",
+    }
+
+    result = await execute_decision(decision, "btc_5m", db=db)
+    if result is None:
         return trades_executed
-
-    # Link trade to the most recent matching Signal and mark it executed
-    matching_signal = (
-        db.query(Signal)
-        .filter(
-            Signal.market_ticker == signal.market.market_id,
-            Signal.executed == False,
-        )
-        .order_by(Signal.timestamp.desc())
-        .first()
-    )
-    if matching_signal:
-        matching_signal.executed = True
-        trade.signal_id = matching_signal.id
 
     trades_executed += 1
 
-    # Execute on-chain for testnet / live modes
-    clob_order_id = None
-    if settings.TRADING_MODE in ("testnet", "live"):
-        token_id = (
-            signal.market.up_token_id
-            if signal.direction == "up"
-            else signal.market.down_token_id
-        )
-        if token_id:
-            try:
-                async with clob_from_settings() as clob:
-                    result = await clob.place_limit_order(
-                        token_id=token_id,
-                        side="BUY",
-                        price=entry_price,
-                        size=trade_size,
-                    )
-                if result.success:
-                    clob_order_id = result.order_id
-                    if (
-                        hasattr(result, "filled_size")
-                        and result.filled_size is not None
-                    ):
-                        trade.filled_size = result.filled_size
-                    log_event(
-                        "success",
-                        f"[{settings.TRADING_MODE.upper()}] Order placed: {result.order_id}",
-                        {"order_id": result.order_id, "mode": settings.TRADING_MODE},
-                    )
-                else:
-                    log_event(
-                        "warning",
-                        f"[{settings.TRADING_MODE.upper()}] Order rejected: {result.error}",
-                        {"error": result.error},
-                    )
-            except Exception as _clob_err:
-                log_event("error", f"CLOB execution error: {_clob_err}")
-        else:
-            log_event(
-                "warning",
-                f"[{settings.TRADING_MODE.upper()}] No token_id for {signal.market.slug} — order skipped",
-            )
-
-    if clob_order_id:
-        trade.clob_order_id = clob_order_id
-
-    # Deduct bankroll (under lock to prevent race conditions)
-    async with _bankroll_lock:
-        if settings.TRADING_MODE == "paper":
-            state.paper_bankroll = max(0.0, (state.paper_bankroll or 0.0) - trade_size)
-        else:
-            state.bankroll = max(0.0, state.bankroll - trade_size)
-
-    # Record BUY decision
-    try:
-        record_decision(
-            db,
-            "btc_5m",
-            signal.market.market_id,
-            "BUY",
-            confidence=signal.confidence,
-            signal_data={
-                "direction": signal.direction,
-                "model_probability": signal.model_probability,
-                "market_probability": signal.market_probability,
-                "edge": signal.edge,
-                "btc_price": getattr(signal, "btc_price", None),
-                "trade_id": trade.id,
-                "trade_size": trade_size,
-                "mode": settings.TRADING_MODE,
-            },
-            reason=f"edge {signal.edge:.3f} >= threshold, {signal.direction} @ {entry_price:.0%}",
-        )
-    except Exception as _de:
-        logger.warning(f"Decision logging (BUY) failed: {_de}")
-
-    # Broadcast event
-    try:
-        _broadcast_event(
-            "trade_opened",
-            {
-                "trade_id": trade.id,
-                "market_ticker": trade.market_ticker,
-                "direction": trade.direction,
-                "size": trade.size,
-                "entry_price": trade.entry_price,
-                "mode": settings.TRADING_MODE,
-                "clob_order_id": clob_order_id,
-            },
-        )
-    except Exception:
-        pass
-
-    # Send notification
     try:
         from backend.bot.notifier import notify_btc_signal
-
-        notify_btc_signal(signal, trade)
+        notify_btc_signal(signal, None)
     except Exception:
         pass
 
     mode_label = (
-        f"[{settings.TRADING_MODE.upper()}] "
-        if settings.TRADING_MODE != "paper"
-        else ""
+        f"[{settings.TRADING_MODE.upper()}] " if settings.TRADING_MODE != "paper" else ""
     )
     log_event(
         "trade",
@@ -320,8 +183,7 @@ async def _execute_trade(signal, state, db, trade_size, trades_executed: int) ->
             "size": trade_size,
             "edge": signal.edge,
             "entry_price": entry_price,
-            "btc_price": signal.btc_price,
-            "clob_order_id": clob_order_id,
+            "btc_price": getattr(signal, "btc_price", None),
         },
     )
 
@@ -345,7 +207,6 @@ async def _queue_for_approval(
     db.add(pending)
     db.flush()
 
-    # Record decision
     try:
         record_decision(
             db,
@@ -367,7 +228,6 @@ async def _queue_for_approval(
     except Exception as _de:
         logger.warning(f"Decision logging (PENDING) failed: {_de}")
 
-    # Broadcast event
     try:
         _broadcast_event(
             "signal_found",
@@ -381,7 +241,7 @@ async def _queue_for_approval(
                 "confidence": signal.confidence,
                 "suggested_size": trade_size,
                 "reasoning": "Signal queued for approval",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "category": "trading",
                 "btc_price": getattr(signal, "btc_price", None),
                 "window_end": signal.market.window_end.isoformat()
@@ -403,11 +263,7 @@ async def _queue_for_approval(
 
 
 async def scan_and_trade_job():
-    """
-    Background job: Run BTC Oracle strategy to exploit oracle settlement latency.
-    Replaces the broken BTC momentum strategy (documented -49.5% ROI).
-    Runs every minute.
-    """
+    """Run BTC Oracle strategy. Runs every minute."""
     from backend.core.scheduler import log_event
     from backend.strategies.btc_oracle import BtcOracleStrategy
     from backend.strategies.base import StrategyContext
@@ -456,7 +312,7 @@ async def scan_and_trade_job():
         else:
             log_event("info", "BTC Oracle: no actionable signals")
 
-        state.last_run = datetime.utcnow()
+        state.last_run = datetime.now(timezone.utc)
         db.commit()
 
     except Exception as e:
@@ -467,10 +323,7 @@ async def scan_and_trade_job():
 
 
 async def weather_scan_and_trade_job():
-    """
-    Background job: Scan weather temperature markets, generate signals, execute trades.
-    Runs every 5 minutes when WEATHER_ENABLED.
-    """
+    """Scan weather temperature markets and execute trades. Runs every 5 minutes."""
     from backend.core.scheduler import log_event
 
     log_event("info", "Scanning weather temperature markets...")
@@ -507,9 +360,8 @@ async def weather_scan_and_trade_job():
 
             MAX_TRADES_PER_SCAN = 3
             MIN_TRADE_SIZE = 10
-            MAX_WEATHER_ALLOCATION = 500.0  # Max total exposure to weather markets
+            MAX_WEATHER_ALLOCATION = 500.0
 
-            # Check weather allocation limit
             weather_pending = (
                 db.query(func.coalesce(func.sum(Trade.size), 0.0))
                 .filter(
@@ -528,7 +380,6 @@ async def weather_scan_and_trade_job():
 
             trades_executed = 0
             for signal in actionable[:MAX_TRADES_PER_SCAN]:
-                # Check if we already have a trade for this market
                 existing = (
                     db.query(Trade)
                     .filter(
@@ -556,88 +407,48 @@ async def weather_scan_and_trade_job():
                 if trades_executed >= MAX_TRADES_PER_SCAN:
                     break
 
+                from backend.core.strategy_executor import execute_decision
+
                 entry_price = (
                     signal.market.yes_price
                     if signal.direction == "yes"
                     else signal.market.no_price
                 )
+                token_id = getattr(signal.market, "token_id", None) or signal.market.market_id
 
-                trade = Trade(
-                    market_ticker=signal.market.market_id,
-                    platform="polymarket",
-                    event_slug=signal.market.slug,
-                    market_type="weather",
-                    direction=signal.direction,
-                    entry_price=entry_price,
-                    size=trade_size,
-                    model_probability=signal.model_probability,
-                    market_price_at_entry=signal.market_probability,
-                    edge_at_entry=signal.edge,
-                    trading_mode=settings.TRADING_MODE,
-                )
-
-                db.add(trade)
-                db.flush()
-
-                # Link to signal record
-                matching_signal = (
-                    db.query(Signal)
-                    .filter(
-                        Signal.market_ticker == signal.market.market_id,
-                        Signal.market_type == "weather",
-                        Signal.executed == False,
-                    )
-                    .order_by(Signal.timestamp.desc())
-                    .first()
-                )
-                if matching_signal:
-                    matching_signal.executed = True
-                    trade.signal_id = matching_signal.id
-
-                # Deduct bankroll (under lock to prevent race conditions)
-                async with _bankroll_lock:
-                    if settings.TRADING_MODE == "paper":
-                        state.paper_bankroll = max(
-                            0.0, (state.paper_bankroll or 0.0) - trade_size
-                        )
-                    else:
-                        state.bankroll = max(0.0, state.bankroll - trade_size)
+                decision = {
+                    "market_ticker": signal.market.market_id,
+                    "event_slug": signal.market.slug,
+                    "direction": signal.direction,
+                    "size": trade_size,
+                    "entry_price": entry_price,
+                    "edge": signal.edge,
+                    "confidence": signal.model_probability,
+                    "model_probability": signal.model_probability,
+                    "token_id": token_id,
+                    "platform": "polymarket",
+                    "market_type": "weather",
+                    "reasoning": f"weather signal: {signal.market.city_name}",
+                }
+                result = await execute_decision(decision, "weather", db=db)
+                if result is None:
+                    continue
 
                 trades_executed += 1
-
-                try:
-                    from backend.core.event_bus import _broadcast_event
-
-                    _broadcast_event(
-                        "trade_opened",
-                        {
-                            "trade_id": trade.id,
-                            "market_ticker": trade.market_ticker,
-                            "direction": trade.direction,
-                            "size": trade.size,
-                            "entry_price": trade.entry_price,
-                            "mode": settings.TRADING_MODE,
-                        },
-                    )
-                except Exception:
-                    pass
-
                 log_event(
                     "trade",
                     f"WX {signal.market.city_name}: {signal.direction.upper()} "
-                    f"${trade_size:.0f} @ {entry_price:.0%} | "
-                    f"{signal.market.metric} {signal.market.direction} {signal.market.threshold_f:.0f}F",
+                    f"${trade_size:.0f} @ {entry_price:.0%}",
                     {
                         "slug": signal.market.slug,
                         "direction": signal.direction,
                         "size": trade_size,
                         "edge": signal.edge,
-                        "entry_price": entry_price,
                         "city": signal.market.city_name,
                     },
                 )
 
-            state.last_run = datetime.utcnow()
+            state.last_run = datetime.now(timezone.utc)
             db.commit()
 
             if trades_executed > 0:
@@ -654,10 +465,7 @@ async def weather_scan_and_trade_job():
 
 
 async def settlement_job():
-    """
-    Background job: Check and settle pending trades.
-    Runs every 2 minutes (BTC 5-min markets resolve fast).
-    """
+    """Check and settle pending trades. Runs every 2 minutes."""
     from backend.core.scheduler import log_event
 
     log_event("info", "Checking BTC trade settlements...")
@@ -822,35 +630,22 @@ async def auto_trader_job():
                     current_exposure=current_exposure,
                 )
                 if result.executed:
-                    executed += 1
-                    # Create Trade record
+                    from backend.core.strategy_executor import execute_decision
                     trade_size = min(50.0, (bankroll or 100.0) * 0.03)
-                    trade = Trade(
-                        market_ticker=sig.market_ticker,
-                        platform="polymarket",
-                        direction=sig.direction or "yes",
-                        entry_price=getattr(sig, "model_probability", 0.5) or 0.5,
-                        size=trade_size,
-                        model_probability=getattr(sig, "model_probability", None),
-                        market_price_at_entry=getattr(sig, "market_price", None),
-                        edge_at_entry=getattr(sig, "edge", None),
-                        trading_mode=settings.TRADING_MODE,
-                        strategy="auto_trader",
-                        confidence=getattr(sig, "confidence", None),
-                        signal_id=sig.id,
-                    )
-                    db.add(trade)
-                    # Mark signal as executed
-                    sig.executed = True
-                    # Deduct bankroll (under lock to prevent race conditions)
-                    async with _bankroll_lock:
-                        if settings.TRADING_MODE == "paper":
-                            state.paper_bankroll = max(
-                                0.0, (state.paper_bankroll or 0.0) - trade_size
-                            )
-                        else:
-                            state.bankroll = max(0.0, state.bankroll - trade_size)
-                    current_exposure += trade_size
+                    decision = {
+                        "market_ticker": sig.market_ticker,
+                        "direction": sig.direction or "yes",
+                        "size": trade_size,
+                        "entry_price": getattr(sig, "model_probability", 0.5) or 0.5,
+                        "edge": getattr(sig, "edge", 0.0) or 0.0,
+                        "confidence": getattr(sig, "confidence", 0.0) or 0.0,
+                        "model_probability": getattr(sig, "model_probability", None),
+                        "platform": "polymarket",
+                    }
+                    exec_result = await execute_decision(decision, "auto_trader", db=db)
+                    if exec_result is not None:
+                        executed += 1
+                        current_exposure += trade_size
                 elif result.pending_approval:
                     queued += 1
             db.commit()
@@ -933,7 +728,7 @@ async def strategy_cycle_job(strategy_name: str) -> None:
 
         ctx = StrategyContext(
             db=db,
-            clob=None,  # strategies use their own CLOB if needed
+            clob=None,
             settings=_settings,
             logger=logger,
             params=params,
@@ -943,7 +738,6 @@ async def strategy_cycle_job(strategy_name: str) -> None:
         strategy = strategy_cls()
         result = await strategy.run(ctx)
 
-        # Execute BUY decisions via the strategy executor pipeline
         from backend.core.strategy_executor import execute_decisions as _exec_decisions
 
         buy_decisions = [

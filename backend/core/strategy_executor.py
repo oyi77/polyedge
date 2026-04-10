@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from datetime import datetime
 from typing import Optional
 
 from backend.config import settings
@@ -23,21 +22,6 @@ _trade_execution_lock = asyncio.Lock()
 async def execute_decision(
     decision: dict, strategy_name: str, db=None
 ) -> Optional[dict]:
-    """
-    Execute a single strategy decision.
-
-    decision dict should have:
-      - market_ticker: str
-      - direction: str ("yes"/"no"/"up"/"down")
-      - size: float (USD)
-      - entry_price: float (market price, 0-1)
-      - edge: float
-      - confidence: float
-      - model_probability: float (optional)
-      - token_id: str (optional, for live CLOB orders)
-      - platform: str (optional, default "polymarket")
-      - reasoning: str (optional)
-    """
     market_ticker = decision.get("market_ticker", "")
     direction = decision.get("direction", "")
     size = float(decision.get("size", 0.0))
@@ -48,6 +32,7 @@ async def execute_decision(
     token_id = decision.get("token_id")
     platform = decision.get("platform", "polymarket")
     reasoning = decision.get("reasoning", "")
+    market_type = decision.get("market_type", "btc")
 
     owns_db = db is None
     if owns_db:
@@ -159,6 +144,7 @@ async def execute_decision(
                 confidence=confidence,
                 clob_order_id=clob_order_id,
                 filled_size=filled_size,
+                market_type=market_type,
             )
 
             db.add(trade)
@@ -261,3 +247,10 @@ async def execute_decisions(
         if result:
             results.append(result)
     return results
+
+
+class StrategyExecutor:
+    """Namespace for execute_decision / execute_decisions."""
+
+    execute_decision = staticmethod(execute_decision)
+    execute_decisions = staticmethod(execute_decisions)

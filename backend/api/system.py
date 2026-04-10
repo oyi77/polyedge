@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 import json as _json
@@ -68,7 +68,7 @@ class EventResponse(BaseModel):
 
 
 @router.get("/api/stats", response_model=BotStats)
-async def get_stats(db: Session = Depends(get_db)):
+async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     state = db.query(BotState).first()
     if not state:
         raise HTTPException(status_code=404, detail="Bot state not initialized")
@@ -164,7 +164,7 @@ async def get_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/api/stats/strategies")
-async def get_strategy_stats(db: Session = Depends(get_db)):
+async def get_strategy_stats(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Return P&L breakdown per strategy."""
     from sqlalchemy import case
 
@@ -208,9 +208,9 @@ async def get_strategy_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/api/ai/status")
-async def get_ai_status(db: Session = Depends(get_db)):
+async def get_ai_status(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Return AI system status: enabled, provider, budget usage."""
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     spent_today = (
         db.query(func.coalesce(func.sum(AILog.cost_usd), 0.0))
         .filter(AILog.timestamp >= today_start)
@@ -286,8 +286,17 @@ async def stop_bot(db: Session = Depends(get_db), _: None = Depends(require_admi
     return {"status": "stopped", "is_running": False}
 
 
+class ResetRequest(BaseModel):
+    confirm: bool = False
+
+
 @router.post("/api/bot/reset")
-async def reset_bot(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def reset_bot(body: ResetRequest, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Set confirm=true to confirm reset. This deletes ALL trades and resets bankroll.",
+        )
     from backend.core.scheduler import log_event
 
     try:
@@ -394,7 +403,8 @@ async def run_backtest(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Backtest failed: {e}")
+        logger.error(f"Backtest failed: {e}")
+        raise HTTPException(status_code=500, detail="Backtest failed — check server logs")
 
 
 @router.get("/api/backtest/quick")
@@ -431,7 +441,8 @@ async def quick_backtest(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Quick backtest failed: {e}")
+        logger.error(f"Quick backtest failed: {e}")
+        raise HTTPException(status_code=500, detail="Quick backtest failed — check server logs")
 
 
 # ============================================================================
@@ -440,9 +451,10 @@ async def quick_backtest(
 
 
 @router.get("/api/events", response_model=List[EventResponse])
-async def get_events(limit: int = 50):
+async def get_events(limit: int = 50, _: None = Depends(require_admin)):
     from backend.core.scheduler import get_recent_events
 
+    limit = min(limit, 500)
     events = get_recent_events(limit)
     return [
         EventResponse(
@@ -461,7 +473,7 @@ async def run_scan(db: Session = Depends(get_db), _: None = Depends(require_admi
 
     state = db.query(BotState).first()
     if state:
-        state.last_run = datetime.utcnow()
+        state.last_run = datetime.now(timezone.utc)
         db.commit()
 
     log_event("info", "Manual scan triggered (BTC + Weather)")
@@ -474,7 +486,7 @@ async def run_scan(db: Session = Depends(get_db), _: None = Depends(require_admi
         "status": "ok",
         "total_signals": len(signals),
         "actionable_signals": len(actionable),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     # Also run weather scan if enabled
@@ -499,6 +511,9 @@ async def run_scan(db: Session = Depends(get_db), _: None = Depends(require_admi
 # ============================================================================
 
 
+_ALLOWED_DECISION_SORT = {"id", "created_at", "strategy", "market_ticker", "confidence", "decision"}
+
+
 @router.get("/api/decisions")
 async def list_decisions(
     strategy: str | None = None,
@@ -511,8 +526,12 @@ async def list_decisions(
     limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
 ):
     """List decision log entries with filtering."""
+    if sort not in _ALLOWED_DECISION_SORT:
+        sort = "created_at"
+    limit = min(limit, 500)
     query = db.query(DecisionLog)
     if strategy:
         query = query.filter(DecisionLog.strategy == strategy)
@@ -562,8 +581,10 @@ async def export_decisions(
     decision: str | None = None,
     limit: int = 10000,
     db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
 ):
     """Export decision log as JSONL for ML training."""
+    limit = min(limit, 5000)
     from fastapi.responses import StreamingResponse
     import json as _json
 
@@ -606,7 +627,7 @@ async def export_decisions(
 
 
 @router.get("/api/decisions/{decision_id}")
-async def get_decision(decision_id: int, db: Session = Depends(get_db)):
+async def get_decision(decision_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """Get a single decision log entry by ID."""
     decision = db.query(DecisionLog).filter(DecisionLog.id == decision_id).first()
     if not decision:
@@ -656,7 +677,7 @@ async def get_signal_config():
 
 
 @router.get("/api/strategies")
-async def list_strategies(db: Session = Depends(get_db)):
+async def list_strategies(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     """List all registered strategies with their DB config."""
     from backend.strategies.registry import STRATEGY_REGISTRY
 
@@ -708,6 +729,7 @@ class StrategyUpdateRequest(BaseModel):
 async def get_strategy(
     name: str,
     db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
 ):
     """Get a single strategy config by name."""
     from backend.strategies.registry import STRATEGY_REGISTRY, load_all_strategies
@@ -808,6 +830,6 @@ async def run_strategy_now(name: str, _: None = Depends(require_admin)):
         raise
     except Exception as e:
         logger.error(f"Manual run of strategy '{name}' failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Strategy run failed: {e}")
+        raise HTTPException(status_code=500, detail="Strategy run failed — check server logs")
 
     return {"status": "ok", "name": name}

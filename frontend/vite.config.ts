@@ -1,24 +1,19 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  test: {
-    environment: 'jsdom',
-    globals: true,
-    setupFiles: ['./src/test/setup.ts'],
-  },
   plugins: [react()],
   server: {
-    port: 3000,
+    port: 5174,
     host: '0.0.0.0',
     allowedHosts: ['polyedge.aitradepulse.com', 'localhost', '127.0.0.1'],
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8100',
         changeOrigin: true
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://127.0.0.1:8100',
         ws: true,
         changeOrigin: true
       }
@@ -30,11 +25,11 @@ export default defineConfig({
     allowedHosts: ['polyedge.aitradepulse.com', 'localhost'],
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8100',
         changeOrigin: true
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://127.0.0.1:8100',
         ws: true,
         changeOrigin: true
       }

@@ -1,7 +1,7 @@
 """Base classes and types for AI integration."""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
@@ -24,7 +24,7 @@ class AIAnalysis:
     provider: str = ""
     latency_ms: float = 0.0
     tokens_used: int = 0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -48,7 +48,7 @@ class AnomalyReport:
     anomaly_type: str  # "price_spike", "volume_anomaly", "spread_unusual"
     severity: str  # "low", "medium", "high"
     description: str
-    detected_at: datetime = field(default_factory=datetime.utcnow)
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ai_analysis: Optional[str] = None
 
 

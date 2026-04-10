@@ -1,16 +1,19 @@
 """
 Backtesting API endpoints for PolyEdge strategy evaluation.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+import logging
 from backend.models.database import get_db, SessionLocal, Trade, Signal
 from backend.models.backtest import BacktestRun, BacktestTrade
 from backend.strategies.registry import BaseStrategy, STRATEGY_REGISTRY, load_all_strategies
 from backend.api.auth import require_admin
+
+logger = logging.getLogger("trading_bot")
 
 
 def get_all_strategies() -> dict:
@@ -52,7 +55,7 @@ async def run_backtest_endpoint(
     """Run a backtest for a given strategy and return results."""
     from backend.core.backtester import BacktestEngine, BacktestConfig
 
-    end_date = _parse_date(body.end_date, datetime.utcnow())
+    end_date = _parse_date(body.end_date, datetime.now(timezone.utc))
     start_date = _parse_date(body.start_date, end_date - timedelta(days=30))
 
     config = BacktestConfig(
@@ -71,7 +74,8 @@ async def run_backtest_endpoint(
         engine = BacktestEngine(config)
         result = await engine.run()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Backtest failed: {exc}")
+        logger.error(f"Backtest /run failed: {exc}")
+        raise HTTPException(status_code=500, detail="Backtest failed — check server logs")
 
     return {
         "total_pnl": result.total_pnl,
@@ -98,7 +102,7 @@ async def run_backtest_endpoint(
 
 
 @router.get("/api/backtest/strategies")
-async def get_backtest_strategies():
+async def get_backtest_strategies(_: None = Depends(require_admin)):
     """Get all available strategies for backtesting."""
     strategies = get_all_strategies()
     result = []
@@ -125,7 +129,8 @@ async def get_backtest_strategies():
 async def get_backtest_history(
     limit: int = 10,
     offset: int = 0,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
 ):
     """Get history of backtest runs."""
     total = db.query(BacktestRun).count()

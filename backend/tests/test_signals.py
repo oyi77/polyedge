@@ -1,7 +1,7 @@
 """Tests for backend/core/signals.py — signal generation calculation functions."""
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend.core.signals import (
     calculate_edge,
@@ -27,8 +27,8 @@ def _make_market(up_price: float = 0.45, down_price: float = 0.55):
     market.is_upcoming = False
     market.spread = abs(up_price - down_price)
     market.time_until_end = 300.0
-    market.window_start = datetime.utcnow()
-    market.window_end = datetime.utcnow() + timedelta(minutes=5)
+    market.window_start = datetime.now(timezone.utc)
+    market.window_end = datetime.now(timezone.utc) + timedelta(minutes=5)
     return market
 
 

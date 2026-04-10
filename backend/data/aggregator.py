@@ -43,8 +43,11 @@ class DataAggregator:
         result = await agg.fetch("btc_price")
     """
 
-    def __init__(self, cache_ttl: float = 60.0) -> None:
+    def __init__(self, cache_ttl: float = 60.0, max_stale_age: Optional[float] = 300.0) -> None:
         self.cache_ttl = cache_ttl
+        # Maximum age in seconds for stale cache to be returned (None = unlimited).
+        # If all sources fail and cached data is older than this, raise DataQualityError.
+        self.max_stale_age = max_stale_age
         self.sources: dict[str, list[DataSource]] = {}
         self._cache: dict[str, tuple[Any, float]] = {}  # category -> (data, timestamp)
 
@@ -107,12 +110,25 @@ class DataAggregator:
                     exc,
                 )
 
-        # 3. All sources failed — return stale cache if available
+        # 3. All sources failed — return stale cache if within max_stale_age
         if category in self._cache:
-            cached_data, _ = self._cache[category]
+            cached_data, cached_at = self._cache[category]
+            stale_age = time.monotonic() - cached_at
+            if self.max_stale_age is not None and stale_age > self.max_stale_age:
+                logger.warning(
+                    "All sources failed for '%s'; stale cache is %.0fs old (max_stale_age=%.0fs) — rejecting.",
+                    category,
+                    stale_age,
+                    self.max_stale_age,
+                )
+                raise DataQualityError(
+                    f"All sources failed for category '{category}' and cached data is too stale "
+                    f"({stale_age:.0f}s old, max_stale_age={self.max_stale_age:.0f}s)."
+                )
             logger.warning(
-                "All sources failed for '%s'; returning stale cache.",
+                "All sources failed for '%s'; returning stale cache (age=%.0fs).",
                 category,
+                stale_age,
             )
             return SourceResult(
                 data=cached_data,

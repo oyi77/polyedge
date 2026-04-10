@@ -1,6 +1,6 @@
 """Tests for settlement P&L calculation and trade processing logic."""
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from sqlalchemy import create_engine
@@ -52,7 +52,7 @@ def _make_trade(
         direction=direction,
         entry_price=entry_price,
         size=size,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         settled=settled,
         result="pending",
         pnl=None,
@@ -321,7 +321,7 @@ class TestProcessSettledTrade:
 
     async def test_settlement_timestamp_set(self, db):
         trade = _make_trade(db)
-        before = datetime.utcnow()
+        before = datetime.now(timezone.utc)
         await process_settled_trade(trade, True, 1.0, 6.0, db)
         assert trade.settlement_time is not None
         assert trade.settlement_time >= before

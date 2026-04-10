@@ -4,6 +4,7 @@ import Landing from './pages/Landing'
 import Dashboard from './pages/Dashboard'
 import Admin from './pages/Admin'
 import { TradeNotifications } from './components/TradeNotifications'
+import { PageLoader } from './components/PageLoader'
 
 const WhaleTracker = lazy(() => import('./pages/WhaleTracker'))
 const Settlements = lazy(() => import('./pages/Settlements'))
@@ -63,13 +64,13 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/admin" element={<Admin />} />
-          <Route path="/whale-tracker" element={<Suspense fallback={null}><WhaleTracker /></Suspense>} />
-          <Route path="/settlements" element={<Suspense fallback={null}><Settlements /></Suspense>} />
-          <Route path="/market-intel" element={<Suspense fallback={null}><MarketIntel /></Suspense>} />
-          <Route path="/decisions" element={<Suspense fallback={null}><DecisionLog /></Suspense>} />
-          <Route path="/trading-terminal" element={<Suspense fallback={null}><TradingTerminal /></Suspense>} />
-          <Route path="/pending-approvals" element={<Suspense fallback={null}><PendingApprovals /></Suspense>} />
-          <Route path="/edge-tracker" element={<Suspense fallback={null}><EdgeTracker /></Suspense>} />
+          <Route path="/whale-tracker" element={<Suspense fallback={<PageLoader />}><WhaleTracker /></Suspense>} />
+          <Route path="/settlements" element={<Suspense fallback={<PageLoader />}><Settlements /></Suspense>} />
+          <Route path="/market-intel" element={<Suspense fallback={<PageLoader />}><MarketIntel /></Suspense>} />
+          <Route path="/decisions" element={<Suspense fallback={<PageLoader />}><DecisionLog /></Suspense>} />
+          <Route path="/trading-terminal" element={<Suspense fallback={<PageLoader />}><TradingTerminal /></Suspense>} />
+          <Route path="/pending-approvals" element={<Suspense fallback={<PageLoader />}><PendingApprovals /></Suspense>} />
+          <Route path="/edge-tracker" element={<Suspense fallback={<PageLoader />}><EdgeTracker /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

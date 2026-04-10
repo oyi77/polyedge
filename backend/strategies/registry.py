@@ -89,6 +89,8 @@ def load_all_strategies() -> None:
     """Import all strategy modules to trigger auto-registration."""
     import importlib
 
+    from backend.config import settings
+
     strategy_modules = [
         "backend.strategies.copy_trader",
         "backend.strategies.weather_emos",
@@ -102,6 +104,10 @@ def load_all_strategies() -> None:
         "backend.strategies.general_market_scanner",
     ]
     for module in strategy_modules:
+        # Skip KalshiArbStrategy if no API key configured
+        if module == "backend.strategies.kalshi_arb" and not settings.KALSHI_API_KEY_ID:
+            logger.info("Skipping KalshiArbStrategy: KALSHI_API_KEY_ID not configured")
+            continue
         try:
             importlib.import_module(module)
         except Exception as e:

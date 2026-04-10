@@ -35,6 +35,7 @@ class CircuitBreaker:
         self.last_failure_time: float | None = None
         self.last_state_change: float = time.monotonic()
         self._lock = asyncio.Lock()
+        self._half_open_probes: int = 0  # active probe count during HALF_OPEN
 
     @property
     def state(self) -> str:
@@ -47,20 +48,38 @@ class CircuitBreaker:
         return self._state
 
     async def call(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
-        current_state = self.state
-
-        if current_state == State.OPEN:
-            raise CircuitOpenError(self.name)
+        is_half_open_probe = False
 
         async with self._lock:
-            if self._state == State.OPEN and self.state == State.HALF_OPEN:
-                self._transition(State.HALF_OPEN)
+            # Promote OPEN → HALF_OPEN once recovery_timeout has elapsed.
+            # Do this inside the lock so at most one coroutine transitions.
+            if self._state == State.OPEN:
+                if (
+                    self.last_failure_time is not None
+                    and time.monotonic() - self.last_failure_time >= self.recovery_timeout
+                ):
+                    self._transition(State.HALF_OPEN)
+                    self._half_open_probes = 0
+                else:
+                    raise CircuitOpenError(self.name)
+
+            if self._state == State.HALF_OPEN:
+                if self._half_open_probes >= self.half_open_max:
+                    # Limit concurrent probes to half_open_max — excess callers
+                    # are rejected until a probe succeeds or fails.
+                    raise CircuitOpenError(self.name)
+                self._half_open_probes += 1
+                is_half_open_probe = True
 
         try:
             result = await func(*args, **kwargs)
         except Exception:
             await self._on_failure()
             raise
+        finally:
+            if is_half_open_probe:
+                async with self._lock:
+                    self._half_open_probes = max(0, self._half_open_probes - 1)
 
         await self._on_success()
         return result
@@ -95,7 +114,7 @@ class CircuitBreaker:
             current_state = self._state
 
             if current_state == State.HALF_OPEN or (
-                current_state == State.OPEN and self.state == State.HALF_OPEN
+                current_state == State.OPEN and self._state == State.HALF_OPEN
             ):
                 self.success_count += 1
                 if self.success_count >= self.half_open_max:
@@ -112,6 +131,9 @@ class CircuitBreaker:
             self.failure_count = 0
             self.success_count = 0
             self.last_failure_time = None
+            self._half_open_probes = 0
+        elif new_state == State.OPEN:
+            self._half_open_probes = 0
 
         logger.warning(
             "CircuitBreaker '%s': %s -> %s",

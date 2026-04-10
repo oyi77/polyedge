@@ -52,39 +52,36 @@ class EnsembleSignalGenerator:
         """
         weights = dict(self.weights)
 
-        # Redistribute AI weight to technical if ai_prob is absent
-        if ai_prob is None:
-            weights["technical"] += weights["ai"]
-            weights["ai"] = 0.0
-
         # Orderbook component: maps [-1, 1] imbalance -> [0.35, 0.65]
         orderbook_prob = 0.5 + (orderbook_imbalance * 0.15)
 
-        # Data quality factor: maps wash_trade_score [0, 100] -> quality [0.5, 1.0]
+        # data_quality is a confidence multiplier only — base weights (technical + ai +
+        # orderbook) are renormalized to sum to 1.0 among themselves.
         quality_factor = 1.0 - (wash_trade_score / 200.0)
         quality_factor = max(0.5, min(1.0, quality_factor))
 
-        # Weighted combination of probabilities
-        component_breakdown: dict[str, float] = {}
-        combined = 0.0
-
-        combined += weights["technical"] * technical_prob
-        component_breakdown["technical"] = weights["technical"] * technical_prob
-
+        components: dict[str, tuple[float, float]] = {}
+        components["technical"] = (technical_prob, weights["technical"])
         if ai_prob is not None:
-            combined += weights["ai"] * ai_prob
-            component_breakdown["ai"] = weights["ai"] * ai_prob
+            components["ai"] = (ai_prob, weights["ai"])
+        components["orderbook"] = (orderbook_prob, weights["orderbook"])
 
-        combined += weights["orderbook"] * orderbook_prob
-        component_breakdown["orderbook"] = weights["orderbook"] * orderbook_prob
+        total_weight = sum(w for _, w in components.values())
 
-        # Data quality contributes as confidence multiplier, not a probability term
+        component_breakdown: dict[str, float] = {}
+        if total_weight > 0:
+            combined = sum(p * w / total_weight for p, w in components.values())
+            for name, (p, w) in components.items():
+                component_breakdown[name] = p * w / total_weight
+        else:
+            combined = 0.5
+            for name, (p, _) in components.items():
+                component_breakdown[name] = 0.0
+
         component_breakdown["data_quality"] = weights["data_quality"] * quality_factor
 
-        # Clamp combined probability to [0.01, 0.99]
         combined = max(0.01, min(0.99, combined))
 
-        # Confidence: average of active component confidences * quality factor
         active_confidences = [
             technical_prob,
             orderbook_prob,

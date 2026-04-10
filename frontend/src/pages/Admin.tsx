@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { NavBar } from '../components/NavBar'
+import { Link } from 'react-router-dom'
 import { SettingsEditor } from '../components/admin/SettingsEditor'
 import { SystemStatus } from '../components/admin/SystemStatus'
 import { CopyTraderMonitor } from '../components/admin/CopyTraderMonitor'
@@ -13,6 +13,7 @@ import { CredentialsTab } from '../components/admin/CredentialsTab'
 import { TelegramTab } from '../components/admin/TelegramTab'
 import { RiskTab } from '../components/admin/RiskTab'
 import { AITab } from '../components/admin/AITab'
+import PendingApprovals from './PendingApprovals'
 
 function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
   const [password, setPassword] = useState('')
@@ -35,7 +36,11 @@ function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
 
   return (
     <div className="h-screen bg-black flex flex-col overflow-hidden font-mono">
-      <NavBar title="Admin Dashboard" />
+      <div className="shrink-0 border-b border-neutral-800 px-4 py-2 flex items-center justify-between bg-black">
+        <Link to="/" className="text-[10px] text-neutral-500 hover:text-green-500 uppercase tracking-wider transition-colors">PolyEdge</Link>
+        <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-[0.2em]">Admin Dashboard</span>
+        <span />
+      </div>
       <div className="flex-1 flex items-center justify-center">
         <div className="w-80 border border-neutral-800 bg-neutral-950 p-6">
           <div className="text-[9px] text-neutral-600 uppercase tracking-[0.3em] mb-5">Admin Access Required</div>
@@ -63,7 +68,7 @@ function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
   )
 }
 
-const TABS = ['System', 'Backtest', 'Risk', 'Credentials', 'Strategies', 'Settings', 'Copy Trader', 'Telegram', 'Market Watch', 'Wallet Config', 'AI'] as const
+const TABS = ['System', 'Backtest', 'Risk', 'Credentials', 'Strategies', 'Settings', 'Copy Trader', 'Telegram', 'Market Watch', 'Wallet Config', 'AI', 'Pending Approvals'] as const
 type Tab = typeof TABS[number]
 
 function ApiKeyBar() {
@@ -107,19 +112,16 @@ export default function Admin() {
 
   return (
     <div className="h-screen bg-black text-neutral-200 flex flex-col overflow-hidden font-mono">
-      <NavBar title="Admin Dashboard" />
-      {authRequired ? (
-        <div className="shrink-0 flex items-center justify-end px-4 py-1.5 border-b border-neutral-800 bg-neutral-950">
-          <button
-            onClick={logout}
-            className="text-[9px] text-neutral-600 hover:text-neutral-400 uppercase tracking-wider transition-colors"
-          >
-            Logout
-          </button>
-        </div>
-      ) : (
-        <ApiKeyBar />
-      )}
+      <div className="shrink-0 border-b border-neutral-800 px-4 py-2 flex items-center justify-between bg-black">
+        <Link to="/" className="text-[10px] text-neutral-500 hover:text-green-500 uppercase tracking-wider transition-colors">PolyEdge</Link>
+        <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-[0.2em]">Admin Dashboard</span>
+        {authRequired ? (
+          <button onClick={logout} className="text-[9px] text-neutral-600 hover:text-neutral-400 uppercase tracking-wider transition-colors">Logout</button>
+        ) : (
+          <span />
+        )}
+      </div>
+      {!authRequired && <ApiKeyBar />}
 
       {/* Tab Bar */}
       <div className="shrink-0 border-b border-neutral-800 px-4 flex items-center gap-0">
@@ -151,6 +153,7 @@ export default function Admin() {
         {activeTab === 'Market Watch' && <MarketWatchTab />}
         {activeTab === 'Wallet Config' && <WalletConfigTab />}
         {activeTab === 'AI' && <AITab />}
+        {activeTab === 'Pending Approvals' && <PendingApprovals />}
       </div>
     </div>
   )

@@ -1,23 +1,10 @@
-"""
-PolyEdge Orchestrator.
-
-Wires together:
-  - Telegram bot (weather confirm-mode, copy trade notify-mode)
-  - Polymarket CLOB client (shared connection pool)
-  - CopyTrader strategy loop
-  - Weather scan job with Telegram alert dispatch
-  - Scheduler (BTC + weather interval jobs)
-
-Usage:
-    orchestrator = Orchestrator()
-    await orchestrator.start()
-    # runs until KeyboardInterrupt / SIGTERM
-    await orchestrator.stop()
-"""
+"""PolyEdge top-level orchestrator — wires together CLOB, Telegram, scheduler, and strategies."""
 import asyncio
 import logging
 import signal
 from typing import Optional
+
+from cachetools import TTLCache
 
 from backend.config import settings
 from backend.data.polymarket_clob import PolymarketCLOB, clob_from_settings
@@ -30,26 +17,20 @@ class Orchestrator:
 
     def __init__(self):
         self._clob: Optional[PolymarketCLOB] = None
-        self._bot = None           # PolyEdgeBot (optional)
-        self._copy_trader = None   # CopyTrader
+        self._bot = None
+        self._copy_trader = None
         self._copy_task: Optional[asyncio.Task] = None
         self._running = False
-        self._condition_cache: dict[str, str] = {}
-
-    # =========================================================================
-    # Lifecycle
-    # =========================================================================
+        self._condition_cache: TTLCache = TTLCache(maxsize=2000, ttl=3600)
 
     async def start(self) -> None:
         """Start all subsystems."""
         self._running = True
         logger.info("Orchestrator starting...")
 
-        # 1. CLOB client (shared pool)
         self._clob = clob_from_settings()
         await self._clob.__aenter__()
 
-        # 2. Telegram bot (optional)
         if settings.TELEGRAM_BOT_TOKEN:
             from backend.bot.telegram_bot import bot_from_settings
             self._bot = bot_from_settings()
@@ -61,14 +42,12 @@ class Orchestrator:
             from backend.bot.notifier import set_bot
             set_bot(self._bot)
 
-        # 3. Seed strategy configs and load registry
         from backend.strategies.registry import load_all_strategies
         from backend.models.database import SessionLocal, StrategyConfig
         import json
 
         load_all_strategies()  # trigger auto-registration
 
-        # Upsert default strategy configs — add any missing rows (safe to run on existing DBs)
         db = SessionLocal()
         try:
             defaults = [
@@ -106,14 +85,11 @@ class Orchestrator:
         self._copy_trader = None
         self._copy_task = None
 
-        # 4. Wire weather scan to use Telegram alerts
         self._patch_weather_job()
 
-        # 5. Start scheduler (BTC + weather interval jobs)
         from backend.core.scheduler import start_scheduler
         start_scheduler()
 
-        # 6. Phase 2 modules (whale listener, news feed, auto-trader, arb detector)
         self._phase2 = init_phase2_modules()
         if self._phase2:
             logger.info(f"Phase 2 modules active: {list(self._phase2.keys())}")
@@ -129,7 +105,6 @@ class Orchestrator:
             await self._bot.stop()
 
         if self._clob:
-            # Cancel open orders on shutdown (live mode only)
             if settings.TRADING_MODE == "live":
                 await self._clob.cancel_all_orders()
             await self._clob.__aexit__(None, None, None)
@@ -139,15 +114,8 @@ class Orchestrator:
 
         logger.info("Orchestrator stopped.")
 
-    # =========================================================================
-    # Scheduler patch — inject Telegram dispatch into weather job
-    # =========================================================================
-
     def _patch_weather_job(self) -> None:
-        """
-        Replace weather_scan_and_trade_job in the scheduler module with a
-        version that sends Telegram alerts for actionable signals.
-        """
+        """Replace weather_scan_and_trade_job with a version that dispatches Telegram alerts."""
         import backend.core.scheduler as sched_mod
         bot = self._bot
         clob = self._clob
@@ -169,18 +137,16 @@ class Orchestrator:
 
             # Telegram confirm-mode: send alert with keyboard, wait for user press
             if bot and bot._bot:
-                for signal in actionable[:3]:  # Alert top 3
+                for signal in actionable[:3]:
                     try:
                         await bot.send_weather_signal(signal)
                         log_event("info", f"Telegram alert sent: {signal.market.city_name} {signal.direction.upper()}")
                     except Exception as e:
                         logger.warning(f"Failed to send weather alert: {e}")
             else:
-                # No Telegram — auto-execute in paper mode
                 if settings.TRADING_MODE == "paper":
                     await _auto_execute_weather(actionable[:3], clob)
 
-            # Always persist to DB via original job logic (settlement tracking)
             try:
                 await original_job()
             except Exception as e:
@@ -188,44 +154,38 @@ class Orchestrator:
 
         sched_mod.weather_scan_and_trade_job = patched_weather_job
 
-    # =========================================================================
-    # Signal handlers
-    # =========================================================================
-
     async def _execute_weather_signal(self, signal) -> None:
-        """
-        Called when user presses COPY TRADE on a weather Telegram alert.
-        Places order via CLOB client.
-        """
-        if not self._clob:
-            raise RuntimeError("CLOB client not initialised")
+        """Execute a weather signal triggered by Telegram COPY TRADE button."""
+        from backend.core.strategy_executor import execute_decision
 
         market = signal.market
         token_id = getattr(market, "token_id", "") or market.market_id
-        side = "BUY"  # Always BUY the correct outcome token (token_id selects YES vs NO)
         price = market.yes_price if signal.direction == "yes" else market.no_price
 
-        result = await self._clob.place_limit_order(
-            token_id=token_id,
-            side=side,
-            price=price,
-            size=signal.suggested_size,
-        )
+        decision = {
+            "market_ticker": market.market_id,
+            "direction": signal.direction,
+            "size": signal.suggested_size,
+            "entry_price": price,
+            "edge": getattr(signal, "edge", 0.0),
+            "confidence": getattr(signal, "model_probability", 0.5),
+            "model_probability": getattr(signal, "model_probability", 0.5),
+            "token_id": token_id,
+            "platform": "polymarket",
+            "market_type": "weather",
+            "reasoning": "weather copy trade",
+        }
 
-        if not result.success:
-            raise RuntimeError(result.error or "Order rejected")
+        result = await execute_decision(decision, "weather_copy", db=None)
+        if result is None:
+            raise RuntimeError("Weather copy trade rejected by risk manager or duplicate")
 
         logger.info(
-            f"Weather trade executed: {side} ${signal.suggested_size:.2f} @ {price:.3f} "
-            f"order={result.order_id}"
+            f"Weather trade executed: {signal.direction} ${signal.suggested_size:.2f} @ {price:.3f}"
         )
         return result
 
     async def _handle_copy_signals(self, signals: list) -> None:
-        """
-        Called by CopyTrader.run_loop for each batch of new signals.
-        Auto-executes within risk limits, sends Telegram notification after.
-        """
         for sig in signals:
             try:
                 result = await self._execute_copy_signal(sig)
@@ -245,7 +205,6 @@ class Orchestrator:
                     await self._bot.send_error_alert(str(e), context="Copy trade execution")
 
     async def _execute_copy_signal(self, signal):
-        """Place order for a copy trade signal."""
         if not self._clob:
             return None
 
@@ -253,8 +212,6 @@ class Orchestrator:
         token_id = await self._condition_to_token(trade.condition_id, trade.outcome)
 
         if signal.our_side == "SELL":
-            # Exit: sell entire mirrored position — size=0.0 means full close
-            # For paper mode, we approximate with the original entry size
             size = signal.our_size if signal.our_size > 0 else 10.0
         else:
             size = signal.our_size
@@ -270,20 +227,12 @@ class Orchestrator:
             size=size,
         )
 
-    # =========================================================================
-    # Mode switch (called by Telegram /mode)
-    # =========================================================================
-
     async def on_mode_switch(self, new_mode: str) -> None:
         """Runtime mode switch — updates CLOB client mode."""
         settings.TRADING_MODE = new_mode
         if self._clob:
             self._clob.mode = new_mode
         logger.info(f"Trading mode switched to: {new_mode.upper()}")
-
-    # =========================================================================
-    # Pause / resume (called by Telegram /pause /resume)
-    # =========================================================================
 
     async def _on_pause(self) -> None:
         from backend.core.scheduler import stop_scheduler
@@ -295,16 +244,8 @@ class Orchestrator:
         start_scheduler()
         logger.info("Trading resumed via Telegram")
 
-    # =========================================================================
-    # Token resolution (async, dict-cached)
-    # =========================================================================
-
     async def _condition_to_token(self, condition_id: str, outcome: str) -> str:
-        """
-        Map condition_id + outcome to a CLOB token ID via Gamma API.
-        Dict-cached — the mapping is immutable (condition_id to token_id never changes).
-        outcome: "YES" or "NO"
-        """
+        """Map condition_id + outcome ("YES"/"NO") to a CLOB token ID via Gamma API."""
         cache_key = f"{condition_id}:{outcome}"
         if cache_key in self._condition_cache:
             return self._condition_cache[cache_key]
@@ -327,7 +268,6 @@ class Orchestrator:
 
             market = data[0]
             tokens = market.get("tokens", [])
-            # tokens[0] = YES token, tokens[1] = NO token
             if outcome.upper() == "YES" and len(tokens) > 0:
                 result = str(tokens[0].get("token_id", condition_id))
             elif outcome.upper() == "NO" and len(tokens) > 1:
@@ -341,10 +281,6 @@ class Orchestrator:
             logger.warning(f"Failed to resolve token_id for {condition_id}/{outcome}: {e}")
             return condition_id
 
-
-# =========================================================================
-# Helpers
-# =========================================================================
 
 async def _auto_execute_weather(signals: list, clob: Optional[PolymarketCLOB]) -> None:
     """Execute weather signals without Telegram confirmation (simulation only)."""
@@ -369,10 +305,6 @@ async def _auto_execute_weather(signals: list, clob: Optional[PolymarketCLOB]) -
         except Exception as e:
             logger.warning(f"Auto-execute failed: {e}")
 
-
-# =========================================================================
-# Entry point
-# =========================================================================
 
 async def main() -> None:
     """Run the orchestrator until interrupted."""

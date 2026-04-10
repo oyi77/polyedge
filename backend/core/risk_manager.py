@@ -1,7 +1,7 @@
 """Risk manager — validates trades against position size, exposure, drawdown, and confidence rules."""
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from backend.config import settings
@@ -40,18 +40,19 @@ class RiskManager:
         confidence: float,
         market_ticker: Optional[str] = None,
         slippage: Optional[float] = None,
+        db=None,
     ) -> RiskDecision:
         if confidence < 0.5:
             return RiskDecision(False, f"confidence {confidence:.2f} below 0.5", 0.0)
 
-        if self._daily_loss_exceeded():
+        if self._daily_loss_exceeded(db=db):
             return RiskDecision(False, "daily loss limit hit", 0.0)
 
-        drawdown = self.check_drawdown(bankroll)
+        drawdown = self.check_drawdown(bankroll, db=db)
         if drawdown.is_breached:
             return RiskDecision(False, f"drawdown breaker: {drawdown.breach_reason}", 0.0)
 
-        if market_ticker and self._has_unsettled_trade(market_ticker):
+        if market_ticker and self._has_unsettled_trade(market_ticker, db=db):
             return RiskDecision(False, f"unsettled trade exists for {market_ticker}", 0.0)
 
         max_position = bankroll * self.s.MAX_POSITION_FRACTION
@@ -68,10 +69,12 @@ class RiskManager:
 
         return RiskDecision(True, "ok", adjusted)
 
-    def check_drawdown(self, bankroll: float) -> DrawdownStatus:
-        db = SessionLocal()
+    def check_drawdown(self, bankroll: float, db=None) -> DrawdownStatus:
+        owns_db = db is None
+        if owns_db:
+            db = SessionLocal()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             day_start = now - timedelta(hours=24)
             week_start = now - timedelta(days=7)
 
@@ -110,12 +113,15 @@ class RiskManager:
             logger.exception("Drawdown check failed, blocking trade (fail-closed)")
             return DrawdownStatus(0.0, 0.0, self.s.DAILY_DRAWDOWN_LIMIT_PCT, self.s.WEEKLY_DRAWDOWN_LIMIT_PCT, True, "DB error during drawdown check")
         finally:
-            db.close()
+            if owns_db:
+                db.close()
 
-    def _daily_loss_exceeded(self) -> bool:
-        db = SessionLocal()
+    def _daily_loss_exceeded(self, db=None) -> bool:
+        owns_db = db is None
+        if owns_db:
+            db = SessionLocal()
         try:
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             daily_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
                 Trade.settled == True,
                 Trade.settlement_time >= today_start,
@@ -125,10 +131,13 @@ class RiskManager:
             logger.exception("Risk check failed, blocking trade (fail-closed)")
             return True
         finally:
-            db.close()
+            if owns_db:
+                db.close()
 
-    def _has_unsettled_trade(self, market_ticker: str) -> bool:
-        db = SessionLocal()
+    def _has_unsettled_trade(self, market_ticker: str, db=None) -> bool:
+        owns_db = db is None
+        if owns_db:
+            db = SessionLocal()
         try:
             count = db.query(func.count(Trade.id)).filter(
                 Trade.market_ticker == market_ticker,
@@ -139,4 +148,5 @@ class RiskManager:
             logger.exception("Unsettled trade check failed, blocking trade")
             return True
         finally:
-            db.close()
+            if owns_db:
+                db.close()

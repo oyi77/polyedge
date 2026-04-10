@@ -1,13 +1,8 @@
-"""Trade settlement logic for BTC 5-min and weather markets using Polymarket API.
-
-This module provides the main settlement orchestration functions.
-Helper functions for API resolution, P&L calculation, and weather calibration
-are in settlement_helpers.py.
-"""
+"""Trade settlement logic using Polymarket API. Helpers live in settlement_helpers.py."""
 
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 from sqlalchemy.orm import Session
 
@@ -30,12 +25,7 @@ _settlement_lock = asyncio.Lock()
 
 
 async def settle_pending_trades(db: Session) -> List[Trade]:
-    """
-    Process all pending trades for settlement.
-    Uses REAL market outcomes from Polymarket API.
-    Deduplicates API calls: each unique market_ticker is resolved once.
-    Protected by asyncio lock to prevent concurrent double-settlement.
-    """
+    """Settle all pending trades using Polymarket API outcomes. Deduplicates API calls per ticker."""
     if _settlement_lock.locked():
         logger.info("Settlement already in progress, skipping")
         return []
@@ -51,25 +41,29 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             logger.info("No pending trades to settle")
             return []
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         stale_threshold = now - timedelta(hours=settings.STALE_TRADE_HOURS)
 
-        expired_count = 0
+        expired_trades = []
         for trade in pending:
-            if trade.timestamp and trade.timestamp < stale_threshold:
+            ts = trade.timestamp
+            if ts and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts and ts < stale_threshold:
                 trade.settled = True
                 trade.result = "expired"
                 trade.settlement_time = now
-                expired_count += 1
+                # Paper mode: return the stake so paper bankroll is restored.
+                # Live/testnet: on-chain handles real funds; don't double-credit in-system.
+                trading_mode = getattr(trade, "trading_mode", "paper") or "paper"
+                trade.pnl = trade.size if trading_mode == "paper" else 0
+                expired_trades.append(trade)
 
-        if expired_count > 0:
-            db.commit()
-            logger.info(f"Marked {expired_count} stale trades as expired")
+        if expired_trades:
+            logger.info(f"Marked {len(expired_trades)} stale trades as expired")
 
-        # Filter out expired trades before building ticker list for API calls
         active_pending = [t for t in pending if not t.settled and t.result != "expired"]
 
-        # Separate weather vs normal trades and collect unique tickers
         normal_tickers: set = set()
         weather_tickers: set = set()
         trade_slugs: dict = {}
@@ -130,17 +124,11 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                 settled_trades.append(trade)
 
         if settled_trades:
-            try:
-                db.commit()
-                logger.info(f"Settled {len(settled_trades)} trades")
-            except Exception as e:
-                logger.error(f"Failed to commit settlements: {e}")
-                db.rollback()
-                return []
+            logger.info(f"Settled {len(settled_trades)} trades")
         else:
             logger.info("No trades ready for settlement (markets still open)")
 
-        return settled_trades
+        return expired_trades + settled_trades
 
 
 async def update_bot_state_with_settlements(
@@ -160,7 +148,6 @@ async def update_bot_state_with_settlements(
             if trade.pnl is not None:
                 trading_mode = getattr(trade, "trading_mode", "paper") or "paper"
 
-                # Only update the fields for the ACTUAL trading mode
                 if trading_mode == "paper":
                     state.paper_pnl = (state.paper_pnl or 0.0) + trade.pnl
                     state.paper_bankroll = (
@@ -170,7 +157,6 @@ async def update_bot_state_with_settlements(
                     if trade.result == "win":
                         state.paper_wins = (state.paper_wins or 0) + 1
                 else:
-                    # Live/testnet mode: update live-specific fields
                     state.total_pnl = (state.total_pnl or 0.0) + trade.pnl
                     state.bankroll = (
                         state.bankroll or settings.INITIAL_BANKROLL
@@ -179,7 +165,13 @@ async def update_bot_state_with_settlements(
                     if trade.result == "win":
                         state.winning_trades = (state.winning_trades or 0) + 1
 
-        db.commit()
+        try:
+            db.commit()
+        except Exception as e:
+            logger.error(f"Failed to commit settlement + bot state: {e}")
+            db.rollback()
+            return
+
         if settings.TRADING_MODE == "paper":
             logger.info(
                 f"Updated bot state (paper): Bankroll ${state.paper_bankroll:.2f}, "

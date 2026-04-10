@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from scipy.stats import norm
@@ -36,7 +36,7 @@ class WeatherTradingSignal:
     # Metadata
     sources: List[str] = field(default_factory=list)
     reasoning: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Forecast context
     ensemble_mean: float = 0.0

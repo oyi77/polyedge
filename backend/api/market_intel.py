@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ async def get_edge_performance(
     track: str | None = None,
     days: int = 7,
     db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
 ):
     """
     Returns aggregated performance metrics for edge discovery tracks.
@@ -32,7 +33,7 @@ async def get_edge_performance(
     - Sharpe ratio (paper)
     - Max drawdown (paper)
     """
-    since_date = datetime.utcnow() - timedelta(days=days)
+    since_date = datetime.now(timezone.utc) - timedelta(days=days)
 
     query = db.query(
         Signal.track_name,
@@ -91,7 +92,7 @@ async def get_edge_performance(
 
 
 @router.get("/api/whales/transactions")
-async def get_whale_transactions(limit: int = 50):
+async def get_whale_transactions(limit: int = 50, _: None = Depends(require_admin)):
     """Return recent whale transactions from DB."""
     db = SessionLocal()
     try:
@@ -110,7 +111,7 @@ async def get_whale_transactions(limit: int = 50):
 
 
 @router.get("/api/news/feed")
-async def get_news_feed():
+async def get_news_feed(_: None = Depends(require_admin)):
     """Return aggregated news feed from multiple sources."""
     try:
         from backend.data.feed_aggregator import FeedAggregator
@@ -129,7 +130,7 @@ async def get_news_feed():
 
 
 @router.get("/api/predictions/{market_id}")
-async def get_prediction(market_id: str):
+async def get_prediction(market_id: str, _: None = Depends(require_admin)):
     """Return AI prediction for a specific market."""
     from backend.ai.prediction_engine import PredictionEngine
     engine = PredictionEngine()
