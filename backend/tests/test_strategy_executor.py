@@ -1,4 +1,5 @@
 """Tests for backend.core.strategy_executor — strategy decision → trade pipeline."""
+
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -44,6 +45,7 @@ except Exception:
 
 try:
     from backend.core import heartbeat as _hb
+
     _hb.SessionLocal = _TestSession
 except Exception:
     pass
@@ -52,6 +54,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _seed_state(db, bankroll=1000.0, paper_bankroll=1000.0, is_running=True):
     """Insert or reset BotState for a test."""
@@ -96,6 +99,7 @@ def _make_decision(**overrides) -> dict:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestPaperTradeCreatesRecord:
     @pytest.mark.asyncio
     async def test_paper_trade_creates_record(self):
@@ -106,13 +110,15 @@ class TestPaperTradeCreatesRecord:
         _seed_state(db)
         db.close()
 
-        with patch("backend.core.strategy_executor.settings") as mock_settings, \
-             patch("backend.core.strategy_executor.SessionLocal", _TestSession), \
-             patch("backend.core.strategy_executor._broadcast_event"):
-
+        with (
+            patch("backend.core.strategy_executor.settings") as mock_settings,
+            patch("backend.core.strategy_executor.SessionLocal", _TestSession),
+            patch("backend.core.strategy_executor._broadcast_event"),
+        ):
             mock_settings.TRADING_MODE = "paper"
 
             from backend.core.strategy_executor import execute_decision
+
             result = await execute_decision(_make_decision(), "test_strategy")
 
         assert result is not None
@@ -121,17 +127,21 @@ class TestPaperTradeCreatesRecord:
 
         check_db = _TestSession()
         try:
-            trade = check_db.query(Trade).filter(
-                Trade.market_ticker == "test-market-001"
-            ).first()
+            trade = (
+                check_db.query(Trade)
+                .filter(Trade.market_ticker == "test-market-001")
+                .first()
+            )
             assert trade is not None
             assert trade.strategy == "test_strategy"
             assert trade.direction == "yes"
             assert trade.trading_mode == "paper"
 
-            sig = check_db.query(Signal).filter(
-                Signal.market_ticker == "test-market-001"
-            ).first()
+            sig = (
+                check_db.query(Signal)
+                .filter(Signal.market_ticker == "test-market-001")
+                .first()
+            )
             assert sig is not None
             assert sig.executed is True
         finally:
@@ -142,48 +152,77 @@ class TestRiskRejection:
     @pytest.mark.asyncio
     async def test_risk_rejection_returns_none(self):
         """RiskManager rejection causes execute_decision to return None."""
-        from backend.core.risk_manager import RiskDecision
+        from backend.core.risk_manager import RiskDecision, RiskManager
 
-        db = _TestSession()
+        # Create fresh test engine for this test to ensure isolation
+        test_engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        TestSession = sessionmaker(bind=test_engine)
+        Base.metadata.create_all(bind=test_engine)
+
+        # Seed state into the TEST engine (not the module-level one)
+        db = TestSession()
         _seed_state(db)
         db.close()
 
-        mock_rm = MagicMock()
+        # Create mock RiskManager with rejection
+        mock_rm = MagicMock(spec=RiskManager)
         mock_rm.validate_trade.return_value = RiskDecision(
             allowed=False, reason="daily loss limit hit", adjusted_size=0.0
         )
 
-        with patch("backend.core.strategy_executor.settings") as mock_settings, \
-             patch("backend.core.strategy_executor.SessionLocal", _TestSession), \
-             patch("backend.core.strategy_executor.risk_manager", mock_rm), \
-             patch("backend.core.strategy_executor._broadcast_event"):
-
+        with (
+            patch("backend.core.strategy_executor.settings") as mock_settings,
+            patch("backend.core.strategy_executor.SessionLocal", TestSession),
+            patch("backend.core.strategy_executor._broadcast_event"),
+        ):
             mock_settings.TRADING_MODE = "paper"
 
             from backend.core.strategy_executor import execute_decision
-            result = await execute_decision(
-                _make_decision(market_ticker="reject-market"), "test_strategy"
-            )
+            from backend.core import strategy_executor as se_module
 
-        assert result is None
-        mock_rm.validate_trade.assert_called_once()
+            # Replace the module-level risk_manager instance
+            original_rm = se_module.risk_manager
+            se_module.risk_manager = mock_rm
+            try:
+                result = await execute_decision(
+                    _make_decision(market_ticker="reject-market"), "test_strategy"
+                )
+                assert result is None
+                mock_rm.validate_trade.assert_called_once()
+            finally:
+                se_module.risk_manager = original_rm
 
 
 class TestUpdatesBankroll:
     @pytest.mark.asyncio
     async def test_updates_paper_bankroll(self):
         """Paper trade decrements paper_bankroll by the trade size."""
-        db = _TestSession()
+        # Create fresh test engine for this test to ensure isolation
+        test_engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        TestSession = sessionmaker(bind=test_engine)
+        Base.metadata.create_all(bind=test_engine)
+
+        db = TestSession()
         _seed_state(db, paper_bankroll=500.0)
         db.close()
 
-        with patch("backend.core.strategy_executor.settings") as mock_settings, \
-             patch("backend.core.strategy_executor.SessionLocal", _TestSession), \
-             patch("backend.core.strategy_executor._broadcast_event"):
-
+        with (
+            patch("backend.core.strategy_executor.settings") as mock_settings,
+            patch("backend.core.strategy_executor.SessionLocal", TestSession),
+            patch("backend.core.strategy_executor._broadcast_event"),
+        ):
             mock_settings.TRADING_MODE = "paper"
 
             from backend.core.strategy_executor import execute_decision
+
             result = await execute_decision(
                 _make_decision(market_ticker="bankroll-market", size=50.0),
                 "test_strategy",
@@ -191,7 +230,7 @@ class TestUpdatesBankroll:
 
         assert result is not None
 
-        check_db = _TestSession()
+        check_db = TestSession()
         try:
             state = check_db.query(BotState).first()
             # paper_bankroll should have decreased by the adjusted size
@@ -206,19 +245,30 @@ class TestCreatesSignalRecord:
         """execute_decision creates a Signal row for calibration tracking."""
         from backend.models.database import Signal
 
-        db = _TestSession()
+        # Create fresh test engine for this test to ensure isolation
+        test_engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        TestSession = sessionmaker(bind=test_engine)
+        Base.metadata.create_all(bind=test_engine)
+
+        db = TestSession()
         _seed_state(db)
         db.close()
 
         ticker = "signal-track-market"
 
-        with patch("backend.core.strategy_executor.settings") as mock_settings, \
-             patch("backend.core.strategy_executor.SessionLocal", _TestSession), \
-             patch("backend.core.strategy_executor._broadcast_event"):
-
+        with (
+            patch("backend.core.strategy_executor.settings") as mock_settings,
+            patch("backend.core.strategy_executor.SessionLocal", TestSession),
+            patch("backend.core.strategy_executor._broadcast_event"),
+        ):
             mock_settings.TRADING_MODE = "paper"
 
             from backend.core.strategy_executor import execute_decision
+
             result = await execute_decision(
                 _make_decision(market_ticker=ticker, reasoning="signal reason"),
                 "calibration_strategy",
@@ -226,11 +276,14 @@ class TestCreatesSignalRecord:
 
         assert result is not None
 
-        check_db = _TestSession()
+        check_db = TestSession()
         try:
-            sig = check_db.query(Signal).filter(
-                Signal.market_ticker == ticker
-            ).order_by(Signal.id.desc()).first()
+            sig = (
+                check_db.query(Signal)
+                .filter(Signal.market_ticker == ticker)
+                .order_by(Signal.id.desc())
+                .first()
+            )
             assert sig is not None
             assert sig.track_name == "calibration_strategy"
             assert sig.executed is True
@@ -243,23 +296,33 @@ class TestMaxTradesPerCycle:
     @pytest.mark.asyncio
     async def test_max_trades_per_cycle(self):
         """execute_decisions caps at MAX_TRADES_PER_CYCLE (2)."""
-        db = _TestSession()
+        # Create fresh test engine for this test to ensure isolation
+        test_engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        TestSession = sessionmaker(bind=test_engine)
+        Base.metadata.create_all(bind=test_engine)
+
+        db = TestSession()
         _seed_state(db, paper_bankroll=10000.0)
         db.close()
 
         # Build 5 distinct decisions
         decisions = [
-            _make_decision(market_ticker=f"cap-market-{i}", size=10.0)
-            for i in range(5)
+            _make_decision(market_ticker=f"cap-market-{i}", size=10.0) for i in range(5)
         ]
 
-        with patch("backend.core.strategy_executor.settings") as mock_settings, \
-             patch("backend.core.strategy_executor.SessionLocal", _TestSession), \
-             patch("backend.core.strategy_executor._broadcast_event"):
-
+        with (
+            patch("backend.core.strategy_executor.settings") as mock_settings,
+            patch("backend.core.strategy_executor.SessionLocal", TestSession),
+            patch("backend.core.strategy_executor._broadcast_event"),
+        ):
             mock_settings.TRADING_MODE = "paper"
 
             from backend.core.strategy_executor import execute_decisions
+
             results = await execute_decisions(decisions, "cap_strategy")
 
         assert len(results) <= 2
@@ -271,7 +334,16 @@ class TestLiveModeCallsCLOB:
         """In live mode, place_limit_order is called and its result drives trade creation."""
         from backend.data.polymarket_clob import OrderResult
 
-        db = _TestSession()
+        # Create fresh test engine for this test to ensure isolation
+        test_engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        TestSession = sessionmaker(bind=test_engine)
+        Base.metadata.create_all(bind=test_engine)
+
+        db = TestSession()
         _seed_state(db, bankroll=2000.0, paper_bankroll=2000.0)
         db.close()
 
@@ -287,14 +359,19 @@ class TestLiveModeCallsCLOB:
         mock_clob.__aenter__ = AsyncMock(return_value=mock_clob)
         mock_clob.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("backend.core.strategy_executor.settings") as mock_settings, \
-             patch("backend.core.strategy_executor.SessionLocal", _TestSession), \
-             patch("backend.core.strategy_executor._broadcast_event"), \
-             patch("backend.data.polymarket_clob.clob_from_settings", return_value=mock_clob):
-
+        with (
+            patch("backend.core.strategy_executor.settings") as mock_settings,
+            patch("backend.core.strategy_executor.SessionLocal", TestSession),
+            patch("backend.core.strategy_executor._broadcast_event"),
+            patch(
+                "backend.data.polymarket_clob.clob_from_settings",
+                return_value=mock_clob,
+            ),
+        ):
             mock_settings.TRADING_MODE = "live"
 
             from backend.core.strategy_executor import execute_decision
+
             result = await execute_decision(
                 _make_decision(
                     market_ticker="live-market-001",
