@@ -1,4 +1,5 @@
 """System routes - stats, bot control, backtest, events."""
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
@@ -8,7 +9,16 @@ from sqlalchemy.orm import Session
 import json as _json
 
 from backend.config import settings
-from backend.models.database import get_db, BotState, Trade, Signal, AILog, DecisionLog, StrategyConfig, SessionLocal
+from backend.models.database import (
+    get_db,
+    BotState,
+    Trade,
+    Signal,
+    AILog,
+    DecisionLog,
+    StrategyConfig,
+    SessionLocal,
+)
 from backend.api.auth import require_admin
 from backend.core.signals import scan_for_signals
 import logging
@@ -81,9 +91,24 @@ async def get_stats(db: Session = Depends(get_db)):
     pnl_source = "botstate"
     mode = settings.TRADING_MODE
     if mode == "paper" and paper_pnl == 0 and paper_trades > 0:
-        db_pnl = db.query(func.sum(Trade.pnl)).filter(Trade.settled == True).scalar() or 0.0
+        db_pnl = (
+            db.query(func.sum(Trade.pnl))
+            .filter(Trade.settled == True, Trade.trading_mode == "paper")
+            .scalar()
+            or 0.0
+        )
         if db_pnl != 0:
             paper_pnl = db_pnl
+            pnl_source = "recalculated"
+    elif mode != "paper" and live_pnl == 0 and live_trades > 0:
+        db_pnl = (
+            db.query(func.sum(Trade.pnl))
+            .filter(Trade.settled == True, Trade.trading_mode != "paper")
+            .scalar()
+            or 0.0
+        )
+        if db_pnl != 0:
+            live_pnl = db_pnl
             pnl_source = "recalculated"
 
     # Top-level fields reflect the ACTIVE trading mode
@@ -143,46 +168,59 @@ async def get_strategy_stats(db: Session = Depends(get_db)):
     """Return P&L breakdown per strategy."""
     from sqlalchemy import case
 
-    results = db.query(
-        Trade.strategy,
-        func.count(Trade.id).label("total_trades"),
-        func.sum(case((Trade.result == "win", 1), else_=0)).label("wins"),
-        func.sum(case((Trade.result == "loss", 1), else_=0)).label("losses"),
-        func.sum(case((Trade.settled == True, Trade.pnl), else_=0)).label("total_pnl"),
-        func.avg(Trade.edge_at_entry).label("avg_edge"),
-        func.avg(Trade.size).label("avg_size"),
-    ).filter(
-        Trade.strategy.isnot(None)
-    ).group_by(Trade.strategy).all()
+    results = (
+        db.query(
+            Trade.strategy,
+            func.count(Trade.id).label("total_trades"),
+            func.sum(case((Trade.result == "win", 1), else_=0)).label("wins"),
+            func.sum(case((Trade.result == "loss", 1), else_=0)).label("losses"),
+            func.sum(case((Trade.settled == True, Trade.pnl), else_=0)).label(
+                "total_pnl"
+            ),
+            func.avg(Trade.edge_at_entry).label("avg_edge"),
+            func.avg(Trade.size).label("avg_size"),
+        )
+        .filter(Trade.strategy.isnot(None))
+        .group_by(Trade.strategy)
+        .all()
+    )
 
     strategies = []
     for r in results:
         total = r.wins + r.losses
-        strategies.append({
-            "strategy": r.strategy or "unknown",
-            "total_trades": r.total_trades,
-            "wins": r.wins,
-            "losses": r.losses,
-            "pending": r.total_trades - r.wins - r.losses,
-            "win_rate": r.wins / total if total > 0 else 0,
-            "total_pnl": round(r.total_pnl or 0, 2),
-            "avg_edge": round(r.avg_edge or 0, 4),
-            "avg_size": round(r.avg_size or 0, 2),
-        })
+        strategies.append(
+            {
+                "strategy": r.strategy or "unknown",
+                "total_trades": r.total_trades,
+                "wins": r.wins,
+                "losses": r.losses,
+                "pending": r.total_trades - r.wins - r.losses,
+                "win_rate": r.wins / total if total > 0 else 0,
+                "total_pnl": round(r.total_pnl or 0, 2),
+                "avg_edge": round(r.avg_edge or 0, 4),
+                "avg_size": round(r.avg_size or 0, 2),
+            }
+        )
 
-    return {"strategies": sorted(strategies, key=lambda s: s["total_pnl"], reverse=True)}
+    return {
+        "strategies": sorted(strategies, key=lambda s: s["total_pnl"], reverse=True)
+    }
 
 
 @router.get("/api/ai/status")
 async def get_ai_status(db: Session = Depends(get_db)):
     """Return AI system status: enabled, provider, budget usage."""
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    spent_today = db.query(func.coalesce(func.sum(AILog.cost_usd), 0.0)).filter(
-        AILog.timestamp >= today_start
-    ).scalar() or 0.0
-    calls_today = db.query(func.count(AILog.id)).filter(
-        AILog.timestamp >= today_start
-    ).scalar() or 0
+    spent_today = (
+        db.query(func.coalesce(func.sum(AILog.cost_usd), 0.0))
+        .filter(AILog.timestamp >= today_start)
+        .scalar()
+        or 0.0
+    )
+    calls_today = (
+        db.query(func.count(AILog.id)).filter(AILog.timestamp >= today_start).scalar()
+        or 0
+    )
 
     return {
         "enabled": settings.AI_ENABLED,
@@ -291,13 +329,6 @@ async def reset_bot(db: Session = Depends(get_db), _: None = Depends(require_adm
 # ============================================================================
 
 
-# Default backtest configuration values
-_DEFAULT_MAX_TRADE_SIZE = 100.0
-_DEFAULT_MIN_EDGE_THRESHOLD = 0.02
-_DEFAULT_MARKET_TYPES = ["BTC"]
-DEFAULT_SLIPPAGE_BPS = 5
-
-
 class BacktestRequest(BaseModel):
     initial_bankroll: float = 1000.0
     max_trade_size: float = 100.0
@@ -308,77 +339,20 @@ class BacktestRequest(BaseModel):
     slippage_bps: int = 5  # basis points
 
 
-class FrontendBacktestRequest(BaseModel):
-    strategy_name: str
-    start_date: str | None = None
-    end_date: str | None = None
-    initial_bankroll: float = 10000.0
-
-
-@router.post("/api/backtest/run")
-async def run_backtest_frontend(
-    body: FrontendBacktestRequest, db: Session = Depends(get_db), _: None = Depends(require_admin)
-):
-    """Run backtest against historical signals - matches frontend API contract."""
-    from backend.core.backtesting import BacktestEngine, BacktestConfig
-
-    try:
-        # Parse dates
-        end_date = datetime.fromisoformat(body.end_date) if body.end_date else datetime.utcnow()
-        start_date = datetime.fromisoformat(body.start_date) if body.start_date else end_date - timedelta(days=30)
-
-        # Create config with defaults from settings
-        config = BacktestConfig(
-            initial_bankroll=body.initial_bankroll,
-            max_trade_size=_DEFAULT_MAX_TRADE_SIZE,
-            min_edge_threshold=_DEFAULT_MIN_EDGE_THRESHOLD,
-            start_date=start_date,
-            end_date=end_date,
-            market_types=_DEFAULT_MARKET_TYPES,
-            slippage_bps=DEFAULT_SLIPPAGE_BPS,
-        )
-
-        # Run backtest
-        engine = BacktestEngine(config)
-        result = engine.run(db)
-
-        return {
-            "strategy_name": body.strategy_name,
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-            "initial_bankroll": body.initial_bankroll,
-            "results": {
-                "summary": {
-                    "total_signals": result.total_trades,
-                    "total_trades": result.total_trades,
-                    "winning_trades": result.winning_trades,
-                    "losing_trades": result.losing_trades,
-                    "win_rate": result.win_rate,
-                    "initial_bankroll": body.initial_bankroll,
-                    "final_equity": result.final_bankroll,
-                    "total_pnl": result.total_pnl,
-                    "total_return_pct": result.roi * 100,
-                    "sharpe_ratio": result.sharpe_ratio,
-                },
-                "trade_log": [],
-                "equity_curve": [],
-            },
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Backtest failed: {e}")
-
-
 @router.post("/api/backtest")
 async def run_backtest(
-    body: BacktestRequest, db: Session = Depends(get_db), _: None = Depends(require_admin)
+    body: BacktestRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
 ):
     """Run backtest against historical signals."""
     from backend.core.backtesting import BacktestEngine, BacktestConfig
 
     try:
         # Parse dates
-        start_date = datetime.fromisoformat(body.start_date) if body.start_date else None
+        start_date = (
+            datetime.fromisoformat(body.start_date) if body.start_date else None
+        )
         end_date = datetime.fromisoformat(body.end_date) if body.end_date else None
 
         # Create config
@@ -434,7 +408,9 @@ async def quick_backtest(
     from backend.core.backtesting import run_quick_backtest
 
     try:
-        result = run_quick_backtest(db, days_back=days_back, initial_bankroll=initial_bankroll)
+        result = run_quick_backtest(
+            db, days_back=days_back, initial_bankroll=initial_bankroll
+        )
 
         return {
             "status": "success",
@@ -605,7 +581,9 @@ async def export_decisions(
                 try:
                     signal_data = _json.loads(d.signal_data)
                 except Exception:
-                    logger.debug(f"Failed to parse signal_data for decision {d.id}, using raw value")
+                    logger.debug(
+                        f"Failed to parse signal_data for decision {d.id}, using raw value"
+                    )
                     signal_data = d.signal_data
             row = {
                 "id": d.id,
@@ -639,7 +617,9 @@ async def get_decision(decision_id: int, db: Session = Depends(get_db)):
         try:
             signal_data = _json.loads(decision.signal_data)
         except Exception:
-            logger.debug(f"Failed to parse signal_data for decision {decision_id}, using raw value")
+            logger.debug(
+                f"Failed to parse signal_data for decision {decision_id}, using raw value"
+            )
             signal_data = decision.signal_data
 
     return {
@@ -682,19 +662,39 @@ async def list_strategies(db: Session = Depends(get_db)):
 
     db_configs = {c.strategy_name: c for c in db.query(StrategyConfig).all()}
 
+    # Map of strategy -> required credential keys
+    STRATEGY_CREDENTIALS = {
+        "kalshi_arb": ["KALSHI_API_KEY"],
+        "copy_trader": ["POLYMARKET_PRIVATE_KEY"],
+        "btc_oracle": [],  # uses public data only
+        "btc_momentum": [],  # uses public data only
+        "weather_emos": [],  # uses public weather data
+        "general_market_scanner": [],
+        "realtime_scanner": [],
+        "whale_pnl_tracker": [],
+        "bond_scanner": [],
+        "market_maker": ["POLYMARKET_PRIVATE_KEY"],
+    }
+
     result = []
     for name, cls in STRATEGY_REGISTRY.items():
         cfg = db_configs.get(name)
-        result.append({
-            "name": name,
-            "description": getattr(cls, "description", ""),
-            "category": getattr(cls, "category", "general"),
-            "enabled": cfg.enabled if cfg else False,
-            "interval_seconds": cfg.interval_seconds if cfg else 60,
-            "params": _json.loads(cfg.params) if cfg and cfg.params else {},
-            "default_params": dict(getattr(cls, "default_params", {})),
-            "updated_at": cfg.updated_at.isoformat() if cfg and cfg.updated_at else None,
-        })
+        required_creds = STRATEGY_CREDENTIALS.get(name, [])
+        result.append(
+            {
+                "name": name,
+                "description": getattr(cls, "description", ""),
+                "category": getattr(cls, "category", "general"),
+                "enabled": cfg.enabled if cfg else False,
+                "interval_seconds": cfg.interval_seconds if cfg else 60,
+                "params": _json.loads(cfg.params) if cfg and cfg.params else {},
+                "default_params": dict(getattr(cls, "default_params", {})),
+                "updated_at": cfg.updated_at.isoformat()
+                if cfg and cfg.updated_at
+                else None,
+                "required_credentials": required_creds,
+            }
+        )
     return result
 
 
@@ -702,6 +702,38 @@ class StrategyUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
     interval_seconds: Optional[int] = None
     params: Optional[dict] = None
+
+
+@router.get("/api/strategies/{name}")
+async def get_strategy(
+    name: str,
+    db: Session = Depends(get_db),
+):
+    """Get a single strategy config by name."""
+    from backend.strategies.registry import STRATEGY_REGISTRY, load_all_strategies
+
+    if not STRATEGY_REGISTRY:
+        load_all_strategies()
+    if name not in STRATEGY_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
+    cfg = db.query(StrategyConfig).filter(StrategyConfig.strategy_name == name).first()
+    try:
+        inst = STRATEGY_REGISTRY[name]()
+        description = getattr(inst, "description", name)
+        category = getattr(inst, "category", "general")
+        default_params = getattr(inst, "default_params", {})
+    except Exception:
+        description, category, default_params = name, "unknown", {}
+    return {
+        "name": name,
+        "description": description,
+        "category": category,
+        "enabled": cfg.enabled if cfg else True,
+        "interval_seconds": cfg.interval_seconds if cfg else 300,
+        "params": _json.loads(cfg.params) if cfg and cfg.params else {},
+        "default_params": default_params,
+        "updated_at": cfg.updated_at.isoformat() if cfg and cfg.updated_at else None,
+    }
 
 
 @router.put("/api/strategies/{name}")
@@ -749,16 +781,31 @@ async def run_strategy_now(name: str, _: None = Depends(require_admin)):
     if name not in STRATEGY_REGISTRY:
         raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
 
-    # Run the strategy's scan method if available
+    # Build a proper StrategyContext and run the strategy
     try:
+        from backend.strategies.base import StrategyContext
+        from backend.models.database import SessionLocal, BotState
+
         cls = STRATEGY_REGISTRY[name]
         instance = cls()
-        if hasattr(instance, 'scan'):
-            await instance.scan()
-        elif hasattr(instance, 'run'):
-            await instance.run()
-        else:
-            return {"status": "no_scan_method", "name": name}
+        db = SessionLocal()
+        try:
+            state = db.query(BotState).first()
+            if not state:
+                raise HTTPException(status_code=404, detail="Bot state not initialized")
+            ctx = StrategyContext(
+                db=db,
+                clob=None,
+                settings=settings,
+                logger=logger,
+                params=dict(getattr(cls, "default_params", {})),
+                mode=settings.TRADING_MODE,
+            )
+            result = await instance.run(ctx)
+        finally:
+            db.close()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Manual run of strategy '{name}' failed: {e}")
         raise HTTPException(status_code=500, detail=f"Strategy run failed: {e}")

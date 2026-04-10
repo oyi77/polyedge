@@ -435,6 +435,7 @@ export interface StrategyConfig {
   params: Record<string, unknown>
   default_params: Record<string, unknown>
   updated_at: string | null
+  required_credentials?: string[]
 }
 
 export async function fetchStrategies(): Promise<StrategyConfig[]> {
