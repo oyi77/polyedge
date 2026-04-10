@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     # Signal notification duration (milliseconds)
     SIGNAL_NOTIFICATION_DURATION_MS: int = 10000
 
+    # Auto-improve job (weekly learning from outcomes)
+    AUTO_IMPROVE_ENABLED: bool = True
+    AUTO_IMPROVE_INTERVAL_DAYS: int = 7  # Run weekly
+    AUTO_IMPROVE_TRADE_LIMIT: int = 100  # Analyze last N trades
+
     # Phase 2 feature flags
     NEWS_FEED_ENABLED: bool = False
     ARBITRAGE_DETECTOR_ENABLED: bool = False

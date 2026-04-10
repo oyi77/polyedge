@@ -235,16 +235,17 @@ def start_scheduler():
             max_instances=1,
         )
 
-    # Auto-improvement (weekly) - learns from trade outcomes
-    from apscheduler.triggers.interval import IntervalTrigger as _IntervalTrigger
+    # Auto-improvement job - learns from trade outcomes
+    if settings.AUTO_IMPROVE_ENABLED:
+        from apscheduler.triggers.interval import IntervalTrigger as _IntervalTrigger
 
-    scheduler.add_job(
-        auto_improve_job,
-        _IntervalTrigger(days=7),
-        id="auto_improve",
-        replace_existing=True,
-        max_instances=1,
-    )
+        scheduler.add_job(
+            auto_improve_job,
+            _IntervalTrigger(days=settings.AUTO_IMPROVE_INTERVAL_DAYS),
+            id="auto_improve",
+            replace_existing=True,
+            max_instances=1,
+        )
 
     # Initialize queue worker if enabled
     if settings.JOB_WORKER_ENABLED:
