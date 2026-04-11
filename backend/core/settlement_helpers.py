@@ -144,21 +144,32 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
                 return False, None
 
         # --- Early resolution heuristic (market not yet closed) ---
-        # Only trigger when prices are very extreme (>0.97 or <0.03) AND
-        # there is external evidence that the event has concluded.
-        if first_price > 0.97 or first_price < 0.03:
+        # Sports events with ended=True flag can use a looser price threshold
+        # (0.90/0.10) because the outcome is confirmed by the event data.
+        # Non-sports events fall back to strict 0.97/0.03 + endDate+2h.
+        events = market.get("events", [])
+        has_ended_flag = False
+        if events and isinstance(events, list):
+            ev = events[0] if isinstance(events[0], dict) else {}
+            has_ended_flag = ev.get("ended") is True
+
+        # Use loose threshold for confirmed-ended sports, strict for others
+        early_threshold_high = 0.90 if has_ended_flag else 0.97
+        early_threshold_low = 0.10 if has_ended_flag else 0.03
+
+        if first_price > early_threshold_high or first_price < early_threshold_low:
             event_concluded = _check_event_concluded(market)
             if event_concluded:
-                if first_price > 0.97:
+                if first_price > early_threshold_high:
                     logger.info(
                         f"Market {market.get('id')} early-resolved (price={first_price:.3f}, "
-                        f"event concluded): UP/YES won"
+                        f"event concluded, threshold={early_threshold_high}): UP/YES won"
                     )
                     return True, 1.0
                 else:
                     logger.info(
                         f"Market {market.get('id')} early-resolved (price={first_price:.3f}, "
-                        f"event concluded): DOWN/NO won"
+                        f"event concluded, threshold={early_threshold_low}): DOWN/NO won"
                     )
                     return True, 0.0
 

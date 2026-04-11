@@ -19,15 +19,18 @@ class GeneralMarketScanner(BaseStrategy):
     default_params = {
         "min_volume": 2000,
         "min_edge": 0.03,
-        "max_price": 0.92,
-        "min_price": 0.03,
-        "max_position_size": 6.0,
+        "max_price": 0.85,
+        "min_price": 0.08,
+        "max_position_size": 4.0,
         "min_position_size": 0.50,
         "scan_limit": 500,
         "categories": "politics,sports,crypto,science,culture",
         "max_ai_calls_per_cycle": 40,
         "max_concurrent": 25,
         "min_reward_risk": 0.5,
+        "max_days_to_end": 30,
+        "max_low_prob_size": 1.50,
+        "low_prob_threshold": 0.20,
     }
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
@@ -43,6 +46,9 @@ class GeneralMarketScanner(BaseStrategy):
         scan_limit = int(params["scan_limit"])
         max_ai_calls_per_cycle = int(params.get("max_ai_calls_per_cycle", 40))
         max_concurrent = int(params.get("max_concurrent", 12))
+        max_days_to_end = int(params.get("max_days_to_end", 30))
+        max_low_prob_size = float(params.get("max_low_prob_size", 1.50))
+        low_prob_threshold = float(params.get("low_prob_threshold", 0.20))
         allowed_categories_raw = params.get("categories", "")
         allowed_categories = {
             c.strip().lower()
@@ -186,6 +192,25 @@ class GeneralMarketScanner(BaseStrategy):
             if slug and slug in existing_tickers:
                 continue
 
+            # End-date filter: skip markets that resolve too far in the future
+            end_date_str = market.get("endDate") or ""
+            if end_date_str:
+                try:
+                    end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                    days_until = (end_dt - datetime.now(timezone.utc)).days
+                    if days_until > max_days_to_end:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            # In-loop concurrent check: stop placing if we hit the limit
+            trades_placed_this_cycle = result.trades_placed
+            if open_trade_count + trades_placed_this_cycle >= max_concurrent:
+                ctx.logger.info(
+                    f"[general_scanner] Hit max concurrent during cycle ({open_trade_count + trades_placed_this_cycle}/{max_concurrent}), stopping"
+                )
+                break
+
             question = market.get("question") or market.get("title") or slug
 
             # AI analysis — enforce per-cycle call cap
@@ -255,6 +280,9 @@ class GeneralMarketScanner(BaseStrategy):
 
             size = min(max_position_size, kelly_size)
             size = max(min_position_size, size)
+
+            if entry_price < low_prob_threshold:
+                size = min(size, max_low_prob_size)
 
             reasoning = getattr(ai_result, "reasoning", "") or ""
 
