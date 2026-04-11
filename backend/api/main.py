@@ -76,6 +76,74 @@ import logging
 
 logger = logging.getLogger("trading_bot")
 
+_STRATEGY_DEFAULTS = [
+    (
+        "copy_trader",
+        True,
+        60,
+        {"max_wallets": 20, "min_score": 60.0, "poll_interval": 60},
+    ),
+    (
+        "weather_emos",
+        True,
+        300,
+        {"min_edge": 0.05, "max_position_usd": 100, "calibration_window_days": 40},
+    ),
+    ("kalshi_arb", True, 60, {"min_edge": 0.02, "allow_live_execution": False}),
+    ("btc_oracle", True, 30, {"min_edge": 0.03, "max_minutes_to_resolution": 10}),
+    ("btc_5m", False, 60, {}),
+    ("btc_momentum", True, 60, {"max_trade_fraction": 0.03}),
+    (
+        "general_scanner",
+        True,
+        300,
+        {"min_volume": 50000, "min_edge": 0.05, "max_position_usd": 150},
+    ),
+    (
+        "bond_scanner",
+        True,
+        600,
+        {"min_price": 0.92, "max_price": 0.98, "max_position_usd": 200},
+    ),
+    ("realtime_scanner", True, 60, {"min_edge": 0.03, "max_position_usd": 100}),
+    (
+        "whale_pnl_tracker",
+        True,
+        120,
+        {"min_wallet_pnl": 10000, "max_position_usd": 100},
+    ),
+    ("market_maker", False, 30, {"spread": 0.02, "max_position_usd": 200}),
+]
+
+
+def _seed_strategy_configs() -> None:
+    import json as _json
+
+    db = SessionLocal()
+    try:
+        added = 0
+        for name, enabled, interval, params in _STRATEGY_DEFAULTS:
+            exists = (
+                db.query(StrategyConfig)
+                .filter(StrategyConfig.strategy_name == name)
+                .first()
+            )
+            if not exists:
+                db.add(
+                    StrategyConfig(
+                        strategy_name=name,
+                        enabled=enabled,
+                        interval_seconds=interval,
+                        params=_json.dumps(params),
+                    )
+                )
+                added += 1
+        if added:
+            db.commit()
+            logger.info(f"Seeded {added} strategy configs into database")
+    finally:
+        db.close()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -133,6 +201,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(
         f"  - Strategies loaded: {', '.join(sorted(__import__('backend.strategies.registry', fromlist=['STRATEGY_REGISTRY']).STRATEGY_REGISTRY.keys()))}"
     )
+
+    _seed_strategy_configs()
 
     from backend.core.scheduler import start_scheduler, log_event
 

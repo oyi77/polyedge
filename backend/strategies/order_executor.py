@@ -122,6 +122,8 @@ class LeaderboardScorer:
             return None
 
     async def fetch_and_score(self, top_n: int = 50) -> list[ScoredTrader]:
+        entries = []
+        # Try data-api leaderboard first
         try:
             resp = await self._http.get(
                 f"{DATA_HOST}/leaderboard", params={"window": "30d"}
@@ -129,10 +131,34 @@ class LeaderboardScorer:
             resp.raise_for_status()
             entries = resp.json()
         except (httpx.HTTPError, Exception) as e:
-            logger.error(
-                f"[order_executor.fetch_and_score] {type(e).__name__}: Leaderboard fetch failed: {e}"
+            logger.warning(
+                f"[order_executor.fetch_and_score] Leaderboard data-api unavailable ({type(e).__name__}), trying scraper fallback"
             )
-            return []
+            # Fallback: try the polymarket_scraper
+            try:
+                from backend.data.polymarket_scraper import fetch_real_leaderboard
+
+                scraped = await fetch_real_leaderboard(limit=top_n)
+                if scraped:
+                    # Normalize scraped entries to match expected format
+                    entries = [
+                        {
+                            "proxyWallet": t.get("address", t.get("wallet", "")),
+                            "name": t.get("name", t.get("username", "unknown")),
+                            "profit": t.get("profit_loss", t.get("pnl", 0)),
+                            "pnlPercentage": t.get("pnl_percentage", 0),
+                            "tradesCount": t.get("positions_count", t.get("trades", 0)),
+                            "marketsTraded": t.get("markets_traded", 0),
+                        }
+                        for t in scraped
+                    ]
+                    logger.info(
+                        f"[order_executor] Scraper fallback returned {len(entries)} traders"
+                    )
+            except Exception as scrape_err:
+                logger.warning(
+                    f"[order_executor] Scraper fallback also failed: {scrape_err}"
+                )
 
         if not entries:
             return []

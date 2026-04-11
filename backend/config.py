@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     SETTLEMENT_INTERVAL_SECONDS: int = 120  # Check settlements every 2 min
     BTC_PRICE_SOURCE: str = "coinbase"
     MIN_EDGE_THRESHOLD: float = (
-        0.05  # 5% edge required — covers 0.5% fees + profit margin
+        0.03  # 3% edge required — covers 0.5% fees + profit margin
     )
     MAX_ENTRY_PRICE: float = 0.55  # Enter up to 55c
     MAX_TRADES_PER_WINDOW: int = 1
