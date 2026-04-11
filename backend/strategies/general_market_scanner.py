@@ -26,7 +26,7 @@ class GeneralMarketScanner(BaseStrategy):
         "scan_limit": 500,
         "categories": "politics,sports,crypto,science,culture",
         "max_ai_calls_per_cycle": 40,
-        "max_concurrent": 40,
+        "max_concurrent": 25,
         "min_reward_risk": 0.5,
     }
 
