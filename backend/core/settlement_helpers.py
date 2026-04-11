@@ -184,6 +184,18 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
         if is_live and hours_past_end < 0.5:
             return False, None
 
+        # Gamma API endDate can reference a group/series date, not the
+        # actual market resolution — skip stale/zombie tiers if still trading.
+        market_active = market.get("active", False)
+        market_not_closed = not market.get("closed", False)
+        if market_active and market_not_closed and not has_ended_flag:
+            if hours_past_end >= 2.0:
+                logger.info(
+                    f"Market {market.get('id')} skipping stale/zombie resolution: "
+                    f"still active, endDate {hours_past_end:.0f}h ago (likely misleading)"
+                )
+                return False, None
+
         # Select threshold based on strongest signal
         if has_ended_flag:
             # Tier 1: API confirms event ended

@@ -29,31 +29,25 @@ def _build_prompt(
     category: str = "",
     context: str = "",
 ) -> str:
-    prompt = f"""You are a calibrated prediction market analyst. Estimate the TRUE probability this event resolves YES.
+    prompt = f"""You are an expert prediction market analyst. Estimate the TRUE probability this event resolves YES.
 
-CRITICAL RULES:
-- Prediction markets with >$50K volume are EFFICIENT. The market price is usually RIGHT.
-- You should ONLY disagree with the market when you have SPECIFIC, CONCRETE evidence.
-- DO NOT assume the market is biased without evidence. The crowd is usually smarter than you.
-- Sports markets are EXTREMELY efficient — bookmaker lines are priced by professionals.
-  For sports: your estimate should be VERY close to the market price (within ±5%) unless
-  you have strong reason (injury news, lineup changes, historical matchup data).
-- For politics/crypto/events: mild bias correction is OK, but stay within ±10% of market.
-- If you are UNSURE, return a probability EQUAL to the market price. Being wrong is costly.
+YOUR JOB: Form an INDEPENDENT probability estimate based on your knowledge and reasoning.
+The market price is shown for reference, but you must think independently — markets can be wrong.
+
+Think about:
+- Base rates: How often do events like this happen historically?
+- Current conditions: What factors favor YES vs NO?
+- Time horizon: How much can change before resolution?
+- Asymmetric information: What might the market be missing?
 
 QUESTION: {question}
-CURRENT YES PRICE: {current_price:.4f} (this is what the market thinks — respect it)
+CURRENT YES PRICE: {current_price:.4f}
 24H VOLUME: ${volume:,.0f}"""
     if category:
         prompt += f"\nCATEGORY: {category}"
     if context:
         prompt += f"\nCONTEXT: {context}"
     prompt += """
-
-Think step by step:
-1. Is this a sports/competition market? If yes, the market is likely correct. Stay close to market price.
-2. Do I have SPECIFIC evidence (not just intuition) that the market is wrong?
-3. How confident am I in my SPECIFIC evidence? If low, stay within ±3% of market price.
 
 You MUST respond with EXACTLY these three lines and nothing else:
 PROBABILITY: <number between 0.01 and 0.99>
@@ -190,9 +184,9 @@ async def _call_groq(prompt: str) -> Optional[str]:
                 {
                     "role": "system",
                     "content": (
-                        "You are a calibrated prediction market analyst. "
-                        "Prediction markets are usually efficient — the market price is your best starting point. "
-                        "Only deviate when you have SPECIFIC evidence. "
+                        "You are an expert prediction market analyst. "
+                        "Form independent probability estimates using base rates, current conditions, and reasoning. "
+                        "The market price is a reference point, not gospel — think for yourself. "
                         "Always respond with EXACTLY three lines:\n"
                         "PROBABILITY: <number>\nCONFIDENCE: <number>\nREASONING: <one sentence>\n"
                         "Never include any other text."
@@ -201,7 +195,7 @@ async def _call_groq(prompt: str) -> Optional[str]:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=250,
-            temperature=0.2,
+            temperature=0.5,
         )
 
         result = response.choices[0].message.content.strip()

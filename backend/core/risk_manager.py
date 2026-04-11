@@ -103,8 +103,11 @@ class RiskManager:
                 or 0.0
             )
 
-            daily_limit = bankroll * self.s.DAILY_DRAWDOWN_LIMIT_PCT
-            weekly_limit = bankroll * self.s.WEEKLY_DRAWDOWN_LIMIT_PCT
+            # Use the higher of current bankroll or initial bankroll to prevent
+            # death spiral: depleted bankroll → tiny limit → can't trade → can't recover
+            base_bankroll = max(bankroll, self.s.INITIAL_BANKROLL)
+            daily_limit = base_bankroll * self.s.DAILY_DRAWDOWN_LIMIT_PCT
+            weekly_limit = base_bankroll * self.s.WEEKLY_DRAWDOWN_LIMIT_PCT
 
             breach_reason = ""
             is_breached = False

@@ -49,7 +49,7 @@ class GeneralMarketScanner(BaseStrategy):
     category = "ai_driven"
     default_params = {
         "min_volume": 2000,
-        "min_edge": 0.05,
+        "min_edge": 0.03,
         "max_price": 0.85,
         "min_price": 0.08,
         "max_position_size": 2.0,
@@ -58,23 +58,26 @@ class GeneralMarketScanner(BaseStrategy):
         "categories": "politics,crypto,science,culture",
         "max_ai_calls_per_cycle": 40,
         "max_concurrent": 25,
-        "min_reward_risk": 0.5,
+        "min_reward_risk": 0.3,
         "max_days_to_end": 30,
         "max_low_prob_size": 1.50,
         "low_prob_threshold": 0.20,
-        "edge_dampening": 0.7,
+        "edge_dampening": 0.5,
         "sports_edge_multiplier": 3.0,
         # Max raw edge cap: reject if AI claims more than this edge over market.
-        # An 8B LLM cannot have >25% edge over liquid prediction markets.
-        "max_raw_edge": 0.25,
+        # Relaxed to 0.40 — allows AI to disagree more with extreme-priced markets.
+        "max_raw_edge": 0.40,
         # Market anchor weight: blend AI prob toward market price.
         # final_prob = anchor_weight * market_price + (1-anchor_weight) * ai_prob
-        # 0.5 means AI can only move estimate 50% away from market consensus.
-        "market_anchor_weight": 0.5,
+        # 0.3 means AI opinion has 70% weight — trust AI more than pure market price.
+        "market_anchor_weight": 0.3,
     }
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
         result = CycleResult(decisions_recorded=0, trades_attempted=0, trades_placed=0)
+        rejected_raw_edge = 0
+        rejected_edge_low = 0
+        rejected_rr = 0
 
         params = {**self.default_params, **(ctx.params or {})}
         min_volume = float(params["min_volume"])
@@ -90,9 +93,9 @@ class GeneralMarketScanner(BaseStrategy):
         max_low_prob_size = float(params.get("max_low_prob_size", 1.50))
         low_prob_threshold = float(params.get("low_prob_threshold", 0.20))
         edge_dampening = float(params.get("edge_dampening", 0.5))
-        sports_edge_multiplier = float(params.get("sports_edge_multiplier", 2.0))
-        max_raw_edge = float(params.get("max_raw_edge", 0.15))
-        market_anchor_weight = float(params.get("market_anchor_weight", 0.6))
+        sports_edge_multiplier = float(params.get("sports_edge_multiplier", 3.0))
+        max_raw_edge = float(params.get("max_raw_edge", 0.40))
+        market_anchor_weight = float(params.get("market_anchor_weight", 0.3))
         allowed_categories_raw = params.get("categories", "")
         allowed_categories = {
             c.strip().lower()
@@ -307,10 +310,11 @@ class GeneralMarketScanner(BaseStrategy):
             # right and the AI is hallucinating.
             raw_edge = abs(raw_ai_prob - market_price)
             if raw_edge > max_raw_edge:
-                ctx.logger.debug(
-                    f"[general_scanner] Rejecting {slug}: raw AI edge {raw_edge:.4f} > max {max_raw_edge} "
-                    f"(ai_raw={raw_ai_prob:.3f}, market={market_price:.3f}) — AI likely wrong"
+                ctx.logger.info(
+                    f"[general_scanner] FILTER:RAW_EDGE {slug}: raw_edge={raw_edge:.4f} > max={max_raw_edge} "
+                    f"(ai_raw={raw_ai_prob:.3f}, mkt={market_price:.3f})"
                 )
+                rejected_raw_edge += 1
                 continue
 
             # Dampen the anchored edge further
@@ -327,23 +331,25 @@ class GeneralMarketScanner(BaseStrategy):
             required_edge = min_edge * sports_edge_multiplier if is_sports else min_edge
 
             if dampened_edge < required_edge:
-                ctx.logger.debug(
-                    f"[general_scanner] Skipping {slug}: dampened edge {dampened_edge:.4f} < required {required_edge:.4f}"
+                ctx.logger.info(
+                    f"[general_scanner] FILTER:EDGE_LOW {slug}: dampened={dampened_edge:.4f} < required={required_edge:.4f}"
                     f" (raw={raw_edge:.4f}, anchored={edge:.4f}, dampen={edge_dampening}, sports={is_sports})"
                 )
+                rejected_edge_low += 1
                 continue
 
             # R:R floor filter — reject trades where potential reward is too
             # low relative to risk.  For a binary bet the reward-to-risk is
             # (1/entry_price) - 1.  A floor of 0.5 means we need at least 50%
             # return potential (entry_price <= ~0.67).
-            min_rr = float(params.get("min_reward_risk", 0.5))
+            min_rr = float(params.get("min_reward_risk", 0.3))
             if entry_price > 0:
                 reward_risk = (1.0 / entry_price) - 1.0
                 if reward_risk < min_rr:
-                    ctx.logger.debug(
-                        f"[general_scanner] Skipping {slug}: R:R {reward_risk:.2f}x < {min_rr}x (entry={entry_price:.4f})"
+                    ctx.logger.info(
+                        f"[general_scanner] FILTER:RR_LOW {slug}: R:R={reward_risk:.2f}x < min={min_rr}x (entry={entry_price:.4f})"
                     )
+                    rejected_rr += 1
                     continue
 
             # Kelly criterion sizing (fractional)
@@ -428,6 +434,8 @@ class GeneralMarketScanner(BaseStrategy):
             ctx.db.rollback()
 
         ctx.logger.info(
-            f"[general_scanner] Cycle done: {result.decisions_recorded} opportunities found"
+            f"[general_scanner] Cycle done: {result.decisions_recorded} BUYs | "
+            f"Rejected: raw_edge={rejected_raw_edge}, edge_low={rejected_edge_low}, rr_low={rejected_rr} | "
+            f"AI calls={ai_calls_this_cycle}"
         )
         return result
