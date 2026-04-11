@@ -49,7 +49,7 @@ class GeneralMarketScanner(BaseStrategy):
     category = "ai_driven"
     default_params = {
         "min_volume": 2000,
-        "min_edge": 0.03,
+        "min_edge": 0.02,
         "max_price": 0.85,
         "min_price": 0.08,
         "max_position_size": 2.0,
@@ -62,16 +62,22 @@ class GeneralMarketScanner(BaseStrategy):
         "max_days_to_end": 30,
         "max_low_prob_size": 1.50,
         "low_prob_threshold": 0.20,
-        "edge_dampening": 0.5,
+        # Edge dampening is now handled by market_anchor_weight.
+        # Anchor weight 0.7 already compresses AI edge by 70%.
+        # Setting dampening to 1.0 (no additional dampening) prevents
+        # double-penalizing.  Old 0.5 * 0.3(anchor) = 0.15 effective
+        # weight made it impossible for the scanner to place any trade.
+        "edge_dampening": 1.0,
         "sports_edge_multiplier": 3.0,
         # Max raw edge cap: reject if AI disagrees with market by more than this.
         # Tightened to 0.25 — a small model claiming 25%+ edge is almost always wrong.
         "max_raw_edge": 0.25,
         # Market anchor weight: blend AI prob toward market price.
         # final_prob = anchor_weight * market_price + (1-anchor_weight) * ai_prob
-        # 0.7 = trust the market more than the AI.  An 8B model cannot reliably
-        # beat liquid prediction markets — use it for slight tilts, not overrides.
-        "market_anchor_weight": 0.7,
+        # 0.5 = equal weight.  Effective edge = raw_edge * 0.5, so AI needs
+        # ~4% raw disagreement to pass min_edge=0.02.  Balanced: trusts the
+        # market but still lets the AI contribute meaningful signal.
+        "market_anchor_weight": 0.5,
         # --- Safe harvesting strategy ---
         # Prefer NO bets on low-probability events.  Markets priced at YES 0.05-0.25
         # resolve NO >80% of the time.  Instead of trying to pick YES winners among
@@ -395,11 +401,15 @@ class GeneralMarketScanner(BaseStrategy):
                 continue
 
             # R:R floor filter — reject trades where potential reward is too
-            # low relative to risk.  For a binary bet the reward-to-risk is
-            # (1/entry_price) - 1.  A floor of 0.5 means we need at least 50%
-            # return potential (entry_price <= ~0.67).
+            # low relative to risk.  Exempt safe-harvest NO bets: their edge
+            # comes from high win-rate (>80%), not high R:R.
+            is_harvest_trade = (
+                safe_harvest_enabled
+                and direction == "no"
+                and market_price < harvest_yes_ceiling
+            )
             min_rr = float(params.get("min_reward_risk", 0.3))
-            if entry_price > 0:
+            if entry_price > 0 and not is_harvest_trade:
                 reward_risk = (1.0 / entry_price) - 1.0
                 if reward_risk < min_rr:
                     ctx.logger.info(

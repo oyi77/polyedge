@@ -197,13 +197,17 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
         )
 
         # Select threshold based on strongest signal
+        # Graduated tiers: more time past endDate = looser thresholds.
+        # Rationale: once endDate passes, the price IS the outcome —
+        # Polymarket is just slow to officially close. We can resolve
+        # earlier to free up capital.
         if has_ended_flag:
             # Tier 1: API confirms event ended
             early_threshold_high = 0.90
             early_threshold_low = 0.10
             tier = "ended-flag"
         elif hours_past_end >= 48.0:
-            # Tier 5: 48+ hours past endDate — extremely stale.
+            # Tier 6: 48+ hours past endDate — extremely stale.
             if market_still_open:
                 # Guard: endDate may be misleading (group/series date).
                 # Don't resolve with the loosest thresholds when market
@@ -213,24 +217,31 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
                     f"still active, endDate {hours_past_end:.0f}h ago (likely misleading)"
                 )
                 return False, None
+            early_threshold_high = 0.52
+            early_threshold_low = 0.48
+            tier = f"zombie-{hours_past_end:.0f}h"
+        elif hours_past_end >= 12.0:
+            # Tier 5: 12-48 hours past endDate — very stale, aggressive resolve
             early_threshold_high = 0.55
             early_threshold_low = 0.45
-            tier = f"zombie-{hours_past_end:.0f}h"
+            tier = f"very-stale-{hours_past_end:.1f}h"
         elif hours_past_end >= 6.0:
-            # Tier 4: 6-48 hours past endDate — stale, force resolve
-            early_threshold_high = 0.65
-            early_threshold_low = 0.35
+            # Tier 4: 6-12 hours past endDate — stale, force resolve
+            # Lowered from 0.65/0.35 to catch the "ambiguous zone" (0.35-0.65)
+            # where markets like weather bets sit for hours at ~0.55-0.60
+            early_threshold_high = 0.57
+            early_threshold_low = 0.43
             tier = f"stale-{hours_past_end:.1f}h"
         elif hours_past_end >= 2.0:
-            # Tier 3: 2-6 hours past endDate — lowered to 0.75/0.25 because
+            # Tier 3: 2-6 hours past endDate — lowered to 0.70/0.30 because
             # sports markets often settle in the 0.74-0.76 price range.
-            early_threshold_high = 0.75
-            early_threshold_low = 0.25
+            early_threshold_high = 0.70
+            early_threshold_low = 0.30
             tier = f"overdue-{hours_past_end:.1f}h"
         elif hours_past_end >= 0.5:
             # Tier 2: 30min-2h past endDate
-            early_threshold_high = 0.90
-            early_threshold_low = 0.10
+            early_threshold_high = 0.85
+            early_threshold_low = 0.15
             tier = f"recent-{hours_past_end:.1f}h"
         else:
             # Event hasn't ended yet — use very strict thresholds
