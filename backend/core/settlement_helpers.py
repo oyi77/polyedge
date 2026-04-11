@@ -185,6 +185,11 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     Maps up->yes, down->no internally:
     - UP position wins when settlement = 1.0
     - DOWN position wins when settlement = 0.0
+
+    IMPORTANT: `size` is the dollar amount spent (not number of shares).
+    Number of shares = size / entry_price.
+    On a win, each share pays $1.00, so PNL = shares - cost = (size / entry_price) - size.
+    On a loss, the entire investment is lost, so PNL = -size.
     """
     # Map up/down to yes/no logic
     direction = trade.direction
@@ -196,16 +201,29 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     _filled = getattr(trade, "filled_size", None)
     size = float(_filled) if isinstance(_filled, (int, float)) else trade.size
 
+    entry_price = trade.entry_price
+
+    if not entry_price or entry_price <= 0 or entry_price >= 1.0:
+        if entry_price and entry_price >= 1.0:
+            return 0.0
+        if direction == "yes":
+            return round(size if settlement_value == 1.0 else -size, 2)
+        else:
+            return round(size if settlement_value == 0.0 else -size, 2)
+
+    # PNL formula: shares = dollars_spent / price_per_share
+    # Win: pnl = shares * $1 - cost = (size / entry_price) - size
+    # Loss: pnl = -size (entire investment lost)
     if direction == "yes":
         if settlement_value == 1.0:
-            pnl = size * (1.0 - trade.entry_price)
+            pnl = (size / entry_price) - size
         else:
-            pnl = -size * trade.entry_price
-    else:  # NO / DOWN position
+            pnl = -size
+    else:
         if settlement_value == 0.0:
-            pnl = size * (1.0 - trade.entry_price)
+            pnl = (size / entry_price) - size
         else:
-            pnl = -size * trade.entry_price
+            pnl = -size
 
     return round(pnl, 2)
 

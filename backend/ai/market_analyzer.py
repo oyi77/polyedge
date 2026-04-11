@@ -29,26 +29,33 @@ def _build_prompt(
     category: str = "",
     context: str = "",
 ) -> str:
-    prompt = f"""Analyze this prediction market and estimate the TRUE probability of YES.
+    prompt = f"""You are a calibrated prediction market analyst. Estimate the TRUE probability this event resolves YES.
 
-Question: {question}
-Current YES price: ${current_price}
-Volume: ${volume}"""
+KEY BIASES TO CORRECT FOR:
+- Crowds systematically OVERESTIMATE dramatic/exciting outcomes (YES bias)
+- Low-probability events (<20%) are often overpriced — the true probability is even lower
+- High-probability events (>80%) are often underpriced — resolution is more certain than the market reflects
+- "Will X happen by date Y" questions usually resolve NO unless strong evidence exists
+- Celebrity/meme markets are heavily YES-biased by fans
+
+QUESTION: {question}
+CURRENT YES PRICE: {current_price:.4f} (this is what the market thinks)
+24H VOLUME: ${volume:,.0f}"""
     if category:
-        prompt += f"\nCategory: {category}"
+        prompt += f"\nCATEGORY: {category}"
     if context:
-        prompt += f"\nContext: {context}"
+        prompt += f"\nCONTEXT: {context}"
     prompt += """
 
-You MUST respond with EXACTLY these three lines and nothing else:
-PROBABILITY: <number between 0.0 and 1.0>
-CONFIDENCE: <number between 0.0 and 1.0>
-REASONING: <one sentence explanation>
+Think step by step:
+1. What is the BASE RATE for this type of event?
+2. Is there specific evidence that shifts probability away from the base rate?
+3. Is the market likely biased (fan enthusiasm, recency bias, anchoring)?
 
-Example response:
-PROBABILITY: 0.35
-CONFIDENCE: 0.70
-REASONING: Market is overpriced given current polling data shows only 35% support."""
+You MUST respond with EXACTLY these three lines and nothing else:
+PROBABILITY: <number between 0.01 and 0.99>
+CONFIDENCE: <number between 0.0 and 1.0>
+REASONING: <one sentence with your key insight>"""
     return prompt
 
 
@@ -180,7 +187,8 @@ async def _call_groq(prompt: str) -> Optional[str]:
                 {
                     "role": "system",
                     "content": (
-                        "You are a prediction market analyst. "
+                        "You are a calibrated prediction market analyst who corrects for crowd biases. "
+                        "Crowds overestimate exciting/dramatic outcomes. Low-price events are often overpriced. "
                         "Always respond with EXACTLY three lines:\n"
                         "PROBABILITY: <number>\nCONFIDENCE: <number>\nREASONING: <one sentence>\n"
                         "Never include any other text."
@@ -188,7 +196,7 @@ async def _call_groq(prompt: str) -> Optional[str]:
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=150,
+            max_tokens=250,
             temperature=0.2,
         )
 

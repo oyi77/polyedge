@@ -17,14 +17,16 @@ class GeneralMarketScanner(BaseStrategy):
     description = "AI-powered scanner across all Polymarket markets — politics, sports, crypto, events"
     category = "ai_driven"
     default_params = {
-        "min_volume": 3000,
-        "min_edge": 0.04,
+        "min_volume": 2000,
+        "min_edge": 0.03,
         "max_price": 0.92,
-        "min_price": 0.05,
+        "min_price": 0.03,
         "max_position_size": 6.0,
-        "scan_limit": 200,
+        "min_position_size": 0.50,
+        "scan_limit": 500,
         "categories": "politics,sports,crypto,science,culture",
-        "max_ai_calls_per_cycle": 20,
+        "max_ai_calls_per_cycle": 40,
+        "max_concurrent": 40,
     }
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
@@ -36,8 +38,10 @@ class GeneralMarketScanner(BaseStrategy):
         max_price = float(params["max_price"])
         min_price = float(params["min_price"])
         max_position_size = float(params["max_position_size"])
+        min_position_size = float(params.get("min_position_size", 0.50))
         scan_limit = int(params["scan_limit"])
-        max_ai_calls_per_cycle = int(params.get("max_ai_calls_per_cycle", 5))
+        max_ai_calls_per_cycle = int(params.get("max_ai_calls_per_cycle", 40))
+        max_concurrent = int(params.get("max_concurrent", 12))
         allowed_categories_raw = params.get("categories", "")
         allowed_categories = {
             c.strip().lower()
@@ -105,13 +109,22 @@ class GeneralMarketScanner(BaseStrategy):
 
         ai_calls_this_cycle = 0
         existing_tickers: set = set()
+        open_trade_count = 0
         try:
             from backend.models.database import Trade
 
             open_trades = ctx.db.query(Trade).filter(Trade.settled == False).all()
             existing_tickers = {t.market_ticker for t in open_trades if t.market_ticker}
+            open_trade_count = len(open_trades)
         except Exception:
             pass
+
+        # Check concurrent trade limit
+        if open_trade_count >= max_concurrent:
+            ctx.logger.info(
+                f"[general_scanner] At max concurrent trades ({open_trade_count}/{max_concurrent}), skipping cycle"
+            )
+            return result
 
         for market in markets:
             # Volume filter
@@ -227,7 +240,7 @@ class GeneralMarketScanner(BaseStrategy):
                 kelly_size = max_position_size
 
             size = min(max_position_size, kelly_size)
-            size = max(1.0, size)  # at least $1
+            size = max(min_position_size, size)
 
             reasoning = getattr(ai_result, "reasoning", "") or ""
 

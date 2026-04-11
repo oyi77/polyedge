@@ -243,7 +243,7 @@ async def execute_decisions(
     decisions: list[dict], strategy_name: str, db=None
 ) -> list[dict]:
     """Execute multiple decisions, respecting per-scan limits."""
-    MAX_TRADES_PER_CYCLE = 4
+    MAX_TRADES_PER_CYCLE = 6
     results = []
     for d in decisions[:MAX_TRADES_PER_CYCLE]:
         result = await execute_decision(d, strategy_name, db=db)
