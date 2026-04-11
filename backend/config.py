@@ -62,12 +62,12 @@ class Settings(BaseSettings):
     SETTLEMENT_INTERVAL_SECONDS: int = 120  # Check settlements every 2 min
     BTC_PRICE_SOURCE: str = "coinbase"
     MIN_EDGE_THRESHOLD: float = (
-        0.08  # 8% edge required — dramatically reduces noise trades
+        0.05  # 5% edge required — lower threshold to find more opportunities
     )
-    MAX_ENTRY_PRICE: float = 0.52  # Tighter: enter up to 52c only
-    MAX_TRADES_PER_WINDOW: int = 1
+    MAX_ENTRY_PRICE: float = 0.80  # Allow entries up to 80c for bond-like trades
+    MAX_TRADES_PER_WINDOW: int = 3
     MAX_TOTAL_PENDING_TRADES: int = 20
-    STALE_TRADE_HOURS: int = 2
+    STALE_TRADE_HOURS: int = 48
 
     # Risk management
     DAILY_LOSS_LIMIT: float = 300.0

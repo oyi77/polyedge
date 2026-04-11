@@ -143,12 +143,21 @@ class LeaderboardScorer:
                     # Normalize scraped entries to match expected format
                     entries = [
                         {
-                            "proxyWallet": t.get("address", t.get("wallet", "")),
-                            "name": t.get("name", t.get("username", "unknown")),
-                            "profit": t.get("profit_loss", t.get("pnl", 0)),
-                            "pnlPercentage": t.get("pnl_percentage", 0),
-                            "tradesCount": t.get("positions_count", t.get("trades", 0)),
-                            "marketsTraded": t.get("markets_traded", 0),
+                            "proxyWallet": t.get("wallet", t.get("address", "")),
+                            "name": t.get(
+                                "pseudonym", t.get("name", t.get("username", "unknown"))
+                            ),
+                            "profit": t.get(
+                                "profit_30d", t.get("profit_loss", t.get("pnl", 0))
+                            ),
+                            "pnlPercentage": t.get("win_rate", 0) * 100,
+                            "tradesCount": t.get(
+                                "total_trades",
+                                t.get("positions_count", t.get("trades", 0)),
+                            ),
+                            "marketsTraded": t.get(
+                                "unique_markets", t.get("markets_traded", 0)
+                            ),
                         }
                         for t in scraped
                     ]

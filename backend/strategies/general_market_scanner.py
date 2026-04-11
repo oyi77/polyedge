@@ -17,14 +17,14 @@ class GeneralMarketScanner(BaseStrategy):
     description = "AI-powered scanner across all Polymarket markets — politics, sports, crypto, events"
     category = "ai_driven"
     default_params = {
-        "min_volume": 10000,
-        "min_edge": 0.08,
-        "max_price": 0.75,
-        "min_price": 0.15,
+        "min_volume": 5000,
+        "min_edge": 0.05,
+        "max_price": 0.92,
+        "min_price": 0.05,
         "max_position_size": 8.0,
-        "scan_limit": 40,
+        "scan_limit": 200,
         "categories": "politics,sports,crypto,science,culture",
-        "max_ai_calls_per_cycle": 8,
+        "max_ai_calls_per_cycle": 12,
     }
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:

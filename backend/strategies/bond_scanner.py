@@ -90,22 +90,20 @@ class BondScannerStrategy(BaseStrategy):
             ctx.logger.warning("[bond_scanner] Unexpected Gamma API response format")
             return result
 
-        # Check existing open positions to avoid doubling up
-        existing_slugs: set[str] = set()
+        existing_tickers: set[str] = set()
+        bond_count = 0
         try:
             from backend.models.database import Trade
 
             open_trades = ctx.db.query(Trade).filter(Trade.settled == False).all()
-            existing_slugs = {t.event_slug for t in open_trades if t.event_slug}
+            existing_tickers = {t.market_ticker for t in open_trades if t.market_ticker}
+            existing_tickers |= {t.event_slug for t in open_trades if t.event_slug}
+            bond_count = sum(
+                1 for t in open_trades if getattr(t, "strategy", "") == "bond_scanner"
+            )
         except Exception as e:
             ctx.logger.warning(f"[bond_scanner] Could not query open trades: {e}")
 
-        # Check concurrent bond count
-        bond_count = sum(
-            1
-            for slug in existing_slugs
-            if slug  # rough proxy; all open trades count
-        )
         if bond_count >= max_concurrent:
             ctx.logger.info(
                 f"[bond_scanner] At max concurrent bonds ({bond_count}/{max_concurrent}), skipping cycle"
@@ -144,7 +142,7 @@ class BondScannerStrategy(BaseStrategy):
 
             # Skip if we already hold a position
             slug = market.get("slug") or market.get("conditionId") or ""
-            if slug in existing_slugs:
+            if slug in existing_tickers:
                 continue
 
             # Price filter — check outcomePrices

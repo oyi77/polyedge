@@ -47,14 +47,26 @@ async def fetch_polymarket_resolution(
                     if markets:
                         return _parse_market_resolution(markets[0])
 
-            # Fallback: try market ID directly
+            # Try slug-based query first (market_id may be a slug, not numeric ID)
+            slug_response = await client.get(
+                "https://gamma-api.polymarket.com/markets",
+                params={"slug": market_id},
+            )
+            if slug_response.status_code == 200:
+                slug_results = slug_response.json()
+                if isinstance(slug_results, list) and slug_results:
+                    return _parse_market_resolution(slug_results[0])
+
+            # Fallback: try market ID directly (works for numeric IDs)
             url = f"https://gamma-api.polymarket.com/markets/{market_id}"
             response = await client.get(url)
 
-            if response.status_code == 404:
+            if response.status_code in (404, 422):
                 _market_404_counts[market_id] = _market_404_counts.get(market_id, 0) + 1
                 if _market_404_counts[market_id] >= 3:
-                    logger.debug(f"Skipping market {market_id} — 3+ consecutive 404s")
+                    logger.debug(
+                        f"Skipping market {market_id} — 3+ consecutive 404/422s"
+                    )
                     return False, None
                 return await _search_market_in_events(market_id)
 
