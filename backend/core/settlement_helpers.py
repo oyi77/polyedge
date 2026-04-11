@@ -163,11 +163,8 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
             has_ended_flag = ev.get("ended") is True
             is_live = ev.get("live") is True and not has_ended_flag
 
-        # If the game is explicitly live, don't early-resolve
-        if is_live:
-            return False, None
-
-        # Determine the threshold tier
+        # Compute hours_past_end BEFORE the is_live check so we can
+        # override the live flag for games that are clearly over.
         now = datetime.now(timezone.utc)
         end_date_str = market.get("endDate")
         hours_past_end = 0.0
@@ -179,21 +176,38 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
             except (ValueError, TypeError):
                 pass
 
+        # If the game is explicitly live AND the endDate hasn't been
+        # surpassed by a wide margin, don't early-resolve.
+        # Polymarket's `live` flag often stays True for HOURS after a
+        # game ends, so we only trust it when endDate hasn't passed by
+        # much (< 30 minutes).
+        if is_live and hours_past_end < 0.5:
+            return False, None
+
         # Select threshold based on strongest signal
         if has_ended_flag:
             # Tier 1: API confirms event ended
             early_threshold_high = 0.90
             early_threshold_low = 0.10
             tier = "ended-flag"
+        elif hours_past_end >= 48.0:
+            # Tier 5: 48+ hours past endDate — extremely stale.
+            # If the market is 2+ days past endDate and price leans
+            # even slightly in one direction, the outcome is known.
+            # Polymarket just hasn't closed it yet.
+            early_threshold_high = 0.55
+            early_threshold_low = 0.45
+            tier = f"zombie-{hours_past_end:.0f}h"
         elif hours_past_end >= 6.0:
-            # Tier 4: 6+ hours past endDate — stale, force resolve
-            early_threshold_high = 0.70
-            early_threshold_low = 0.30
+            # Tier 4: 6-48 hours past endDate — stale, force resolve
+            early_threshold_high = 0.65
+            early_threshold_low = 0.35
             tier = f"stale-{hours_past_end:.1f}h"
         elif hours_past_end >= 2.0:
-            # Tier 3: 2-6 hours past endDate
-            early_threshold_high = 0.80
-            early_threshold_low = 0.20
+            # Tier 3: 2-6 hours past endDate — lowered to 0.75/0.25 because
+            # sports markets often settle in the 0.74-0.76 price range.
+            early_threshold_high = 0.75
+            early_threshold_low = 0.25
             tier = f"overdue-{hours_past_end:.1f}h"
         elif hours_past_end >= 0.5:
             # Tier 2: 30min-2h past endDate
@@ -245,26 +259,30 @@ def _check_event_concluded(market: dict) -> bool:
     """
     now = datetime.now(timezone.utc)
 
-    # Sports markets: the Gamma API sets events[0].ended = True once the
-    # match finishes, well before the market is officially closed.
     events = market.get("events", [])
     if events and isinstance(events, list):
         event = events[0] if isinstance(events[0], dict) else {}
         if event.get("ended") is True:
             return True
-        # If the game is still live, definitely not concluded.
-        if event.get("live") is True and event.get("ended") is not True:
-            return False
 
-    # Non-sports / fallback: use endDate.  For non-sports markets endDate is
-    # the resolution deadline.  We require it to have passed by ≥2 hours to
-    # avoid premature settlement on pre-event price spikes.
     end_date_str = market.get("endDate")
     if end_date_str:
         try:
             end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-            if now >= end_date + timedelta(hours=2):
+            hours_past = (
+                (now - end_date).total_seconds() / 3600.0 if now > end_date else 0.0
+            )
+            if hours_past >= 2.0:
                 return True
+            # Only trust is_live flag when endDate hasn't been exceeded
+            if events and isinstance(events, list):
+                ev = events[0] if isinstance(events[0], dict) else {}
+                if (
+                    ev.get("live") is True
+                    and ev.get("ended") is not True
+                    and hours_past < 0.5
+                ):
+                    return False
         except (ValueError, TypeError):
             pass
 
