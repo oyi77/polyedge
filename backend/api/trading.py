@@ -363,6 +363,7 @@ async def settle_trades_endpoint(
     from backend.core.settlement import (
         settle_pending_trades,
         update_bot_state_with_settlements,
+        reconcile_bot_state,
     )
     from backend.core.scheduler import log_event
 
@@ -370,6 +371,7 @@ async def settle_trades_endpoint(
 
     settled = await settle_pending_trades(db)
     await update_bot_state_with_settlements(db, settled)
+    await reconcile_bot_state(db)
 
     return {
         "status": "ok",

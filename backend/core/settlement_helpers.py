@@ -144,34 +144,89 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
                 return False, None
 
         # --- Early resolution heuristic (market not yet closed) ---
-        # Sports events with ended=True flag can use a looser price threshold
-        # (0.90/0.10) because the outcome is confirmed by the event data.
-        # Non-sports events fall back to strict 0.97/0.03 + endDate+2h.
+        # Graduated thresholds based on how strong the resolution signal is:
+        #
+        # Tier 1: events[0].ended == True → 0.90/0.10 (confirmed ended)
+        # Tier 2: endDate passed + 30min → 0.90/0.10 (likely ended, not flagged)
+        # Tier 3: endDate passed + 2h   → 0.80/0.20 (definitely over, slow resolution)
+        # Tier 4: endDate passed + 6h   → 0.70/0.30 (stale market, force resolve)
+        #
+        # The key insight: if endDate has passed, the event is OVER — prices
+        # reflect the known outcome, not speculation. Polymarket is just slow
+        # to officially close/resolve.
+
         events = market.get("events", [])
         has_ended_flag = False
+        is_live = False
         if events and isinstance(events, list):
             ev = events[0] if isinstance(events[0], dict) else {}
             has_ended_flag = ev.get("ended") is True
+            is_live = ev.get("live") is True and not has_ended_flag
 
-        # Use loose threshold for confirmed-ended sports, strict for others
-        early_threshold_high = 0.90 if has_ended_flag else 0.97
-        early_threshold_low = 0.10 if has_ended_flag else 0.03
+        # If the game is explicitly live, don't early-resolve
+        if is_live:
+            return False, None
 
-        if first_price > early_threshold_high or first_price < early_threshold_low:
-            event_concluded = _check_event_concluded(market)
-            if event_concluded:
-                if first_price > early_threshold_high:
-                    logger.info(
-                        f"Market {market.get('id')} early-resolved (price={first_price:.3f}, "
-                        f"event concluded, threshold={early_threshold_high}): UP/YES won"
-                    )
-                    return True, 1.0
-                else:
-                    logger.info(
-                        f"Market {market.get('id')} early-resolved (price={first_price:.3f}, "
-                        f"event concluded, threshold={early_threshold_low}): DOWN/NO won"
-                    )
-                    return True, 0.0
+        # Determine the threshold tier
+        now = datetime.now(timezone.utc)
+        end_date_str = market.get("endDate")
+        hours_past_end = 0.0
+        if end_date_str:
+            try:
+                end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                if now > end_date:
+                    hours_past_end = (now - end_date).total_seconds() / 3600.0
+            except (ValueError, TypeError):
+                pass
+
+        # Select threshold based on strongest signal
+        if has_ended_flag:
+            # Tier 1: API confirms event ended
+            early_threshold_high = 0.90
+            early_threshold_low = 0.10
+            tier = "ended-flag"
+        elif hours_past_end >= 6.0:
+            # Tier 4: 6+ hours past endDate — stale, force resolve
+            early_threshold_high = 0.70
+            early_threshold_low = 0.30
+            tier = f"stale-{hours_past_end:.1f}h"
+        elif hours_past_end >= 2.0:
+            # Tier 3: 2-6 hours past endDate
+            early_threshold_high = 0.80
+            early_threshold_low = 0.20
+            tier = f"overdue-{hours_past_end:.1f}h"
+        elif hours_past_end >= 0.5:
+            # Tier 2: 30min-2h past endDate
+            early_threshold_high = 0.90
+            early_threshold_low = 0.10
+            tier = f"recent-{hours_past_end:.1f}h"
+        else:
+            # Event hasn't ended yet — use very strict thresholds
+            early_threshold_high = 0.97
+            early_threshold_low = 0.03
+            tier = "pre-end"
+
+        if first_price > early_threshold_high:
+            # Only require event_concluded check for pre-end tier
+            if tier == "pre-end":
+                event_concluded = _check_event_concluded(market)
+                if not event_concluded:
+                    return False, None
+            logger.info(
+                f"Market {market.get('id')} early-resolved (price={first_price:.3f}, "
+                f"tier={tier}, threshold={early_threshold_high}): UP/YES won"
+            )
+            return True, 1.0
+        elif first_price < early_threshold_low:
+            if tier == "pre-end":
+                event_concluded = _check_event_concluded(market)
+                if not event_concluded:
+                    return False, None
+            logger.info(
+                f"Market {market.get('id')} early-resolved (price={first_price:.3f}, "
+                f"tier={tier}, threshold={early_threshold_low}): DOWN/NO won"
+            )
+            return True, 0.0
 
         return False, None
 

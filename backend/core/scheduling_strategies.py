@@ -488,6 +488,7 @@ async def settlement_job():
         from backend.core.settlement import (
             settle_pending_trades,
             update_bot_state_with_settlements,
+            reconcile_bot_state,
         )
 
         db = SessionLocal()
@@ -531,6 +532,8 @@ async def settlement_job():
                     notify_trade_settled(trade)
             else:
                 log_event("info", "No trades ready for settlement")
+
+            await reconcile_bot_state(db)
 
         finally:
             db.close()

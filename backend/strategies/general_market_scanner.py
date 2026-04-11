@@ -339,6 +339,16 @@ class GeneralMarketScanner(BaseStrategy):
             if entry_price < low_prob_threshold:
                 size = min(size, max_low_prob_size)
 
+            category_caps = {
+                "sports": 0.75,
+                "politics": 1.50,
+                "crypto": 2.00,
+            }
+            for cat_key, cap in category_caps.items():
+                if cat_key in market_categories or (is_sports and cat_key == "sports"):
+                    size = min(size, cap)
+                    break
+
             reasoning = getattr(ai_result, "reasoning", "") or ""
 
             decision = {
