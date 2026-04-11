@@ -24,13 +24,13 @@ class BondScannerStrategy(BaseStrategy):
     )
     category = "value"
     default_params = {
-        "min_price": 0.85,
-        "max_price": 0.98,
-        "min_volume": 5000,
-        "max_days_to_resolution": 14,
-        "min_days_to_resolution": 0.25,
-        "max_position_size": 8.0,
-        "max_concurrent_bonds": 5,
+        "min_price": 0.82,
+        "max_price": 0.92,
+        "min_volume": 10000,
+        "max_days_to_resolution": 10,
+        "min_days_to_resolution": 1.0,
+        "max_position_size": 5.0,
+        "max_concurrent_bonds": 4,
     }
 
     async def market_filter(self, markets: list[MarketInfo]) -> list[MarketInfo]:
@@ -202,24 +202,34 @@ class BondScannerStrategy(BaseStrategy):
             except Exception:
                 pass
 
-            size = min(max_position_size, bankroll * 0.10)
-            # Expected value: win_prob * profit_if_win - loss_prob * cost_if_loss
-            # win_prob must differ from market price for non-zero edge.
-            # Bond scanner targets near-certain outcomes (>92c), so our model
-            # assigns higher resolution probability based on proximity to
-            # expiry and high price (market already pricing in near-certainty,
-            # but we believe the true probability is slightly higher).
-            # Scale confidence boost by how close to 1.0 the price already is.
-            proximity_boost = (
-                qualifying_price - 0.80
-            ) * 0.3  # e.g. 0.90 -> 0.03, 0.95 -> 0.045 boost
-            win_prob = min(qualifying_price + max(proximity_boost, 0.01), 0.99)
+            # Conservative edge model:
+            # Assume the market is efficient at pricing probabilities above 0.90.
+            # Our edge comes from the natural bias: markets slightly underprice
+            # high-probability outcomes close to resolution (last 1-10 days)
+            # because liquidity providers want to exit. Cap our assumed boost
+            # conservatively so that a single loss doesn't wipe many wins.
+            #
+            # Key constraint: risk/reward ratio.
+            # At price=P, profit_if_win = (1-P)*size, loss_if_lose = P*size
+            # Require: win_prob * (1-P) - (1-win_prob) * P > 0
+            # i.e. win_prob > P  (we need to believe the TRUE prob exceeds market)
+            #
+            # Conservative boost: 1% for markets 0.82-0.88, tapering to 0.5% at 0.92
+            taper = max(0.0, (qualifying_price - 0.82) / 0.10)  # 0 at 0.82, 1 at 0.92
+            proximity_boost = 0.01 * (1.0 - 0.5 * taper)  # 1% at 0.82, 0.5% at 0.92
+            win_prob = min(qualifying_price + proximity_boost, 0.97)
             edge = round(
                 win_prob * (1.0 - qualifying_price)
                 - (1.0 - win_prob) * qualifying_price,
                 4,
             )
+            # Reject if estimated edge is below min_edge from config
+            if edge < 0.005:
+                continue
             confidence = win_prob
+            # Size proportional to edge — don't max-bet on tiny edges
+            kelly = edge / (1.0 - qualifying_price) if qualifying_price < 1.0 else 0.0
+            size = min(max_position_size, bankroll * 0.08, bankroll * kelly * 0.25)
 
             decision = {
                 "market_ticker": slug,
