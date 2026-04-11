@@ -59,3 +59,21 @@ htmlcov/
 
 # Backup files
 *.backup
+*.bak
+
+# Tool state
+.omc/
+.playwright-mcp/
+.sisyphus/
+
+# Screenshots (dev only)
+screenshots/
+
+# SQLite WAL/SHM files
+*.db-shm
+*.db-wal
+
+# Playwright
+frontend/playwright-report/
+frontend/test-results/
+frontend/e2e/
