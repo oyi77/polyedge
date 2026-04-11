@@ -167,12 +167,15 @@ async def _execute_trade(signal, state, db, trade_size, trades_executed: int) ->
 
     try:
         from backend.bot.notifier import notify_btc_signal
+
         notify_btc_signal(signal, None)
     except Exception:
         pass
 
     mode_label = (
-        f"[{settings.TRADING_MODE.upper()}] " if settings.TRADING_MODE != "paper" else ""
+        f"[{settings.TRADING_MODE.upper()}] "
+        if settings.TRADING_MODE != "paper"
+        else ""
     )
     log_event(
         "trade",
@@ -414,7 +417,9 @@ async def weather_scan_and_trade_job():
                     if signal.direction == "yes"
                     else signal.market.no_price
                 )
-                token_id = getattr(signal.market, "token_id", None) or signal.market.market_id
+                token_id = (
+                    getattr(signal.market, "token_id", None) or signal.market.market_id
+                )
 
                 decision = {
                     "market_ticker": signal.market.market_id,
@@ -631,6 +636,7 @@ async def auto_trader_job():
                 )
                 if result.executed:
                     from backend.core.strategy_executor import execute_decision
+
                     trade_size = min(50.0, (bankroll or 100.0) * 0.03)
                     decision = {
                         "market_ticker": sig.market_ticker,
@@ -713,7 +719,13 @@ async def strategy_cycle_job(strategy_name: str) -> None:
 
         strategy_cls = STRATEGY_REGISTRY.get(strategy_name)
         if not strategy_cls:
-            log_event("warning", f"Strategy {strategy_name} not in registry")
+            log_event(
+                "warning",
+                f"Strategy {strategy_name} not in registry — updating heartbeat anyway",
+            )
+            from backend.core.heartbeat import update_heartbeat
+
+            update_heartbeat(db, strategy_name)
             return
 
         params = {}
@@ -752,6 +764,10 @@ async def strategy_cycle_job(strategy_name: str) -> None:
             logger.info(
                 f"Strategy {strategy_name}: executed {len(trade_results)} trades"
             )
+
+        from backend.core.heartbeat import update_heartbeat
+
+        update_heartbeat(db, strategy_name)
 
         log_event(
             "info",

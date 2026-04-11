@@ -79,13 +79,12 @@ def schedule_strategy(strategy_name: str, interval_seconds: int) -> None:
     if scheduler is None or not scheduler.running:
         return
 
-    import functools
-
     job_id = f"strategy_{strategy_name}"
-    job_fn = functools.partial(strategy_cycle_job, strategy_name)
+    # functools.partial(async_fn) loses iscoroutinefunction → APScheduler won't await it
     scheduler.add_job(
-        job_fn,
+        strategy_cycle_job,
         IntervalTrigger(seconds=interval_seconds),
+        args=[strategy_name],
         id=job_id,
         replace_existing=True,
         max_instances=1,

@@ -4,6 +4,7 @@ Heartbeat and watchdog system for PolyEdge.
 Every strategy cycle updates a heartbeat row in BotState.
 The watchdog job checks all enabled strategies and alerts if any go silent.
 """
+
 import json
 import logging
 from datetime import datetime, timezone, timedelta
@@ -18,23 +19,75 @@ ALERT_DEDUP_WINDOW = timedelta(minutes=5)
 
 
 def update_heartbeat(db, strategy_name: str) -> None:
-    """Update the heartbeat timestamp for a strategy. Called after each cycle."""
+    """Update the heartbeat timestamp for a strategy. Called after each cycle.
+
+    Uses its own session to avoid interference with the caller's transaction
+    and retries once on failure (SQLite ``database is locked`` under concurrency).
+    """
+    import time
+    from sqlalchemy import event as sa_event, text
+    from backend.models.database import SessionLocal
+
+    local_db = SessionLocal()
+
+    # Set a generous busy_timeout so SQLite waits instead of raising "database is locked"
+    @sa_event.listens_for(local_db.bind, "connect", insert=True)
+    def _set_busy_timeout(dbapi_conn, connection_record):
+        dbapi_conn.execute("PRAGMA busy_timeout = 5000")
+
+    # For the current connection that's already established:
     try:
-        state = db.query(BotState).first()
+        local_db.execute(text("PRAGMA busy_timeout = 5000"))
+    except Exception:
+        pass
+
+    try:
+        state = local_db.query(BotState).first()
         if not state:
             return
         data = {}
         if state.misc_data:
             try:
-                data = json.loads(state.misc_data) if isinstance(state.misc_data, str) else dict(state.misc_data)
+                data = (
+                    json.loads(state.misc_data)
+                    if isinstance(state.misc_data, str)
+                    else dict(state.misc_data)
+                )
             except Exception:
                 logger.warning("Failed to parse misc_data JSON, resetting")
                 data = {}
-        data[f"{HEARTBEAT_PREFIX}{strategy_name}"] = datetime.now(timezone.utc).isoformat()
+        data[f"{HEARTBEAT_PREFIX}{strategy_name}"] = datetime.now(
+            timezone.utc
+        ).isoformat()
         state.misc_data = json.dumps(data)
-        db.commit()
+        local_db.commit()
     except Exception as e:
-        logger.debug(f"update_heartbeat failed for {strategy_name}: {e}")
+        logger.warning(f"update_heartbeat failed for {strategy_name}: {e}")
+        local_db.rollback()
+        time.sleep(0.2)
+        try:
+            state = local_db.query(BotState).first()
+            if state:
+                data = {}
+                if state.misc_data:
+                    try:
+                        data = (
+                            json.loads(state.misc_data)
+                            if isinstance(state.misc_data, str)
+                            else {}
+                        )
+                    except Exception:
+                        data = {}
+                data[f"{HEARTBEAT_PREFIX}{strategy_name}"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
+                state.misc_data = json.dumps(data)
+                local_db.commit()
+        except Exception as e2:
+            logger.error(f"update_heartbeat retry failed for {strategy_name}: {e2}")
+            local_db.rollback()
+    finally:
+        local_db.close()
 
 
 def get_strategy_health(db) -> list[dict]:
@@ -49,7 +102,11 @@ def get_strategy_health(db) -> list[dict]:
         data = {}
         if state and state.misc_data:
             try:
-                data = json.loads(state.misc_data) if isinstance(state.misc_data, str) else {}
+                data = (
+                    json.loads(state.misc_data)
+                    if isinstance(state.misc_data, str)
+                    else {}
+                )
             except Exception:
                 logger.warning("Failed to parse misc_data JSON, resetting")
                 data = {}
@@ -71,15 +128,19 @@ def get_strategy_health(db) -> list[dict]:
                     threshold = (cfg.interval_seconds or 60) * 2
                     healthy = lag < threshold
                 except Exception:
-                    logger.warning(f"Failed to check heartbeat for strategy {cfg.strategy_name}")
+                    logger.warning(
+                        f"Failed to check heartbeat for strategy {cfg.strategy_name}"
+                    )
 
-            result.append({
-                "name": cfg.strategy_name,
-                "last_heartbeat": last_hb_str,
-                "lag_seconds": round(lag, 1) if lag is not None else None,
-                "healthy": healthy,
-                "interval_seconds": cfg.interval_seconds or 60,
-            })
+            result.append(
+                {
+                    "name": cfg.strategy_name,
+                    "last_heartbeat": last_hb_str,
+                    "lag_seconds": round(lag, 1) if lag is not None else None,
+                    "healthy": healthy,
+                    "interval_seconds": cfg.interval_seconds or 60,
+                }
+            )
     except Exception as e:
         logger.error(f"get_strategy_health failed: {e}")
     return result
@@ -99,19 +160,23 @@ async def watchdog_job() -> None:
             if not h["healthy"] and h["lag_seconds"] is not None:
                 logger.error(
                     f"[WATCHDOG] Strategy {h['name']} heartbeat stale: "
-                    f"lag={h['lag_seconds']}s threshold={h['interval_seconds']*2}s",
+                    f"lag={h['lag_seconds']}s threshold={h['interval_seconds'] * 2}s",
                     extra={"component": "watchdog"},
                 )
                 record_decision(
-                    db, "watchdog", h["name"], "ERROR",
+                    db,
+                    "watchdog",
+                    h["name"],
+                    "ERROR",
                     signal_data={"lag_seconds": h["lag_seconds"], "healthy": False},
-                    reason=f"Heartbeat stale: {h['lag_seconds']:.0f}s since last cycle"
+                    reason=f"Heartbeat stale: {h['lag_seconds']:.0f}s since last cycle",
                 )
                 db.commit()
 
                 # Send Telegram alert if configured (with dedup window)
                 try:
                     from backend.config import settings
+
                     if settings.TELEGRAM_BOT_TOKEN:
                         last_alert = _recent_alerts.get(h["name"])
                         now_dt = datetime.now(timezone.utc)
@@ -132,6 +197,7 @@ def _send_telegram_alert_sync(message: str) -> None:
     """Fire-and-forget Telegram message (sync, for watchdog use)."""
     import httpx
     from backend.config import settings
+
     token = settings.TELEGRAM_BOT_TOKEN
     if not token:
         return
