@@ -17,7 +17,6 @@ from backend.strategies.base import (
     CycleResult,
     MarketInfo,
 )
-from backend.core.decisions import record_decision
 
 logger = logging.getLogger("trading_bot")
 
@@ -57,83 +56,4 @@ class BtcMomentumStrategy(BaseStrategy):
         # to [0.40, 0.60] produces near-zero edge that doesn't cover
         # transaction costs. Disabled until fundamental rework.
         logger.info(f"BtcMomentumStrategy: DISABLED — {EXPERIMENTAL_WARNING}")
-        return result
-
-        try:
-            # Delegate to existing scan logic
-            from backend.core.signals import scan_for_signals
-
-            signals = await scan_for_signals()
-            actionable = [s for s in signals if s.passes_threshold]
-
-            params = {**self.default_params, **(ctx.params or {})}
-            max_trade_fraction = params.get("max_trade_fraction", 0.03)
-
-            for signal in actionable:
-                decision = "BUY" if signal.passes_threshold else "SKIP"
-                market_id = getattr(signal.market, "market_id", "unknown")
-                record_decision(
-                    ctx.db,
-                    self.name,
-                    market_id,
-                    decision,
-                    confidence=signal.confidence,
-                    signal_data={
-                        "direction": signal.direction,
-                        "model_probability": signal.model_probability,
-                        "market_probability": signal.market_probability,
-                        "edge": signal.edge,
-                        "btc_price": getattr(signal, "btc_price", None),
-                        "experimental_warning": True,
-                    },
-                    reason=f"btc_momentum edge={signal.edge:.3f} conf={signal.confidence:.2f} [EXPERIMENTAL]",
-                )
-                result.decisions_recorded += 1
-                if decision == "BUY":
-                    result.trades_attempted += 1
-
-                    # Compute proper trade size from Kelly or fraction of bankroll
-                    bankroll = (
-                        ctx.settings.INITIAL_BANKROLL if ctx.mode != "paper" else 100.0
-                    )
-                    trade_size = (
-                        signal.suggested_size
-                        if signal.suggested_size > 0
-                        else bankroll * max_trade_fraction
-                    )
-                    trade_size = max(trade_size, 10.0)  # $10 minimum
-
-                    # entry_price: use the token price for the chosen direction
-                    if signal.direction == "up":
-                        entry_price = getattr(
-                            signal.market, "up_price", signal.market_probability
-                        )
-                    else:
-                        entry_price = getattr(
-                            signal.market, "down_price", 1.0 - signal.market_probability
-                        )
-
-                    result.decisions.append(
-                        {
-                            "decision": "BUY",
-                            "market_ticker": market_id,
-                            "direction": signal.direction,
-                            "confidence": signal.confidence,
-                            "edge": signal.edge,
-                            "size": trade_size,
-                            "entry_price": entry_price,
-                            "suggested_size": trade_size,
-                            "model_probability": signal.model_probability,
-                            "market_probability": signal.market_probability,
-                            "platform": "polymarket",
-                            "strategy_name": self.name,
-                            "slug": getattr(signal.market, "slug", None),
-                            "market_type": "btc",
-                        }
-                    )
-
-        except Exception as e:
-            result.errors.append(str(e))
-            logger.error(f"BtcMomentumStrategy error: {e}")
-
         return result

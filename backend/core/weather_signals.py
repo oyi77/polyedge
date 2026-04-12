@@ -113,8 +113,21 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     agreement_frac = max(above_count, len(members) - above_count) / len(members)
     confidence = min(0.9, agreement_frac)
 
-    # Kelly sizing
+    # Kelly sizing — use current bankroll from BotState, not static INITIAL_BANKROLL
     bankroll = settings.INITIAL_BANKROLL
+    try:
+        from backend.models.database import BotState, SessionLocal
+        _db = SessionLocal()
+        _state = _db.query(BotState).first()
+        if _state:
+            bankroll = (
+                float(_state.paper_bankroll or settings.INITIAL_BANKROLL)
+                if settings.TRADING_MODE == "paper"
+                else float(_state.bankroll or settings.INITIAL_BANKROLL)
+            )
+        _db.close()
+    except Exception:
+        pass
     suggested_size = calculate_kelly_size(
         edge=abs(edge),
         probability=model_yes_prob,

@@ -121,6 +121,15 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
         if not settled_trades:
             logger.info("No trades ready for settlement (markets still open)")
 
+        # Commit trade settlement state to DB so it persists even if
+        # update_bot_state_with_settlements() fails or is never called.
+        if settled_trades:
+            try:
+                db.commit()
+            except Exception as e:
+                logger.error(f"Failed to commit trade settlements: {e}")
+                db.rollback()
+
         return settled_trades
 
 

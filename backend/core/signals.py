@@ -211,7 +211,21 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
         0.95, (base_confidence + edge_component + composite_component) * vol_adjustment
     )
 
+    # Use current bankroll from BotState, not static INITIAL_BANKROLL
     bankroll = settings.INITIAL_BANKROLL
+    try:
+        from backend.models.database import BotState, SessionLocal
+        _db = SessionLocal()
+        _state = _db.query(BotState).first()
+        if _state:
+            bankroll = (
+                float(_state.paper_bankroll or settings.INITIAL_BANKROLL)
+                if settings.TRADING_MODE == "paper"
+                else float(_state.bankroll or settings.INITIAL_BANKROLL)
+            )
+        _db.close()
+    except Exception:
+        pass
     suggested_size = calculate_kelly_size(
         edge=abs(edge),
         probability=model_up_prob,
