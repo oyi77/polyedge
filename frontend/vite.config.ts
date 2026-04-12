@@ -8,11 +8,14 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'vendor-globe': ['three', 'react-globe.gl'],
-          'vendor-maps': ['mapbox-gl', 'react-map-gl', 'react-simple-maps', 'leaflet', 'react-leaflet', 'd3-geo'],
           'vendor-react': ['react', 'react-dom', 'react-router-dom', '@tanstack/react-query'],
           'vendor-charts': ['recharts'],
           'vendor-ui': ['framer-motion', 'lucide-react'],
+          'vendor-maps': ['mapbox-gl', 'react-map-gl', 'react-simple-maps', 'leaflet', 'react-leaflet', 'd3-geo'],
+          'vendor-three': ['three'],
+          'vendor-globe': ['react-globe.gl'],
+          'vendor-three-globe': ['three-globe'],
+          'vendor-globe-gl': ['globe.gl']
         },
       },
     },
