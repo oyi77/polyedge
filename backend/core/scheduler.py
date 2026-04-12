@@ -26,6 +26,7 @@ from backend.core.scheduling_strategies import (
     strategy_cycle_job,
 )
 from backend.core.auto_improve import auto_improve_job
+from backend.core.strategy_ranker import strategy_ranking_job
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trading_bot")
@@ -237,6 +238,16 @@ def start_scheduler():
             replace_existing=True,
             max_instances=1,
         )
+
+    # Strategy ranking job - weekly ranking and auto-disable
+    scheduler.add_job(
+        strategy_ranking_job,
+        IntervalTrigger(days=1),
+        id="strategy_ranking",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info("Scheduled daily strategy ranking job")
 
     # Auto-improvement job - learns from trade outcomes
     if settings.AUTO_IMPROVE_ENABLED:

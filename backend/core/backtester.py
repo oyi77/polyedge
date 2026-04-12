@@ -24,6 +24,7 @@ class BacktestConfig:
     max_position_fraction: float = 0.10
     max_total_exposure: float = 0.60
     daily_loss_limit: float = 15.0
+    slippage: float = 0.01  # Spread cost per trade in dollars
 
 
 @dataclass
@@ -50,6 +51,8 @@ class BacktestResult:
     win_rate: float
     max_drawdown: float
     sharpe_ratio: float
+    sortino_ratio: float
+    profit_factor: float
     avg_edge: float
     avg_trade_size: float
     final_bankroll: float
@@ -179,6 +182,10 @@ class BacktestEngine:
                 else:
                     pnl = -size
 
+            # Apply slippage cost (spread)
+            if pnl is not None:
+                pnl = round(pnl - self.config.slippage, 4)
+
             bt_trade = BacktestTrade(
                 timestamp=sig.timestamp,
                 market_ticker=sig.market_ticker,
@@ -288,6 +295,10 @@ class BacktestEngine:
                     scale = size / orig_size if orig_size > 0 else 1.0
                     pnl = trade.pnl * scale
 
+                # Apply slippage cost
+                if pnl is not None:
+                    pnl = round(pnl - self.config.slippage, 4)
+
                 bt_trade = BacktestTrade(
                     timestamp=trade.timestamp,
                     market_ticker=trade.market_ticker,
@@ -362,14 +373,37 @@ class BacktestEngine:
                 if dd > max_drawdown:
                     max_drawdown = dd
 
-        # Sharpe ratio: mean(returns) / std(returns) * sqrt(252)
+        # Compute per-trade returns (pnl / size = return per dollar risked)
+        returns = [t.pnl / t.size for t in settled if t.size > 0]
+
+        # Sharpe ratio: mean(returns) / std(returns) * sqrt(trades_per_year)
+        # Use trade-count-based annualization instead of calendar-day assumption
         sharpe_ratio = 0.0
-        pnls = [t.pnl for t in settled]
-        if len(pnls) > 1:
-            mean_r = statistics.mean(pnls)
-            std_r = statistics.stdev(pnls)
+        if len(returns) > 1:
+            mean_r = statistics.mean(returns)
+            std_r = statistics.stdev(returns)
             if std_r > 0:
-                sharpe_ratio = (mean_r / std_r) * (252**0.5)
+                # Estimate trades per year from sample
+                trades_per_year = max(len(returns), 52)  # at least weekly
+                sharpe_ratio = (mean_r / std_r) * (trades_per_year**0.5)
+
+        # Sortino ratio: mean(returns) / downside_std * sqrt(trades_per_year)
+        sortino_ratio = 0.0
+        if len(returns) > 1:
+            mean_r = statistics.mean(returns)
+            downside = [r for r in returns if r < 0]
+            if len(downside) > 1:
+                downside_std = statistics.stdev(downside)
+                if downside_std > 0:
+                    trades_per_year = max(len(returns), 52)
+                    sortino_ratio = (mean_r / downside_std) * (trades_per_year**0.5)
+
+        # Profit Factor: gross wins / abs(gross losses)
+        gross_wins = sum(t.pnl for t in wins)
+        gross_losses = abs(sum(t.pnl for t in losses)) if losses else 0.0
+        profit_factor = gross_wins / gross_losses if gross_losses > 0 else (
+            float('inf') if gross_wins > 0 else 0.0
+        )
 
         return {
             "total_pnl": round(total_pnl, 4),
@@ -378,6 +412,8 @@ class BacktestEngine:
             "win_rate": round(win_rate, 4),
             "max_drawdown": round(max_drawdown, 4),
             "sharpe_ratio": round(sharpe_ratio, 4),
+            "sortino_ratio": round(sortino_ratio, 4),
+            "profit_factor": round(min(profit_factor, 999.0), 4),
             "avg_edge": round(avg_edge, 4),
             "avg_trade_size": round(avg_trade_size, 4),
             "final_bankroll": round(final_bankroll, 4),

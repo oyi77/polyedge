@@ -817,4 +817,14 @@ async def process_settled_trade(
             f"[settlement_helpers.process_settled_trade] {type(e).__name__}: BigBrain write_trade_outcome failed: {e}"
         )
 
+    # Record calibration outcome for model validation
+    try:
+        from backend.core.calibration_tracker import calibration_tracker
+
+        calibration_tracker.record_outcome(db, trade.market_ticker, settlement_value)
+    except Exception as e:
+        logger.debug(
+            f"[settlement_helpers.process_settled_trade] {type(e).__name__}: Calibration record failed: {e}"
+        )
+
     return True

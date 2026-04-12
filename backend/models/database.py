@@ -404,6 +404,45 @@ class AuditLog(Base):
     details = Column(JSON, nullable=True)
 
 
+class Experiment(Base):
+    """Track parameter experiments for each strategy."""
+    __tablename__ = "experiments"
+    id = Column(Integer, primary_key=True, index=True)
+    strategy_name = Column(String, nullable=False, index=True)
+    params_json = Column(JSON, nullable=False)
+    metrics_json = Column(JSON, nullable=True)
+    status = Column(String, default="candidate")  # candidate|active|retired
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    promoted_at = Column(DateTime, nullable=True)
+    notes = Column(String, nullable=True)
+
+
+class EquitySnapshot(Base):
+    """Daily equity curve snapshots for performance tracking."""
+    __tablename__ = "equity_snapshots"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    bankroll = Column(Float, nullable=False)
+    total_pnl = Column(Float, default=0.0)
+    open_exposure = Column(Float, default=0.0)
+    strategy_allocations = Column(JSON, nullable=True)
+    trade_count = Column(Integer, default=0)
+    win_count = Column(Integer, default=0)
+
+
+class CalibrationRecord(Base):
+    """Track predicted probability vs actual outcome for model calibration."""
+    __tablename__ = "calibration_records"
+    id = Column(Integer, primary_key=True, index=True)
+    strategy = Column(String, nullable=False, index=True)
+    market_ticker = Column(String, nullable=False)
+    predicted_prob = Column(Float, nullable=False)
+    direction = Column(String, nullable=False)
+    actual_outcome = Column(String, nullable=True)  # "win"|"loss"|None (pending)
+    settlement_value = Column(Float, nullable=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)

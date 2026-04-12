@@ -523,6 +523,16 @@ class GeneralMarketScanner(BaseStrategy):
             except Exception as e:
                 ctx.logger.warning(f"[general_scanner] DecisionLog write failed: {e}")
 
+            # Record prediction for calibration tracking
+            try:
+                from backend.core.calibration_tracker import calibration_tracker
+
+                calibration_tracker.record_prediction(
+                    ctx.db, self.name, slug, ai_prob, direction,
+                )
+            except Exception as e:
+                ctx.logger.debug(f"[general_scanner] Calibration record failed: {e}")
+
         try:
             ctx.db.commit()
         except Exception as e:

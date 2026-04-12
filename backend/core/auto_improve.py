@@ -37,6 +37,19 @@ async def auto_improve_job():
             f"Performance: {analysis['total_trades']} trades, {analysis['win_rate']:.1%} win rate, ${analysis['pnl']:.2f} P&L",
         )
 
+        # Min sample gate: skip parameter changes with insufficient data
+        MIN_TRADES_FOR_OPTIMIZATION = 30
+        if analysis["total_trades"] < MIN_TRADES_FOR_OPTIMIZATION:
+            log_event(
+                "info",
+                f"Auto-improve: only {analysis['total_trades']} trades "
+                f"(need {MIN_TRADES_FOR_OPTIMIZATION}), skipping parameter optimization"
+            )
+            await _write_outcomes_to_brain(db, bigbrain)
+            await _write_market_insights(db, bigbrain)
+            log_event("success", "Auto-improvement cycle complete (data collection only)")
+            return
+
         await _write_outcomes_to_brain(db, bigbrain)
 
         suggestions = await optimizer.get_suggestions(db)
@@ -45,6 +58,22 @@ async def auto_improve_job():
             params = suggestions.get("suggestions", {})
             reasoning = params.get("reasoning", "No reasoning provided")
             confidence = params.get("confidence", "low")
+
+            # Track parameter changes as experiments
+            try:
+                from backend.core.experiment_tracker import experiment_tracker
+                exp_id = experiment_tracker.create_experiment(
+                    db, "auto_improve", params,
+                    notes=f"AI suggested ({confidence}): {reasoning[:200]}",
+                )
+                experiment_tracker.record_metrics(db, exp_id, {
+                    "win_rate": analysis["win_rate"],
+                    "pnl": analysis["pnl"],
+                    "total_trades": analysis["total_trades"],
+                    "confidence": confidence,
+                })
+            except Exception as e:
+                logger.debug(f"Experiment tracking failed: {e}")
 
             await bigbrain.write_strategy_insight(
                 strategy="parameter_optimizer",
