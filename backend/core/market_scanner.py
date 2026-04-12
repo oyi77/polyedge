@@ -1,4 +1,5 @@
 """Polymarket market scanner — fetches active markets from Gamma API."""
+
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -35,9 +36,11 @@ async def fetch_all_active_markets(
     results: list[MarketInfo] = []
     offset = 0
     page_size = 100
+    max_pages = 5
 
     async with httpx.AsyncClient(timeout=timeout) as client:
-        while True:
+        pages_fetched = 0
+        while pages_fetched < max_pages:
             if limit and len(results) >= limit:
                 break
 
@@ -58,22 +61,28 @@ async def fetch_all_active_markets(
                 try:
                     tokens = m.get("tokens", [])
                     yes_price = float(tokens[0].get("price", 0.5)) if tokens else 0.5
-                    no_price = float(tokens[1].get("price", 0.5)) if len(tokens) > 1 else 1.0 - yes_price
+                    no_price = (
+                        float(tokens[1].get("price", 0.5))
+                        if len(tokens) > 1
+                        else 1.0 - yes_price
+                    )
                     # Clamp to valid prediction market range — API can return 0 or values >1
                     yes_price = max(0.01, min(0.99, yes_price))
                     no_price = max(0.01, min(0.99, no_price))
-                    results.append(MarketInfo(
-                        ticker=m.get("conditionId") or m.get("id", ""),
-                        slug=m.get("slug", ""),
-                        category=m.get("category", ""),
-                        end_date=m.get("endDate"),
-                        volume=float(m.get("volume", 0) or 0),
-                        liquidity=float(m.get("liquidity", 0) or 0),
-                        yes_price=yes_price,
-                        no_price=no_price,
-                        question=m.get("question", ""),
-                        metadata=m,
-                    ))
+                    results.append(
+                        MarketInfo(
+                            ticker=m.get("conditionId") or m.get("id", ""),
+                            slug=m.get("slug", ""),
+                            category=m.get("category", ""),
+                            end_date=m.get("endDate"),
+                            volume=float(m.get("volume", 0) or 0),
+                            liquidity=float(m.get("liquidity", 0) or 0),
+                            yes_price=yes_price,
+                            no_price=no_price,
+                            question=m.get("question", ""),
+                            metadata=m,
+                        )
+                    )
                 except Exception as e:
                     logger.debug(f"market_scanner: skipping malformed market: {e}")
 
@@ -81,6 +90,7 @@ async def fetch_all_active_markets(
                 break
 
             offset += page_size
+            pages_fetched += 1
 
     logger.info(f"market_scanner: fetched {len(results)} active markets")
     return results[:limit] if limit else results
@@ -91,10 +101,11 @@ async def fetch_markets_by_keywords(
     limit: int | None = None,
 ) -> list[MarketInfo]:
     """Filter active markets by keyword match on question or slug."""
-    all_markets = await fetch_all_active_markets(limit=limit or 2000)
+    all_markets = await fetch_all_active_markets(limit=limit or 500)
     kw_lower = [k.lower() for k in keywords]
     return [
-        m for m in all_markets
+        m
+        for m in all_markets
         if any(kw in m.question.lower() or kw in m.slug.lower() for kw in kw_lower)
     ]
 
@@ -109,13 +120,15 @@ async def _fetch_page(client: httpx.AsyncClient, params: dict) -> list[dict]:
             if resp.status_code == 200:
                 return resp.json()
             if resp.status_code >= 500:
-                logger.warning(f"market_scanner: Gamma {resp.status_code} on attempt {attempt+1}")
+                logger.warning(
+                    f"market_scanner: Gamma {resp.status_code} on attempt {attempt + 1}"
+                )
                 if attempt < 2:
                     await asyncio.sleep(1.0 * (attempt + 1))
                     continue
             return []
         except httpx.TimeoutException:
-            logger.warning(f"market_scanner: timeout on attempt {attempt+1}")
+            logger.warning(f"market_scanner: timeout on attempt {attempt + 1}")
             if attempt < 2:
                 await asyncio.sleep(1.0)
     return []

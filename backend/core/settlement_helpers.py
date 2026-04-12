@@ -208,18 +208,35 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
             tier = "ended-flag"
         elif hours_past_end >= 48.0:
             # Tier 6: 48+ hours past endDate — extremely stale.
+            logger.info(
+                f"Market {market.get('id')} Tier6 check: market_still_open={market_still_open}, "
+                f"hours_past_end={hours_past_end:.0f}, first_price={first_price:.4f}"
+            )
             if market_still_open:
-                # Guard: endDate may be misleading (group/series date).
-                # Don't resolve with the loosest thresholds when market
-                # is still actively trading.
-                logger.info(
-                    f"Market {market.get('id')} skipping zombie resolution: "
-                    f"still active, endDate {hours_past_end:.0f}h ago (likely misleading)"
-                )
-                return False, None
-            early_threshold_high = 0.52
-            early_threshold_low = 0.48
-            tier = f"zombie-{hours_past_end:.0f}h"
+                # Exception: if >200h past endDate AND price is extreme (>0.90
+                # or <0.10), the market is clearly resolved — Polymarket just
+                # hasn't officially closed it.  Resolve with tight thresholds.
+                if hours_past_end >= 200.0 and (
+                    first_price > 0.90 or first_price < 0.10
+                ):
+                    early_threshold_high = 0.90
+                    early_threshold_low = 0.10
+                    tier = f"extreme-zombie-{hours_past_end:.0f}h"
+                    logger.info(
+                        f"Market {market.get('id')} extreme-zombie override: "
+                        f"{hours_past_end:.0f}h past end, price={first_price:.4f}, "
+                        f"resolving with {early_threshold_high}/{early_threshold_low}"
+                    )
+                else:
+                    logger.info(
+                        f"Market {market.get('id')} skipping zombie resolution: "
+                        f"still active, endDate {hours_past_end:.0f}h ago (likely misleading)"
+                    )
+                    return False, None
+            else:
+                early_threshold_high = 0.52
+                early_threshold_low = 0.48
+                tier = f"zombie-{hours_past_end:.0f}h"
         elif hours_past_end >= 12.0:
             # Tier 5: 12-48 hours past endDate — very stale, aggressive resolve
             early_threshold_high = 0.55

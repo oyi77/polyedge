@@ -103,9 +103,9 @@ class WalletWatcher:
             db.close()
 
     async def _fetch_all_trades(
-        self, wallet: str, page_size: int = 100, max_pages: int = 50
+        self, wallet: str, page_size: int = 100, max_pages: int = 5
     ) -> list[dict]:
-        """Fetch all trades for a wallet, paginating until no more results (max 50 pages = 5000 trades)."""
+        """Fetch trades for a wallet, paginating up to max_pages."""
         all_trades: list[dict] = []
         offset = 0
         pages_fetched = 0

@@ -94,7 +94,8 @@ class GeneralMarketScanner(BaseStrategy):
         # In the 0.40-0.60 zone, allow either direction.
         "market_agree_enabled": True,
         "market_agree_low": 0.40,  # Below this: only NO trades allowed
-        "market_agree_high": 0.60,  # Above this: only YES trades allowed
+        "market_agree_high": 0.60,
+        "min_expected_profit": 0.30,
     }
 
     async def run_cycle(self, ctx: StrategyContext) -> CycleResult:
@@ -443,6 +444,18 @@ class GeneralMarketScanner(BaseStrategy):
                 if cat_key in market_categories or (is_sports and cat_key == "sports"):
                     size = min(size, cap)
                     break
+
+            min_profit = float(params.get("min_expected_profit", 0.30))
+            if entry_price > 0:
+                expected_profit = (size / entry_price) - size
+                if expected_profit < min_profit:
+                    ctx.logger.info(
+                        f"[general_scanner] FILTER:PROFIT_LOW {slug}: "
+                        f"expected_profit=${expected_profit:.2f} < min=${min_profit:.2f} "
+                        f"(size=${size:.2f}, entry={entry_price:.4f})"
+                    )
+                    rejected_rr += 1
+                    continue
 
             reasoning = getattr(ai_result, "reasoning", "") or ""
 
