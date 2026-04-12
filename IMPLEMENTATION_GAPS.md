@@ -22,6 +22,7 @@ This document tracks what is implemented, what was intentionally de-scoped, and 
 - APScheduler for recurring strategy scans
 - Prometheus metrics endpoint and monitoring middleware
 - WebSocket market data client (`ws_client.py`)
+- **AGI Intelligence Layer**: Research Pipeline, Debate Engine, Self-Review, and Self-Improvement modules
 
 ### Intentionally De-Scoped
 - **Email notifications**: `notification_router.py` routes to Telegram and Discord only. Email channel raises `NotImplementedError` — this is a deliberate design choice, not a bug. Telegram and Discord cover all notification needs.

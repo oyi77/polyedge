@@ -204,6 +204,17 @@ polyedge/
 
 ---
 
+## AGI Modules
+
+The system includes an AGI-inspired intelligence layer for autonomous market analysis and strategy optimization:
+
+- **Research Pipeline** — Automated gathering of market data, news sentiment, and social signals. Uses persistent storage for historical context.
+- **Debate Engine** — Multi-agent consensus system where different LLM personas argue for and against specific trades to reduce bias.
+- **Self-Review** — Post-trade analysis module that evaluates execution quality and signal accuracy.
+- **Self-Improvement** — Feedback loop that adjusts strategy parameters and AI prompts based on historical performance.
+
+---
+
 ## Infrastructure
 
 - **Database**: SQLite (primary), PostgreSQL-ready via SQLAlchemy ORM
