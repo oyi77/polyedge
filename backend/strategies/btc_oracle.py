@@ -190,6 +190,11 @@ class BtcOracleStrategy(BaseStrategy):
                 result.trades_attempted += 1
                 # Populate result.decisions so scan_and_trade_job() / strategy_cycle_job()
                 # can feed them into strategy_executor.execute_decisions() for paper + live mode.
+                oracle_entry_price = (
+                    market_mid
+                    if direction in ("yes", "up")
+                    else round(1.0 - market_mid, 6)
+                )
                 result.decisions.append(
                     {
                         "decision": "BUY",
@@ -198,7 +203,7 @@ class BtcOracleStrategy(BaseStrategy):
                         "confidence": min(1.0, max(0.0, edge + min_edge)),
                         "edge": edge,
                         "size": ctx.params.get("max_position_usd", 50),
-                        "entry_price": market_mid,
+                        "entry_price": oracle_entry_price,
                         "suggested_size": ctx.params.get("max_position_usd", 50),
                         "model_probability": 1.0 if direction == "yes" else 0.0,
                         "market_probability": market_mid,

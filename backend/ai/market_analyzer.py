@@ -29,16 +29,25 @@ def _build_prompt(
     category: str = "",
     context: str = "",
 ) -> str:
-    prompt = f"""You are an expert prediction market analyst. Estimate the TRUE probability this event resolves YES.
+    prompt = f"""You are a prediction market analyst evaluating whether a market is mispriced.
 
-YOUR JOB: Form an INDEPENDENT probability estimate based on your knowledge and reasoning.
-The market price is shown for reference, but you must think independently — markets can be wrong.
+TASK: Estimate the TRUE probability this event resolves YES based on available facts.
 
-Think about:
-- Base rates: How often do events like this happen historically?
-- Current conditions: What factors favor YES vs NO?
-- Time horizon: How much can change before resolution?
-- Asymmetric information: What might the market be missing?
+CRITICAL RULES:
+1. Think about the ACTUAL LIKELIHOOD of the event, not what the market says.
+2. If you genuinely believe the market is correct, say so — return the market price.
+3. If you have factual evidence the market is WRONG, give your honest estimate.
+4. DO NOT anchor to the market price. The market CAN be wrong, especially on:
+   - Events where new information hasn't been priced in yet
+   - Low-volume markets with thin liquidity
+   - Events with clear factual answers (e.g. "Has X already happened?")
+   - Time-bound events near their deadline
+5. For sports/games: the market is usually right. Return the market price unless you have strong reason not to.
+6. Your CONFIDENCE should reflect how certain you are in YOUR estimate:
+   - 0.9+: You have near-certain factual evidence
+   - 0.7-0.9: Strong evidence supporting your view
+   - 0.5-0.7: Moderate evidence, some uncertainty
+   - Below 0.5: Low confidence, mostly guessing — RETURN THE MARKET PRICE INSTEAD
 
 QUESTION: {question}
 CURRENT YES PRICE: {current_price:.4f}
@@ -49,10 +58,10 @@ CURRENT YES PRICE: {current_price:.4f}
         prompt += f"\nCONTEXT: {context}"
     prompt += """
 
-You MUST respond with EXACTLY these three lines and nothing else:
-PROBABILITY: <number between 0.01 and 0.99>
-CONFIDENCE: <number between 0.0 and 1.0>
-REASONING: <one sentence with your key insight>"""
+Respond with EXACTLY these three lines:
+PROBABILITY: <your honest estimate, 0.01 to 0.99>
+CONFIDENCE: <how sure you are in YOUR estimate, 0.0 to 1.0>
+REASONING: <one sentence explaining WHY you agree or disagree with the market>"""
     return prompt
 
 
@@ -148,18 +157,9 @@ def _parse_ai_response(response: str) -> tuple[float, float, str]:
             conf = 0.5
         return (prob, conf, reasoning or response[:500])
 
-    # Strategy 3: Last resort — scan for any standalone decimal between 0 and 1
-    # that looks like a probability (in the first few lines)
-    first_lines = "\n".join(response.split("\n")[:10])
-    decimals = re.findall(r"\b(0\.\d{1,4})\b", first_lines)
-    if decimals:
-        try:
-            prob = float(decimals[0])
-            if 0.01 <= prob <= 0.99:
-                logger.info(f"AI response parsed via decimal fallback: prob={prob}")
-                return (prob, 0.3, response[:500])
-        except ValueError:
-            pass
+    # Strategy 3: REMOVED — blind decimal fallback was producing unreliable
+    # probabilities (picking arbitrary numbers from reasoning text).
+    # Better to return a clear failure signal so callers can skip.
 
     return (0.5, 0.0, response)
 
@@ -184,9 +184,10 @@ async def _call_groq(prompt: str) -> Optional[str]:
                 {
                     "role": "system",
                     "content": (
-                        "You are an expert prediction market analyst. "
-                        "Form independent probability estimates using base rates, current conditions, and reasoning. "
-                        "The market price is a reference point, not gospel — think for yourself. "
+                        "You are a prediction market analyst. "
+                        "Estimate the TRUE probability based on facts, not the market price. "
+                        "If you have strong factual evidence the market is wrong, give your honest estimate. "
+                        "If you are unsure, return the market price with low confidence. "
                         "Always respond with EXACTLY three lines:\n"
                         "PROBABILITY: <number>\nCONFIDENCE: <number>\nREASONING: <one sentence>\n"
                         "Never include any other text."
@@ -195,7 +196,7 @@ async def _call_groq(prompt: str) -> Optional[str]:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=250,
-            temperature=0.5,
+            temperature=0.2,
         )
 
         result = response.choices[0].message.content.strip()

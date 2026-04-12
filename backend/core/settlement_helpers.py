@@ -213,41 +213,45 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
                 f"hours_past_end={hours_past_end:.0f}, first_price={first_price:.4f}"
             )
             if market_still_open:
-                # Exception: if >200h past endDate AND price is extreme (>0.90
-                # or <0.10), the market is clearly resolved — Polymarket just
-                # hasn't officially closed it.  Resolve with tight thresholds.
-                if hours_past_end >= 200.0 and (
-                    first_price > 0.90 or first_price < 0.10
-                ):
-                    early_threshold_high = 0.90
-                    early_threshold_low = 0.10
-                    tier = f"extreme-zombie-{hours_past_end:.0f}h"
-                    logger.info(
-                        f"Market {market.get('id')} extreme-zombie override: "
-                        f"{hours_past_end:.0f}h past end, price={first_price:.4f}, "
-                        f"resolving with {early_threshold_high}/{early_threshold_low}"
-                    )
+                # Progressive zombie resolution: the longer past endDate,
+                # the more we trust the current price as the true outcome.
+                # Polymarket often leaves markets active for days/weeks
+                # after the event has clearly concluded.
+                if hours_past_end >= 200.0:
+                    # 200h+ (>8 days): very aggressive — market has decided
+                    early_threshold_high = 0.55
+                    early_threshold_low = 0.45
+                    tier = f"deep-zombie-{hours_past_end:.0f}h"
+                elif hours_past_end >= 100.0:
+                    # 100-200h (4-8 days): aggressive
+                    early_threshold_high = 0.60
+                    early_threshold_low = 0.40
+                    tier = f"stale-zombie-{hours_past_end:.0f}h"
                 else:
-                    logger.info(
-                        f"Market {market.get('id')} skipping zombie resolution: "
-                        f"still active, endDate {hours_past_end:.0f}h ago (likely misleading)"
-                    )
-                    return False, None
+                    # 48-100h (2-4 days): moderate
+                    early_threshold_high = 0.65
+                    early_threshold_low = 0.35
+                    tier = f"zombie-open-{hours_past_end:.0f}h"
+                logger.info(
+                    f"Market {market.get('id')} zombie resolution: "
+                    f"{hours_past_end:.0f}h past end, price={first_price:.4f}, "
+                    f"resolving with {early_threshold_high}/{early_threshold_low}"
+                )
             else:
                 early_threshold_high = 0.52
                 early_threshold_low = 0.48
                 tier = f"zombie-{hours_past_end:.0f}h"
         elif hours_past_end >= 12.0:
             # Tier 5: 12-48 hours past endDate — very stale, aggressive resolve
-            early_threshold_high = 0.55
-            early_threshold_low = 0.45
+            early_threshold_high = 0.52
+            early_threshold_low = 0.48
             tier = f"very-stale-{hours_past_end:.1f}h"
         elif hours_past_end >= 6.0:
             # Tier 4: 6-12 hours past endDate — stale, force resolve
-            # Lowered from 0.65/0.35 to catch the "ambiguous zone" (0.35-0.65)
-            # where markets like weather bets sit for hours at ~0.55-0.60
-            early_threshold_high = 0.57
-            early_threshold_low = 0.43
+            # Lowered to catch the "ambiguous zone" (0.46-0.54)
+            # where markets like weather/politics sit for hours at ~0.50-0.55
+            early_threshold_high = 0.54
+            early_threshold_low = 0.46
             tier = f"stale-{hours_past_end:.1f}h"
         elif hours_past_end >= 2.0:
             # Tier 3: 2-6 hours past endDate — lowered to 0.70/0.30 because

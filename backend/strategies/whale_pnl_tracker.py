@@ -139,6 +139,17 @@ class WhalePNLTrackerStrategy(BaseStrategy):
                         )
                         direction = "up" if position.side == "YES" else "down"
 
+                        # entry_price = cost per share for the direction we buy.
+                        # Without live orderbook data we fall back to 0.50 (fair
+                        # coin).  This is direction-aware: YES share costs
+                        # market_prob, NO share costs 1 - market_prob.
+                        # TODO: fetch real YES price from ctx.clob when
+                        # condition_id maps to a real Polymarket market.
+                        market_prob = 0.50
+                        entry_price = (
+                            market_prob if position.side == "YES" else 1.0 - market_prob
+                        )
+
                         result.decisions.append(
                             {
                                 "decision": "BUY",
@@ -147,10 +158,10 @@ class WhalePNLTrackerStrategy(BaseStrategy):
                                 "confidence": min(whale_score, 1.0),
                                 "edge": whale_score * 0.1,
                                 "size": position.size * copy_fraction,
-                                "entry_price": 0.5,
+                                "entry_price": entry_price,
                                 "suggested_size": position.size * copy_fraction,
                                 "model_probability": min(whale_score, 1.0),
-                                "market_probability": 0.5,
+                                "market_probability": market_prob,
                                 "platform": "polymarket",
                                 "strategy_name": self.name,
                                 "reasoning": f"whale {position.wallet[:8]}... score={whale_score:.2f} side={position.side}",

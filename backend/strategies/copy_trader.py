@@ -172,6 +172,7 @@ class CopyTraderStrategy(BaseStrategy):
         try:
             from backend.models.database import SessionLocal, BotState
             from backend.config import settings as _settings
+
             db = SessionLocal()
             try:
                 state = db.query(BotState).first()
@@ -288,24 +289,30 @@ class CopyTraderStrategy(BaseStrategy):
             result.trades_attempted = len(signals) if signals else 0
 
             # Populate result.decisions so strategy_executor can place trades
-            for signal in (signals or []):
+            for signal in signals or []:
                 confidence = signal.trader_score / 100.0 if signal.trader_score else 0.5
                 edge = abs(signal.market_price - 0.5) if signal.market_price else 0.0
-                result.decisions.append({
-                    "decision": "BUY",
-                    "market_ticker": signal.source_trade.condition_id,
-                    "direction": signal.our_side.lower(),
-                    "confidence": confidence,
-                    "edge": edge,
-                    "size": signal.our_size,
-                    "entry_price": signal.market_price,
-                    "suggested_size": signal.our_size,
-                    "model_probability": confidence,
-                    "market_probability": signal.market_price,
-                    "platform": "polymarket",
-                    "strategy_name": "copy_trader",
-                    "reasoning": signal.reasoning,
-                })
+                copy_direction = signal.our_side.lower()
+                copy_entry_price = signal.market_price
+                if copy_direction in ("no", "down") and signal.market_price:
+                    copy_entry_price = round(1.0 - signal.market_price, 6)
+                result.decisions.append(
+                    {
+                        "decision": "BUY",
+                        "market_ticker": signal.source_trade.condition_id,
+                        "direction": copy_direction,
+                        "confidence": confidence,
+                        "edge": edge,
+                        "size": signal.our_size,
+                        "entry_price": copy_entry_price,
+                        "suggested_size": signal.our_size,
+                        "model_probability": confidence,
+                        "market_probability": signal.market_price,
+                        "platform": "polymarket",
+                        "strategy_name": "copy_trader",
+                        "reasoning": signal.reasoning,
+                    }
+                )
 
         except Exception as e:
             result.errors.append(str(e))

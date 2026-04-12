@@ -1,4 +1,5 @@
 """Tests for settlement P&L calculation and trade processing logic."""
+
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -74,7 +75,9 @@ def _make_trade(
 
 class TestPnlWin:
     def test_up_position_wins_at_settlement_1(self):
-        """Bought UP at 0.40, market settled UP (1.0) → profit."""
+        """Bought UP at 0.40, market settled UP (1.0) → profit.
+        size is dollars spent, shares = size / entry_price.
+        Win PnL = (size / entry_price) - size."""
         trade = MagicMock(spec=Trade)
         trade.direction = "up"
         trade.entry_price = 0.40
@@ -82,12 +85,12 @@ class TestPnlWin:
 
         pnl = calculate_pnl(trade, settlement_value=1.0)
 
-        expected = 10.0 * (1.0 - 0.40)  # $6.00
+        expected = (10.0 / 0.40) - 10.0  # 25 - 10 = $15.00
         assert pnl == pytest.approx(expected)
         assert pnl > 0.0
 
     def test_down_position_wins_at_settlement_0(self):
-        """Bought DOWN at 0.40 (entry for down side), market settled DOWN (0.0) → profit."""
+        """Bought DOWN at 0.40, market settled DOWN (0.0) → profit."""
         trade = MagicMock(spec=Trade)
         trade.direction = "down"
         trade.entry_price = 0.40
@@ -95,14 +98,14 @@ class TestPnlWin:
 
         pnl = calculate_pnl(trade, settlement_value=0.0)
 
-        expected = 10.0 * (1.0 - 0.40)
+        expected = (10.0 / 0.40) - 10.0
         assert pnl == pytest.approx(expected)
         assert pnl > 0.0
 
 
 class TestPnlLoss:
     def test_up_position_loses_at_settlement_0(self):
-        """Bought UP at 0.40, market settled DOWN (0.0) → loss."""
+        """Bought UP at 0.40, market settled DOWN (0.0) → loss = -size."""
         trade = MagicMock(spec=Trade)
         trade.direction = "up"
         trade.entry_price = 0.40
@@ -110,12 +113,12 @@ class TestPnlLoss:
 
         pnl = calculate_pnl(trade, settlement_value=0.0)
 
-        expected = -10.0 * 0.40  # -$4.00
+        expected = -10.0
         assert pnl == pytest.approx(expected)
         assert pnl < 0.0
 
     def test_down_position_loses_at_settlement_1(self):
-        """Bought DOWN at 0.40, market settled UP (1.0) → loss."""
+        """Bought DOWN at 0.40, market settled UP (1.0) → loss = -size."""
         trade = MagicMock(spec=Trade)
         trade.direction = "down"
         trade.entry_price = 0.40
@@ -123,19 +126,19 @@ class TestPnlLoss:
 
         pnl = calculate_pnl(trade, settlement_value=1.0)
 
-        expected = -10.0 * 0.40
+        expected = -10.0
         assert pnl == pytest.approx(expected)
         assert pnl < 0.0
 
     def test_loss_magnitude(self):
-        """Loss magnitude is size * entry_price."""
+        """Loss magnitude is always the full size (dollars spent)."""
         trade = MagicMock(spec=Trade)
         trade.direction = "up"
         trade.entry_price = 0.55
         trade.size = 20.0
 
         pnl = calculate_pnl(trade, settlement_value=0.0)
-        assert pnl == pytest.approx(-20.0 * 0.55)
+        assert pnl == pytest.approx(-20.0)
 
 
 class TestPnlPush:
@@ -182,7 +185,9 @@ class TestDirectionAliases:
         trade_yes.size = 10.0
 
         for sv in [0.0, 1.0]:
-            assert calculate_pnl(trade_up, sv) == pytest.approx(calculate_pnl(trade_yes, sv))
+            assert calculate_pnl(trade_up, sv) == pytest.approx(
+                calculate_pnl(trade_yes, sv)
+            )
 
     def test_no_direction_treated_as_down(self):
         """Direction 'no' behaves identically to 'down'."""
@@ -197,7 +202,9 @@ class TestDirectionAliases:
         trade_no.size = 10.0
 
         for sv in [0.0, 1.0]:
-            assert calculate_pnl(trade_down, sv) == pytest.approx(calculate_pnl(trade_no, sv))
+            assert calculate_pnl(trade_down, sv) == pytest.approx(
+                calculate_pnl(trade_no, sv)
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +218,9 @@ class TestBankrollUpdate:
         """After settling a winning trade, paper_bankroll should increase."""
         from backend.core.settlement import update_bot_state_with_settlements
 
-        # Seed state
         state = BotState(
             bankroll=settings.INITIAL_BANKROLL,
-            paper_bankroll=settings.INITIAL_BANKROLL,
+            paper_bankroll=settings.INITIAL_BANKROLL - 10.0,  # stake deducted at open
             paper_pnl=0.0,
             paper_trades=0,
             paper_wins=0,
@@ -229,13 +235,14 @@ class TestBankrollUpdate:
         trade = _make_trade(db, direction="up", entry_price=0.40, size=10.0)
         trade.settled = True
         trade.result = "win"
-        trade.pnl = 6.0  # (1.0 - 0.40) * 10
+        trade.pnl = 15.0  # (10/0.40) - 10 = 15
         trade.trading_mode = "paper"
         db.flush()
 
         await update_bot_state_with_settlements(db, [trade])
 
         db.refresh(state)
+        # bankroll = (100 - 10) + 10 + 15 = 115
         assert state.paper_bankroll > settings.INITIAL_BANKROLL
         assert state.paper_pnl > 0.0
 
@@ -246,7 +253,7 @@ class TestBankrollUpdate:
 
         state = BotState(
             bankroll=settings.INITIAL_BANKROLL,
-            paper_bankroll=settings.INITIAL_BANKROLL,
+            paper_bankroll=settings.INITIAL_BANKROLL - 10.0,  # stake deducted at open
             paper_pnl=0.0,
             paper_trades=0,
             paper_wins=0,
@@ -261,13 +268,14 @@ class TestBankrollUpdate:
         trade = _make_trade(db, direction="up", entry_price=0.40, size=10.0)
         trade.settled = True
         trade.result = "loss"
-        trade.pnl = -4.0  # -(0.40 * 10)
+        trade.pnl = -10.0  # full size lost
         trade.trading_mode = "paper"
         db.flush()
 
         await update_bot_state_with_settlements(db, [trade])
 
         db.refresh(state)
+        # bankroll = (100 - 10) + 10 + (-10) = 90
         assert state.paper_bankroll < settings.INITIAL_BANKROLL
         assert state.paper_pnl < 0.0
 
@@ -312,9 +320,11 @@ class TestProcessSettledTrade:
         trade = _make_trade(db)
         await process_settled_trade(trade, True, 1.0, 6.0, db)
         db.flush()
-        events = db.query(SettlementEvent).filter(
-            SettlementEvent.market_ticker == trade.market_ticker
-        ).all()
+        events = (
+            db.query(SettlementEvent)
+            .filter(SettlementEvent.market_ticker == trade.market_ticker)
+            .all()
+        )
         assert len(events) == 1
         assert events[0].resolved_outcome == "up"
         assert events[0].pnl == pytest.approx(6.0)
@@ -387,8 +397,11 @@ class TestDeduplication:
                 resolve_calls.append((set(normal), set(weather)))
                 return {"DEDUP-MKT": (False, None)}
 
-            with patch("backend.core.settlement._resolve_markets", side_effect=mock_resolve):
+            with patch(
+                "backend.core.settlement._resolve_markets", side_effect=mock_resolve
+            ):
                 from backend.core.settlement import settle_pending_trades
+
                 await settle_pending_trades(session)
 
             # _resolve_markets called once, with exactly one unique ticker

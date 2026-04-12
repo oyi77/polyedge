@@ -51,8 +51,13 @@ class BtcMomentumStrategy(BaseStrategy):
             trades_placed=0,
         )
 
-        # Log experimental warning on every cycle
-        logger.warning(f"BtcMomentumStrategy: {EXPERIMENTAL_WARNING}")
+        # HARD DISABLE: This strategy has documented negative EV (-49.5% ROI)
+        # and data analysis shows 40% win rate on 50/50 markets with
+        # up-direction bias (16L/8W up, 9/9 down). The model_prob clamped
+        # to [0.40, 0.60] produces near-zero edge that doesn't cover
+        # transaction costs. Disabled until fundamental rework.
+        logger.info(f"BtcMomentumStrategy: DISABLED — {EXPERIMENTAL_WARNING}")
+        return result
 
         try:
             # Delegate to existing scan logic

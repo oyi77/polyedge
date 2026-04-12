@@ -1,4 +1,5 @@
 """Tests for enhanced risk manager — drawdown breaker, per-market limits, exposure."""
+
 import pytest
 from unittest.mock import patch, MagicMock
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from backend.core.risk_manager import RiskManager, RiskDecision, DrawdownStatus
 
 @dataclass
 class MockSettings:
+    INITIAL_BANKROLL: float = 1000.0
     DAILY_LOSS_LIMIT: float = 300.0
     MAX_POSITION_FRACTION: float = 0.05
     MAX_TOTAL_EXPOSURE_FRACTION: float = 0.50
@@ -61,7 +63,7 @@ class TestValidateTrade:
         mock_db = MagicMock()
         mock_session_cls.return_value = mock_db
         mock_db.query.return_value.filter.return_value.scalar.side_effect = [
-            0.0,     # _daily_loss_exceeded: today's pnl ok
+            0.0,  # _daily_loss_exceeded: today's pnl ok
             -120.0,  # check_drawdown: 24h pnl (12% > 10% limit)
             -120.0,  # check_drawdown: 7d pnl
         ]
@@ -81,13 +83,16 @@ class TestValidateTrade:
             0.0,  # daily loss check
             0.0,  # drawdown daily
             0.0,  # drawdown weekly
-            1,    # unsettled trade count
+            1,  # unsettled trade count
         ]
 
         rm = make_rm()
         result = rm.validate_trade(
-            size=5.0, current_exposure=0.0, bankroll=1000.0,
-            confidence=0.7, market_ticker="btc-5min-123"
+            size=5.0,
+            current_exposure=0.0,
+            bankroll=1000.0,
+            confidence=0.7,
+            market_ticker="btc-5min-123",
         )
         assert result.allowed is False
         assert "unsettled trade" in result.reason
@@ -113,8 +118,11 @@ class TestValidateTrade:
 
         rm = make_rm()
         result = rm.validate_trade(
-            size=5.0, current_exposure=0.0, bankroll=1000.0,
-            confidence=0.7, slippage=0.05
+            size=5.0,
+            current_exposure=0.0,
+            bankroll=1000.0,
+            confidence=0.7,
+            slippage=0.05,
         )
         assert result.allowed is False
         assert "slippage" in result.reason
@@ -151,7 +159,10 @@ class TestCheckDrawdown:
     def test_daily_drawdown_breached(self, mock_session_cls):
         mock_db = MagicMock()
         mock_session_cls.return_value = mock_db
-        mock_db.query.return_value.filter.return_value.scalar.side_effect = [-150.0, -150.0]
+        mock_db.query.return_value.filter.return_value.scalar.side_effect = [
+            -150.0,
+            -150.0,
+        ]
 
         rm = make_rm()
         status = rm.check_drawdown(bankroll=1000.0)
@@ -162,7 +173,10 @@ class TestCheckDrawdown:
     def test_weekly_drawdown_breached(self, mock_session_cls):
         mock_db = MagicMock()
         mock_session_cls.return_value = mock_db
-        mock_db.query.return_value.filter.return_value.scalar.side_effect = [-50.0, -250.0]
+        mock_db.query.return_value.filter.return_value.scalar.side_effect = [
+            -50.0,
+            -250.0,
+        ]
 
         rm = make_rm()
         status = rm.check_drawdown(bankroll=1000.0)

@@ -462,17 +462,25 @@ async def root():
 @app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)):
     """Return system health including per-strategy heartbeat status."""
-    from backend.core.heartbeat import get_strategy_health
+    try:
+        from backend.core.heartbeat import get_strategy_health
 
-    healths = get_strategy_health(db)
-    all_healthy = all(h["healthy"] or h["lag_seconds"] is None for h in healths)
-    bot_state = db.query(BotState).first()
-    return {
-        "status": "ok" if all_healthy else "degraded",
-        "strategies": healths,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "bot_running": bot_state.is_running if bot_state else False,
-    }
+        healths = get_strategy_health(db)
+        all_healthy = all(h["healthy"] or h["lag_seconds"] is None for h in healths)
+        bot_state = db.query(BotState).first()
+        return {
+            "status": "ok" if all_healthy else "degraded",
+            "strategies": healths,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "bot_running": bot_state.is_running if bot_state else False,
+        }
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
 
 @app.get("/metrics")

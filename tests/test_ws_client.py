@@ -126,16 +126,18 @@ class TestMessageParsing:
 # ============================================================================
 
 class TestSubscriptions:
-    def test_subscribe_adds_token(self):
+    @pytest.mark.asyncio
+    async def test_subscribe_adds_token(self):
         from backend.data.ws_client import CLOBWebSocket
         ws = CLOBWebSocket()
-        ws.subscribe("abc")
+        await ws.subscribe("abc")
         assert "abc" in ws._subscribed
 
-    def test_unsubscribe_removes_token(self):
+    @pytest.mark.asyncio
+    async def test_unsubscribe_removes_token(self):
         from backend.data.ws_client import CLOBWebSocket
         ws = CLOBWebSocket()
-        ws.subscribe("abc")
+        await ws.subscribe("abc")
         ws.unsubscribe("abc")
         assert "abc" not in ws._subscribed
 
@@ -149,19 +151,19 @@ class TestSubscriptions:
         ws = CLOBWebSocket()
         assert ws.is_connected is False
 
-    def test_subscribe_dispatches_task_when_connected(self):
-        """When already connected, subscribe triggers _send_subscribe task."""
+    @pytest.mark.asyncio
+    async def test_subscribe_dispatches_task_when_connected(self):
+        """When already connected, subscribe calls _send_subscribe directly."""
         from backend.data.ws_client import CLOBWebSocket
         ws = CLOBWebSocket()
         ws._connected = True
         ws._ws = MagicMock()
 
-        tasks_created = []
-        with patch("asyncio.create_task", side_effect=tasks_created.append):
-            ws.subscribe("new_token")
+        with patch.object(ws, "_send_subscribe", new_callable=AsyncMock) as mock_send:
+            await ws.subscribe("new_token")
 
         assert "new_token" in ws._subscribed
-        assert len(tasks_created) == 1
+        mock_send.assert_awaited_once_with({"new_token"})
 
 
 # ============================================================================

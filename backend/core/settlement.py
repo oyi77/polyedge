@@ -44,29 +44,12 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
         now = datetime.now(timezone.utc)
         stale_threshold = now - timedelta(hours=settings.STALE_TRADE_HOURS)
 
-        expired_trades = []
-        for trade in pending:
-            ts = trade.timestamp
-            if ts and ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            if ts and ts < stale_threshold:
-                trade.settled = True
-                trade.result = "expired"
-                trade.settlement_time = now
-                trade.pnl = 0
-                expired_trades.append(trade)
-
-        if expired_trades:
-            logger.info(f"Marked {len(expired_trades)} stale trades as expired")
-
-        active_pending = [t for t in pending if not t.settled and t.result != "expired"]
-
         normal_tickers: set = set()
         weather_tickers: set = set()
         trade_slugs: dict = {}
         trade_platforms: dict = {}
 
-        for trade in active_pending:
+        for trade in pending:
             market_type = getattr(trade, "market_type", "btc") or "btc"
             ticker = trade.market_ticker
             trade_slugs[ticker] = getattr(trade, "event_slug", None)
@@ -84,6 +67,8 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             f"(saved {len(pending) - len(unique_tickers)} API calls)"
         )
 
+        # Resolve ALL markets before expiring stale trades — a stale trade
+        # whose market already resolved must get proper PnL, not pnl=0.
         resolutions = await _resolve_markets(
             normal_tickers, weather_tickers, trade_slugs, trade_platforms
         )
@@ -107,25 +92,36 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                 )
             return True, settlement_value, pnl
 
-        results = [(t, _settlement_from_resolution(t)) for t in active_pending]
-
         settled_trades = []
-        for item in results:
-            if isinstance(item, Exception):
-                logger.error(f"Settlement error: {item}")
-                continue
-            trade, (is_settled, settlement_value, pnl) = item
+
+        for trade in pending:
+            is_settled, settlement_value, pnl = _settlement_from_resolution(trade)
             if await process_settled_trade(
                 trade, is_settled, settlement_value, pnl, db
             ):
                 settled_trades.append(trade)
+                continue
 
-        if settled_trades:
-            logger.info(f"Settled {len(settled_trades)} trades")
-        else:
+            ts = trade.timestamp
+            if ts and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts and ts < stale_threshold:
+                trade.settled = True
+                trade.result = "expired"
+                trade.settlement_time = now
+                trade.pnl = 0
+                settled_trades.append(trade)
+
+        expired_count = sum(1 for t in settled_trades if t.result == "expired")
+        resolved_count = len(settled_trades) - expired_count
+        if resolved_count:
+            logger.info(f"Settled {resolved_count} trades with market resolution")
+        if expired_count:
+            logger.info(f"Marked {expired_count} stale trades as expired")
+        if not settled_trades:
             logger.info("No trades ready for settlement (markets still open)")
 
-        return expired_trades + settled_trades
+        return settled_trades
 
 
 async def update_bot_state_with_settlements(
@@ -151,11 +147,18 @@ async def update_bot_state_with_settlements(
 
             if trading_mode == "paper":
                 if is_real_trade:
-                    # Win/loss: apply PNL to bankroll and PNL counter
+                    # Win/loss: return the original stake AND apply net PNL.
+                    # At trade open, bankroll was reduced by trade.size.
+                    # trade.pnl is net profit (positive for win, -size for loss).
+                    # So gross return = trade.size + trade.pnl:
+                    #   WIN:  size + ((size/entry_price) - size) = size/entry_price
+                    #   LOSS: size + (-size) = 0  (stake already deducted at open)
                     state.paper_pnl = (state.paper_pnl or 0.0) + trade.pnl
                     state.paper_bankroll = (
-                        state.paper_bankroll or settings.INITIAL_BANKROLL
-                    ) + trade.pnl
+                        (state.paper_bankroll or settings.INITIAL_BANKROLL)
+                        + trade.size
+                        + trade.pnl
+                    )
                     state.paper_trades = (state.paper_trades or 0) + 1
                     if trade.result == "win":
                         state.paper_wins = (state.paper_wins or 0) + 1
@@ -170,10 +173,13 @@ async def update_bot_state_with_settlements(
                     )
             else:
                 if is_real_trade:
+                    # Same fix for live mode: return stake + net PNL
                     state.total_pnl = (state.total_pnl or 0.0) + trade.pnl
                     state.bankroll = (
-                        state.bankroll or settings.INITIAL_BANKROLL
-                    ) + trade.pnl
+                        (state.bankroll or settings.INITIAL_BANKROLL)
+                        + trade.size
+                        + trade.pnl
+                    )
                     state.total_trades = (state.total_trades or 0) + 1
                     if trade.result == "win":
                         state.winning_trades = (state.winning_trades or 0) + 1
@@ -207,7 +213,7 @@ async def update_bot_state_with_settlements(
 async def reconcile_bot_state(db: Session) -> None:
     """Recalculate bot_state from trade history to prevent drift."""
     try:
-        from sqlalchemy import func
+        from sqlalchemy import func, case
 
         state = db.query(BotState).first()
         if not state:
@@ -217,7 +223,7 @@ async def reconcile_bot_state(db: Session) -> None:
             db.query(
                 func.count(Trade.id),
                 func.sum(Trade.pnl),
-                func.sum(func.iif(Trade.result == "win", 1, 0)),
+                func.sum(case((Trade.result == "win", 1), else_=0)),
             )
             .filter(Trade.settled == True, Trade.result.in_(("win", "loss")))  # noqa: E712
             .first()

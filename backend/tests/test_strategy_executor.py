@@ -200,7 +200,7 @@ class TestRiskRejection:
 class TestUpdatesBankroll:
     @pytest.mark.asyncio
     async def test_updates_paper_bankroll(self):
-        """Paper trade does NOT deduct bankroll at entry — settlement handles all PNL."""
+        """Paper trade DEDUCTS bankroll at entry — settlement returns stake + PNL."""
         # Create fresh test engine for this test to ensure isolation
         test_engine = create_engine(
             "sqlite:///:memory:",
@@ -233,8 +233,8 @@ class TestUpdatesBankroll:
         check_db = TestSession()
         try:
             state = check_db.query(BotState).first()
-            # Bankroll should remain unchanged at entry — settlement handles PNL
-            assert state.paper_bankroll == 500.0
+            # Bankroll deducted by trade size at entry (settlement returns stake + PNL)
+            assert state.paper_bankroll == pytest.approx(500.0 - 50.0)
         finally:
             check_db.close()
 
@@ -295,7 +295,7 @@ class TestCreatesSignalRecord:
 class TestMaxTradesPerCycle:
     @pytest.mark.asyncio
     async def test_max_trades_per_cycle(self):
-        """execute_decisions caps at MAX_TRADES_PER_CYCLE (2)."""
+        """execute_decisions caps at MAX_TRADES_PER_CYCLE (6)."""
         # Create fresh test engine for this test to ensure isolation
         test_engine = create_engine(
             "sqlite:///:memory:",
@@ -325,7 +325,7 @@ class TestMaxTradesPerCycle:
 
             results = await execute_decisions(decisions, "cap_strategy")
 
-        assert len(results) <= 2
+        assert len(results) <= 6
 
 
 class TestLiveModeCallsCLOB:

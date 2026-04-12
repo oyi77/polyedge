@@ -24,51 +24,67 @@ def make_trade(**kwargs) -> Trade:
     return t
 
 
+def pnl_win(size: float, entry: float) -> float:
+    """Expected P&L on a win: shares paid at $1 minus cost = (size/entry) - size."""
+    return round(size / entry - size, 2)
+
+
+def pnl_loss(size: float) -> float:
+    """Expected P&L on a loss: entire investment lost."""
+    return round(-size, 2)
+
+
 class TestCalculatePnl:
-    """Test P&L calculation for all direction/outcome combinations."""
+    """Test P&L calculation for all direction/outcome combinations.
+
+    Polymarket CLOB economics:
+      - You spend `size` dollars to buy `size / entry_price` shares.
+      - On a win, each share pays $1.00 → pnl = (size / entry_price) - size.
+      - On a loss, shares are worth $0 → pnl = -size.
+    """
 
     def test_up_wins(self):
         trade = make_trade(direction="up", entry_price=0.65, size=100.0)
         pnl = calculate_pnl(trade, settlement_value=1.0)
-        assert pnl == round(100.0 * (1.0 - 0.65), 2)  # +35.00
+        assert pnl == pnl_win(100.0, 0.65)  # +53.85
 
     def test_up_loses(self):
         trade = make_trade(direction="up", entry_price=0.65, size=100.0)
         pnl = calculate_pnl(trade, settlement_value=0.0)
-        assert pnl == round(-100.0 * 0.65, 2)  # -65.00
+        assert pnl == pnl_loss(100.0)  # -100.00
 
     def test_down_wins(self):
         trade = make_trade(direction="down", entry_price=0.40, size=100.0)
         pnl = calculate_pnl(trade, settlement_value=0.0)
-        assert pnl == round(100.0 * (1.0 - 0.40), 2)  # +60.00
+        assert pnl == pnl_win(100.0, 0.40)  # +150.00
 
     def test_down_loses(self):
         trade = make_trade(direction="down", entry_price=0.40, size=100.0)
         pnl = calculate_pnl(trade, settlement_value=1.0)
-        assert pnl == round(-100.0 * 0.40, 2)  # -40.00
+        assert pnl == pnl_loss(100.0)  # -100.00
 
     def test_yes_wins(self):
         trade = make_trade(direction="yes", entry_price=0.70, size=50.0)
         pnl = calculate_pnl(trade, settlement_value=1.0)
-        assert pnl == round(50.0 * (1.0 - 0.70), 2)  # +15.00
+        assert pnl == pnl_win(50.0, 0.70)  # +21.43
 
     def test_no_wins(self):
         trade = make_trade(direction="no", entry_price=0.30, size=50.0)
         pnl = calculate_pnl(trade, settlement_value=0.0)
-        assert pnl == round(50.0 * (1.0 - 0.30), 2)  # +35.00
+        assert pnl == pnl_win(50.0, 0.30)  # +116.67
 
     def test_pnl_rounded_to_two_decimal_places(self):
         trade = make_trade(direction="up", entry_price=1/3, size=100.0)
         pnl = calculate_pnl(trade, settlement_value=1.0)
-        assert pnl == round(100.0 * (1.0 - 1/3), 2)
+        assert pnl == pnl_win(100.0, 1/3)  # +200.00
 
     def test_pnl_at_entry_price_50_percent(self):
-        """Edge case: 50c entry price."""
+        """Edge case: 50c entry price — symmetric win/loss."""
         trade = make_trade(direction="up", entry_price=0.50, size=100.0)
         win_pnl = calculate_pnl(trade, settlement_value=1.0)
         loss_pnl = calculate_pnl(trade, settlement_value=0.0)
-        assert win_pnl == 50.0
-        assert loss_pnl == -50.0
+        assert win_pnl == pnl_win(100.0, 0.50)   # +100.00
+        assert loss_pnl == pnl_loss(100.0)         # -100.00
 
 
 class TestParseMarketResolution:
@@ -126,7 +142,7 @@ class TestCheckMarketSettlement:
 
         assert is_settled is True
         assert settlement_value == 1.0
-        assert pnl == round(100.0 * (1.0 - 0.60), 2)
+        assert pnl == pnl_win(100.0, 0.60)  # +66.67
 
     @pytest.mark.asyncio
     async def test_unresolved_market_returns_none(self):

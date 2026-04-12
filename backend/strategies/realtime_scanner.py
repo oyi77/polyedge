@@ -243,6 +243,13 @@ class RealtimeScannerStrategy(BaseStrategy):
                         result.trades_attempted += 1
 
                         current_price = history.prices[-1][1]
+                        rt_entry_price = current_price
+                        if direction.lower() in ("no", "down"):
+                            rt_entry_price = (
+                                round(1.0 - current_price, 6)
+                                if current_price < 1.0
+                                else 0.01
+                            )
                         result.decisions.append(
                             {
                                 "decision": "BUY",
@@ -251,7 +258,7 @@ class RealtimeScannerStrategy(BaseStrategy):
                                 "confidence": confidence,
                                 "edge": slow_velocity,
                                 "size": None,
-                                "entry_price": current_price,
+                                "entry_price": rt_entry_price,
                                 "suggested_size": None,
                                 "model_probability": confidence,
                                 "market_probability": current_price,

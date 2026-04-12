@@ -46,10 +46,17 @@ class TestLeaderboardScorerHTTP:
     @pytest.mark.asyncio
     async def test_fetch_http_error_returns_empty(self):
         from backend.strategies.copy_trader import LeaderboardScorer
+        from unittest.mock import patch
         mock_http = AsyncMock()
         mock_http.get = AsyncMock(side_effect=Exception("timeout"))
         scorer = LeaderboardScorer(mock_http)
-        traders = await scorer.fetch_and_score()
+        # Also patch the scraper fallback so both data sources fail
+        with patch(
+            "backend.data.polymarket_scraper.fetch_real_leaderboard",
+            new_callable=AsyncMock,
+            side_effect=Exception("scraper also failed"),
+        ):
+            traders = await scorer.fetch_and_score()
         assert traders == []
 
     @pytest.mark.asyncio

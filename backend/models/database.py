@@ -32,6 +32,7 @@ engine = create_engine(
     connect_args={"check_same_thread": False}
     if "sqlite" in settings.DATABASE_URL
     else {},
+    pool_pre_ping=True,
 )
 
 

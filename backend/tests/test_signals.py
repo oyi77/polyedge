@@ -1,4 +1,5 @@
 """Tests for backend/core/signals.py — signal generation calculation functions."""
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import datetime, timedelta, timezone
@@ -193,6 +194,7 @@ class TestKellySizing:
     def test_kelly_positive_edge_up(self):
         """Positive edge UP → positive suggested size."""
         from backend.config import settings
+
         size = calculate_kelly_size(
             edge=0.10,
             probability=0.60,
@@ -227,6 +229,7 @@ class TestKellySizing:
     def test_kelly_respects_max_trade_size(self):
         """Size must never exceed MAX_TRADE_SIZE regardless of edge/bankroll."""
         from backend.config import settings
+
         size = calculate_kelly_size(
             edge=0.50,
             probability=0.95,
@@ -239,20 +242,29 @@ class TestKellySizing:
     def test_kelly_scales_with_bankroll(self):
         """Larger bankroll should produce a larger suggested size."""
         size_small = calculate_kelly_size(
-            edge=0.10, probability=0.60, market_price=0.45,
-            direction="up", bankroll=100.0,
+            edge=0.10,
+            probability=0.60,
+            market_price=0.45,
+            direction="up",
+            bankroll=100.0,
         )
         size_large = calculate_kelly_size(
-            edge=0.10, probability=0.60, market_price=0.45,
-            direction="up", bankroll=10_000.0,
+            edge=0.10,
+            probability=0.60,
+            market_price=0.45,
+            direction="up",
+            bankroll=10_000.0,
         )
         assert size_large >= size_small
 
     def test_kelly_zero_bankroll(self):
         """Zero bankroll → zero size."""
         size = calculate_kelly_size(
-            edge=0.10, probability=0.60, market_price=0.45,
-            direction="up", bankroll=0.0,
+            edge=0.10,
+            probability=0.60,
+            market_price=0.45,
+            direction="up",
+            bankroll=0.0,
         )
         assert size == pytest.approx(0.0)
 
@@ -260,8 +272,11 @@ class TestKellySizing:
         """Price at boundary (0 or 1) → zero size."""
         for price in [0.0, 1.0]:
             size = calculate_kelly_size(
-                edge=0.10, probability=0.60, market_price=price,
-                direction="up", bankroll=1000.0,
+                edge=0.10,
+                probability=0.60,
+                market_price=price,
+                direction="up",
+                bankroll=1000.0,
             )
             assert size == pytest.approx(0.0)
 
@@ -300,29 +315,33 @@ class TestConvergenceFilter:
 
 
 # ---------------------------------------------------------------------------
-# Entry price filter (price <= MAX_ENTRY_PRICE = 0.55)
+# Entry price filter (price <= MAX_ENTRY_PRICE = 0.80)
 # ---------------------------------------------------------------------------
 
 
 class TestEntryPriceFilter:
     def test_low_price_passes(self):
         from backend.config import settings
+
         entry_price = 0.45
         assert entry_price <= settings.MAX_ENTRY_PRICE
 
     def test_at_threshold_passes(self):
         from backend.config import settings
+
         entry_price = settings.MAX_ENTRY_PRICE
         assert entry_price <= settings.MAX_ENTRY_PRICE
 
     def test_above_threshold_fails(self):
         from backend.config import settings
-        entry_price = 0.60
+
+        entry_price = 0.85
         assert entry_price > settings.MAX_ENTRY_PRICE
 
-    def test_max_entry_price_is_55c(self):
+    def test_max_entry_price_is_80c(self):
         from backend.config import settings
-        assert settings.MAX_ENTRY_PRICE == pytest.approx(0.55)
+
+        assert settings.MAX_ENTRY_PRICE == pytest.approx(0.80)
 
 
 # ---------------------------------------------------------------------------
@@ -369,12 +388,23 @@ class TestGenerateBtcSignal:
 
         market = _make_market(up_price=0.45, down_price=0.55)
         micro = _make_micro(
-            rsi=40.0, momentum_1m=0.05, momentum_5m=0.03, momentum_15m=0.01,
-            vwap_deviation=0.02, sma_crossover=0.01, volatility=0.02, price=65000.0,
+            rsi=40.0,
+            momentum_1m=0.05,
+            momentum_5m=0.03,
+            momentum_15m=0.01,
+            vwap_deviation=0.02,
+            sma_crossover=0.01,
+            volatility=0.02,
+            price=65000.0,
         )
 
-        with patch("backend.core.signals.compute_btc_microstructure", AsyncMock(return_value=micro)), \
-             patch("backend.core.signals._persist_signals", MagicMock()):
+        with (
+            patch(
+                "backend.core.signals.compute_btc_microstructure",
+                AsyncMock(return_value=micro),
+            ),
+            patch("backend.core.signals._persist_signals", MagicMock()),
+        ):
             signal = await generate_btc_signal(market)
 
         assert signal is not None
@@ -386,7 +416,10 @@ class TestGenerateBtcSignal:
 
         market = _make_market()
 
-        with patch("backend.core.signals.compute_btc_microstructure", AsyncMock(side_effect=Exception("network error"))):
+        with patch(
+            "backend.core.signals.compute_btc_microstructure",
+            AsyncMock(side_effect=Exception("network error")),
+        ):
             signal = await generate_btc_signal(market)
 
         assert signal is None
@@ -398,12 +431,22 @@ class TestGenerateBtcSignal:
         market = _make_market(up_price=0.48, down_price=0.52)
         micro = _make_micro(
             rsi=25.0,  # extreme
-            momentum_1m=0.20, momentum_5m=0.15, momentum_15m=0.10,  # extreme
-            vwap_deviation=0.10, sma_crossover=0.05, volatility=0.05, price=65000.0,
+            momentum_1m=0.20,
+            momentum_5m=0.15,
+            momentum_15m=0.10,  # extreme
+            vwap_deviation=0.10,
+            sma_crossover=0.05,
+            volatility=0.05,
+            price=65000.0,
         )
 
-        with patch("backend.core.signals.compute_btc_microstructure", AsyncMock(return_value=micro)), \
-             patch("backend.core.signals._persist_signals", MagicMock()):
+        with (
+            patch(
+                "backend.core.signals.compute_btc_microstructure",
+                AsyncMock(return_value=micro),
+            ),
+            patch("backend.core.signals._persist_signals", MagicMock()),
+        ):
             signal = await generate_btc_signal(market)
 
         if signal:
@@ -415,7 +458,10 @@ class TestGenerateBtcSignal:
 
         market = _make_market(up_price=0.99, down_price=0.01)
 
-        with patch("backend.core.signals.compute_btc_microstructure", AsyncMock(return_value=_make_micro())):
+        with patch(
+            "backend.core.signals.compute_btc_microstructure",
+            AsyncMock(return_value=_make_micro()),
+        ):
             signal = await generate_btc_signal(market)
 
         assert signal is None
