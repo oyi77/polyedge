@@ -406,6 +406,7 @@ class AuditLog(Base):
 
 class Experiment(Base):
     """Track parameter experiments for each strategy."""
+
     __tablename__ = "experiments"
     id = Column(Integer, primary_key=True, index=True)
     strategy_name = Column(String, nullable=False, index=True)
@@ -419,6 +420,7 @@ class Experiment(Base):
 
 class EquitySnapshot(Base):
     """Daily equity curve snapshots for performance tracking."""
+
     __tablename__ = "equity_snapshots"
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
@@ -432,6 +434,7 @@ class EquitySnapshot(Base):
 
 class CalibrationRecord(Base):
     """Track predicted probability vs actual outcome for model calibration."""
+
     __tablename__ = "calibration_records"
     id = Column(Integer, primary_key=True, index=True)
     strategy = Column(String, nullable=False, index=True)
@@ -441,6 +444,19 @@ class CalibrationRecord(Base):
     actual_outcome = Column(String, nullable=True)  # "win"|"loss"|None (pending)
     settlement_value = Column(Float, nullable=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ResearchItemDB(Base):
+    __tablename__ = "research_items"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String, nullable=False)
+    source = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+    content_summary = Column(String)
+    relevance_score = Column(Float, nullable=False)
+    fingerprint = Column(String, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    used_in_decision = Column(Boolean, default=False)
 
 
 def init_db():
