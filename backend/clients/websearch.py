@@ -1,25 +1,34 @@
 """Web Search client for PolyEdge - real-time event research for market predictions.
 
-Supports:
-- Tavily API (premium, requires TAVILY_API_KEY)
-- DuckDuckGo HTML scraping (free fallback, no API key needed)
+Multi-provider web search with configurable primary/fallback:
+- Tavily API (premium, requires TAVILY_API_KEY) - best quality for research
+- Exa API (neural search, requires EXA_API_KEY) - semantic understanding
+- Serper API (Google SERP, requires SERPER_API_KEY) - fresh results
+- DuckDuckGo HTML scraping (free, no API key) - reliable fallback
+
+Provider selection is controlled via settings:
+- WEBSEARCH_PROVIDER: Primary provider (default: "tavily")
+- WEBSEARCH_FALLBACK_PROVIDER: Fallback if primary fails (default: "duckduckgo")
+- Each provider requires its API key to be set (except DuckDuckGo)
 """
 
 import httpx
 import logging
-import os
 import re
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# DuckDuckGo HTML endpoint (no API key required)
+# API endpoints
+TAVILY_API_URL = "https://api.tavily.com/search"
+EXA_API_URL = "https://api.exa.ai/search"
+SERPER_API_URL = "https://google.serper.dev/search"
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 
-# Tavily API endpoint
-TAVILY_API_URL = "https://api.tavily.com/search"
+# Supported providers
+ProviderType = Literal["tavily", "exa", "serper", "duckduckgo"]
 
 
 @dataclass
@@ -39,7 +48,7 @@ class WebSearchResponse:
 
     query: str
     results: List[SearchResult] = field(default_factory=list)
-    source: str = "unknown"  # "tavily" or "duckduckgo"
+    source: str = "unknown"
     searched_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
     def to_context_string(self, max_results: int = 5) -> str:
@@ -56,18 +65,13 @@ class WebSearchResponse:
 
 
 class WebSearchClient:
-    """
-    Web search client with Tavily (premium) and DuckDuckGo (free) backends.
-
-    Usage:
-        client = WebSearchClient()
-        response = await client.search("Trump election odds")
-        context = response.to_context_string()
-    """
+    """Multi-provider web search client with automatic fallback."""
 
     def __init__(self, timeout: float = 15.0):
-        self.tavily_api_key = os.environ.get("TAVILY_API_KEY", "").strip()
-        self.timeout = timeout
+        from backend.config import settings
+
+        self.settings = settings
+        self.timeout = settings.WEBSEARCH_TIMEOUT_SECONDS or timeout
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -77,22 +81,41 @@ class WebSearchClient:
 
     @property
     def is_enabled(self) -> bool:
-        """Always enabled - DuckDuckGo fallback requires no API key."""
-        return True
+        return self.settings.WEBSEARCH_ENABLED
 
-    @property
-    def has_tavily(self) -> bool:
-        """Check if Tavily API key is configured."""
-        return bool(self.tavily_api_key)
+    def _has_api_key(self, provider: ProviderType) -> bool:
+        if provider == "duckduckgo":
+            return True
+        if provider == "tavily":
+            return bool(self.settings.TAVILY_API_KEY)
+        if provider == "exa":
+            return bool(self.settings.EXA_API_KEY)
+        if provider == "serper":
+            return bool(self.settings.SERPER_API_KEY)
+        return False
+
+    def get_active_provider(self) -> ProviderType:
+        primary = self.settings.WEBSEARCH_PROVIDER.lower()
+        if primary in ("tavily", "exa", "serper", "duckduckgo"):
+            if self._has_api_key(primary):
+                return primary
+            logger.warning(
+                "Primary provider '%s' missing API key, checking fallback", primary
+            )
+
+        fallback = self.settings.WEBSEARCH_FALLBACK_PROVIDER.lower()
+        if fallback in ("tavily", "exa", "serper", "duckduckgo"):
+            if self._has_api_key(fallback):
+                return fallback
+
+        return "duckduckgo"
 
     async def _search_tavily(
         self, query: str, max_results: int = 5
     ) -> WebSearchResponse:
-        """Search using Tavily API (premium, better quality)."""
         client = await self._get_client()
-
         payload = {
-            "api_key": self.tavily_api_key,
+            "api_key": self.settings.TAVILY_API_KEY,
             "query": query,
             "search_depth": "basic",
             "include_answer": False,
@@ -100,104 +123,117 @@ class WebSearchClient:
             "max_results": max_results,
         }
 
-        try:
-            resp = await client.post(TAVILY_API_URL, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await client.post(TAVILY_API_URL, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
 
-            results = []
-            for item in data.get("results", []):
-                results.append(
-                    SearchResult(
-                        title=item.get("title", ""),
-                        url=item.get("url", ""),
-                        content=item.get("content", ""),
-                        score=item.get("score", 0.0),
-                        published_date=item.get("published_date"),
-                    )
-                )
-
-            return WebSearchResponse(
-                query=query,
-                results=results,
-                source="tavily",
+        results = [
+            SearchResult(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                content=item.get("content", ""),
+                score=item.get("score", 0.0),
+                published_date=item.get("published_date"),
             )
-        except Exception as e:
-            logger.warning("Tavily search failed: %s, falling back to DuckDuckGo", e)
-            return await self._search_duckduckgo(query, max_results)
+            for item in data.get("results", [])
+        ]
+
+        return WebSearchResponse(query=query, results=results, source="tavily")
+
+    async def _search_exa(self, query: str, max_results: int = 5) -> WebSearchResponse:
+        client = await self._get_client()
+        headers = {
+            "Authorization": f"Bearer {self.settings.EXA_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "query": query,
+            "numResults": max_results,
+            "useAutoprompt": True,
+            "type": "neural",
+        }
+
+        resp = await client.post(EXA_API_URL, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+        results = [
+            SearchResult(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                content=item.get("text", item.get("snippet", "")),
+                score=item.get("score", 0.0),
+                published_date=item.get("publishedDate"),
+            )
+            for item in data.get("results", [])
+        ]
+
+        return WebSearchResponse(query=query, results=results, source="exa")
+
+    async def _search_serper(
+        self, query: str, max_results: int = 5
+    ) -> WebSearchResponse:
+        client = await self._get_client()
+        headers = {
+            "X-API-KEY": self.settings.SERPER_API_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {"q": query, "num": max_results}
+
+        resp = await client.post(SERPER_API_URL, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+        results = [
+            SearchResult(
+                title=item.get("title", ""),
+                url=item.get("link", ""),
+                content=item.get("snippet", ""),
+                score=1.0 - (i * 0.1),
+            )
+            for i, item in enumerate(data.get("organic", [])[:max_results])
+        ]
+
+        return WebSearchResponse(query=query, results=results, source="serper")
 
     async def _search_duckduckgo(
         self, query: str, max_results: int = 5
     ) -> WebSearchResponse:
-        """Search using DuckDuckGo HTML scraping (free, no API key)."""
         client = await self._get_client()
 
-        try:
-            # DuckDuckGo HTML form POST
-            resp = await client.post(
-                DDG_HTML_URL,
-                data={"q": query, "b": ""},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-            )
-            resp.raise_for_status()
-            html = resp.text
+        resp = await client.post(
+            DDG_HTML_URL,
+            data={"q": query, "b": ""},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        resp.raise_for_status()
+        results = self._parse_ddg_html(resp.text, max_results)
 
-            results = self._parse_ddg_html(html, max_results)
-
-            return WebSearchResponse(
-                query=query,
-                results=results,
-                source="duckduckgo",
-            )
-        except Exception as e:
-            logger.error("DuckDuckGo search failed: %s", e)
-            return WebSearchResponse(query=query, results=[], source="duckduckgo")
+        return WebSearchResponse(query=query, results=results, source="duckduckgo")
 
     def _parse_ddg_html(self, html: str, max_results: int) -> List[SearchResult]:
-        """Parse DuckDuckGo HTML response to extract search results."""
         results = []
-
-        # Pattern for result links: class="result__a" href="..."
         link_pattern = re.compile(
             r'class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>', re.IGNORECASE
         )
-
-        # Pattern for snippets: class="result__snippet"
-        snippet_pattern = re.compile(
-            r'class="result__snippet"[^>]*>([^<]+(?:<[^>]+>[^<]*</[^>]+>)*[^<]*)</[^>]+>',
-            re.IGNORECASE | re.DOTALL,
-        )
-
-        # Find all result blocks
-        result_blocks = re.findall(
-            r'<div[^>]*class="[^"]*result[^"]*"[^>]*>(.*?)</div>\s*</div>',
-            html,
-            re.IGNORECASE | re.DOTALL,
-        )
-
-        # Simpler approach: find links and snippets separately
         links = link_pattern.findall(html)
         snippets = re.findall(
             r'class="result__snippet"[^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL
         )
 
         for i, (url, title) in enumerate(links[:max_results]):
-            # Clean up URL (DuckDuckGo wraps URLs)
             if "uddg=" in url:
-                # Extract actual URL from DuckDuckGo redirect
                 match = re.search(r"uddg=([^&]+)", url)
                 if match:
                     import urllib.parse
 
                     url = urllib.parse.unquote(match.group(1))
 
-            # Get corresponding snippet if available
             content = ""
             if i < len(snippets):
-                # Clean HTML tags from snippet
                 content = re.sub(r"<[^>]+>", "", snippets[i]).strip()
 
             if title.strip() and url.strip():
@@ -206,43 +242,52 @@ class WebSearchClient:
                         title=title.strip(),
                         url=url.strip(),
                         content=content,
-                        score=1.0 - (i * 0.1),  # Decreasing relevance score
+                        score=1.0 - (i * 0.1),
                     )
                 )
 
         return results
 
     async def search(self, query: str, max_results: int = 5) -> WebSearchResponse:
-        """
-        Search the web for information.
+        if not self.is_enabled:
+            return WebSearchResponse(query=query, results=[], source="disabled")
 
-        Uses Tavily if API key available, otherwise falls back to DuckDuckGo.
-        """
-        if self.has_tavily:
-            return await self._search_tavily(query, max_results)
-        return await self._search_duckduckgo(query, max_results)
+        max_results = self.settings.WEBSEARCH_MAX_RESULTS or max_results
+        provider = self.get_active_provider()
+
+        search_methods = {
+            "tavily": self._search_tavily,
+            "exa": self._search_exa,
+            "serper": self._search_serper,
+            "duckduckgo": self._search_duckduckgo,
+        }
+
+        try:
+            return await search_methods[provider](query, max_results)
+        except Exception as e:
+            logger.warning("Primary search (%s) failed: %s", provider, e)
+            fallback = self.settings.WEBSEARCH_FALLBACK_PROVIDER.lower()
+            if fallback != provider and fallback in search_methods:
+                try:
+                    return await search_methods[fallback](query, max_results)
+                except Exception as fallback_err:
+                    logger.warning(
+                        "Fallback search (%s) failed: %s", fallback, fallback_err
+                    )
+
+            if provider != "duckduckgo":
+                try:
+                    return await self._search_duckduckgo(query, max_results)
+                except Exception as ddg_err:
+                    logger.error("All search providers failed. Last error: %s", ddg_err)
+
+            return WebSearchResponse(query=query, results=[], source="failed")
 
     async def search_for_market(self, question: str, max_results: int = 3) -> str:
-        """
-        Search for information relevant to a prediction market question.
-
-        Optimizes the query for prediction market research and returns
-        a context string suitable for AI analysis.
-
-        Args:
-            question: The market question (e.g., "Will Trump win 2024 election?")
-            max_results: Maximum number of results to include
-
-        Returns:
-            Context string for AI consumption, or empty string on failure
-        """
-        # Optimize query for current events/predictions
-        # Remove common market question patterns
         clean_query = question
         for pattern in ["Will ", "Will the ", "What will ", "?", "by ", "before "]:
             clean_query = clean_query.replace(pattern, " ")
 
-        # Add recency signal
         search_query = f"{clean_query.strip()} latest news"
 
         try:
@@ -253,18 +298,15 @@ class WebSearchClient:
             return ""
 
     async def close(self):
-        """Close the HTTP client."""
         if self._client:
             await self._client.aclose()
             self._client = None
 
 
-# Singleton instance
 _websearch_instance: Optional[WebSearchClient] = None
 
 
 def get_websearch() -> WebSearchClient:
-    """Get the singleton WebSearchClient instance."""
     global _websearch_instance
     if _websearch_instance is None:
         _websearch_instance = WebSearchClient()
@@ -272,7 +314,6 @@ def get_websearch() -> WebSearchClient:
 
 
 async def close_websearch():
-    """Close the singleton WebSearchClient."""
     global _websearch_instance
     if _websearch_instance is not None:
         await _websearch_instance.close()

@@ -185,6 +185,20 @@ class Settings(BaseSettings):
     CACHE_URL: str = "sqlite:///./cache.db"  # or "redis://localhost:6379/0"
     CACHE_TTL_SECONDS: int = 300  # 5 minutes
 
+    # Web Search Provider Settings
+    # Primary: "tavily", "crw", "duckduckgo", "exa", "serper"
+    # Fallback: "duckduckgo" (free, no API key required)
+    WEBSEARCH_PROVIDER: str = "tavily"
+    WEBSEARCH_FALLBACK_PROVIDER: str = "duckduckgo"
+    WEBSEARCH_ENABLED: bool = True
+    TAVILY_API_KEY: Optional[str] = None
+    CRW_API_URL: Optional[str] = None  # e.g. https://fastcrw.com/api
+    CRW_API_KEY: Optional[str] = None
+    EXA_API_KEY: Optional[str] = None
+    SERPER_API_KEY: Optional[str] = None
+    WEBSEARCH_MAX_RESULTS: int = 5
+    WEBSEARCH_TIMEOUT_SECONDS: float = 15.0
+
     @model_validator(mode="after")
     def _validate_live_trading_credentials(self) -> "Settings":
         if self.TRADING_MODE == "live":
