@@ -45,7 +45,13 @@ const COLUMNS: ColumnDef<DecisionLogRow>[] = [
     label: 'Conf %',
     sortable: true,
     className: 'tabular-nums text-right w-16',
-    render: (_, value) => (value != null ? `${(Number(value) * 100).toFixed(1)}%` : '-'),
+    render: (row) => {
+      // Extract actual debate confidence from signal_data if available
+      const signalData = (row as any).signal_data
+      const debateConf = signalData?.debate_transcript?.debate_transcript?.judge?.confidence
+      const displayConf = debateConf ?? row.confidence
+      return displayConf != null ? `${(Number(displayConf) * 100).toFixed(1)}%` : '-'
+    },
   },
   {
     key: 'created_at',
