@@ -5,12 +5,26 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
+from typing import List, Tuple
 
 import feedparser
 
 from backend.research.models import ResearchItem
 
 logger = logging.getLogger("trading_bot")
+
+_ENTITY_PATTERNS: list[re.Pattern] = [
+    re.compile(
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b"
+    ),  # "Donald Trump", "Federal Reserve"
+    re.compile(r"\b([A-Z]{2,6})\b"),  # "BTC", "NFL", "NATO"
+]
+
+_MARKET_PREDICATES = {
+    "mentioned_in": 0.6,
+    "related_to": 0.5,
+}
 
 DEFAULT_RSS_FEEDS = [
     "https://polymarket.com/feed.xml",
@@ -47,6 +61,19 @@ class ResearchPipeline:
 
         result = [it for it in scored if it.relevance_score > 0.3]
         result.sort(key=lambda it: it.relevance_score, reverse=True)
+
+        if result:
+            try:
+                posted = await self._post_kg_triples(result)
+                if posted:
+                    logger.info(
+                        "KG: posted %d triples from %d research items",
+                        posted,
+                        len(result),
+                    )
+            except Exception as exc:
+                logger.debug("KG posting skipped: %s", exc)
+
         return result
 
     async def _fetch_rss_feeds(self) -> list[ResearchItem]:
@@ -109,6 +136,140 @@ class ResearchPipeline:
             logger.warning("BigBrain client init failed: %s", exc)
 
         return items
+
+    # ── KG entity extraction ──────────────────────────────────────────
+
+    def _extract_entities_regex(self, text: str) -> list[str]:
+        stopwords = {
+            "The",
+            "This",
+            "That",
+            "These",
+            "Those",
+            "With",
+            "From",
+            "About",
+            "After",
+            "Before",
+            "Under",
+            "Over",
+            "Into",
+            "RSS",
+            "URL",
+            "API",
+            "GET",
+            "POST",
+            "JSON",
+            "HTML",
+        }
+        entities: list[str] = []
+        seen: set[str] = set()
+        for pattern in _ENTITY_PATTERNS:
+            for match in pattern.finditer(text):
+                entity = match.group(1).strip()
+                words = entity.split()
+                while words and words[0] in stopwords:
+                    words = words[1:]
+                entity = " ".join(words)
+                if (
+                    entity
+                    and entity not in stopwords
+                    and entity not in seen
+                    and len(entity) > 1
+                ):
+                    seen.add(entity)
+                    entities.append(entity)
+        return entities[:20]
+
+    async def _extract_kg_triples_llm(
+        self, item: ResearchItem
+    ) -> List[Tuple[str, str, str, float]]:
+        try:
+            from backend.ai.llm_router import LLMRouter
+
+            router = LLMRouter()
+            prompt = (
+                "Extract entity relationships from this prediction-market headline.\n"
+                f"Title: {item.title}\n"
+                f"Content: {item.content[:300]}\n"
+                'Return JSON: {"triples": [["subject", "predicate", "object", confidence_float], ...]}\n'
+                "Predicates: mentioned_in, related_to, competes_with, affects, part_of.\n"
+                "Max 5 triples. Confidence 0-1."
+            )
+            result = await router.complete_json(prompt, role="default")
+            raw_triples = result.get("triples", [])
+            triples: List[Tuple[str, str, str, float]] = []
+            for t in raw_triples:
+                if isinstance(t, (list, tuple)) and len(t) >= 3:
+                    subj = str(t[0]).strip()
+                    pred = str(t[1]).strip()
+                    obj = str(t[2]).strip()
+                    conf = float(t[3]) if len(t) > 3 else 0.7
+                    conf = max(0.0, min(1.0, conf))
+                    if subj and pred and obj:
+                        triples.append((subj, pred, obj, conf))
+            return triples[:5]
+        except Exception as exc:
+            logger.debug("LLM KG extraction failed, falling back to regex: %s", exc)
+            return []
+
+    async def extract_kg_triples(
+        self, item: ResearchItem
+    ) -> List[Tuple[str, str, str, float]]:
+        triples = await self._extract_kg_triples_llm(item)
+        if triples:
+            return triples
+
+        entities = self._extract_entities_regex(f"{item.title} {item.content}")
+        source_label = item.source.split("/")[-1] if "/" in item.source else item.source
+        market_subject = item.title[:80]
+
+        fallback_triples: List[Tuple[str, str, str, float]] = []
+        for entity in entities[:10]:
+            fallback_triples.append(
+                (
+                    entity,
+                    "mentioned_in",
+                    market_subject,
+                    _MARKET_PREDICATES["mentioned_in"],
+                )
+            )
+        if source_label:
+            fallback_triples.append(
+                (
+                    market_subject,
+                    "sourced_from",
+                    source_label,
+                    0.8,
+                )
+            )
+        return fallback_triples[:10]
+
+    async def _post_kg_triples(self, items: list[ResearchItem]) -> int:
+        posted = 0
+        try:
+            from backend.clients.bigbrain import BigBrainClient
+
+            brain = BigBrainClient()
+            for item in items:
+                try:
+                    triples = await self.extract_kg_triples(item)
+                    for subj, pred, obj, conf in triples:
+                        try:
+                            result = await brain.add_kg_triple(subj, pred, obj, conf)
+                            if result.get("success", False) or result.get("triple_id"):
+                                posted += 1
+                        except Exception as exc:
+                            logger.debug("KG triple post failed: %s", exc)
+                except Exception as exc:
+                    logger.debug(
+                        "KG extraction failed for '%s': %s", item.title[:60], exc
+                    )
+        except Exception as exc:
+            logger.warning("BigBrainClient unavailable for KG posting: %s", exc)
+        return posted
+
+    # ── Scoring ────────────────────────────────────────────────────────
 
     async def _score_items(self, items: list[ResearchItem]) -> list[ResearchItem]:
         if not items:
