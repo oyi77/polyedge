@@ -64,8 +64,23 @@ def calculate_kelly_size(
     market_price: float,
     direction: str,
     bankroll: float,
+    n_eff: Optional[int] = None,
+    prior_confidence: float = 30.0,
 ) -> float:
-    """Calculate position size using fractional Kelly criterion."""
+    """Calculate position size using Bayesian Kelly criterion.
+
+    Bayesian Kelly formula:
+        f* = (p̄ - (1-p̄)/b) × n_eff / (n_eff + κ)
+
+    Where:
+        p̄   = estimated win probability
+        b    = odds = (1 - price) / price
+        n_eff = effective sample size (number of recent trades/observations)
+        κ    = prior confidence (default 30) — higher values shrink sizing more
+
+    When n_eff is None, the classic Kelly is used (no Bayesian shrinkage).
+    Result is scaled by KELLY_FRACTION and clamped to f_max = 0.15 (15%).
+    """
     if direction == "up":
         win_prob = probability
         price = market_price
@@ -81,9 +96,13 @@ def calculate_kelly_size(
     lose_prob = 1 - win_prob
     kelly = (win_prob * odds - lose_prob) / odds
 
+    # Apply Bayesian shrinkage when sample size is provided
+    if n_eff is not None and n_eff >= 0:
+        kelly *= n_eff / (n_eff + prior_confidence)
+
     kelly *= settings.KELLY_FRACTION
 
-    max_fraction = 0.05
+    max_fraction = 0.15
     kelly = min(kelly, max_fraction)
     kelly = max(kelly, 0)
 
@@ -215,6 +234,7 @@ async def generate_btc_signal(market: BtcMarket) -> Optional[TradingSignal]:
     bankroll = settings.INITIAL_BANKROLL
     try:
         from backend.models.database import BotState, SessionLocal
+
         _db = SessionLocal()
         _state = _db.query(BotState).first()
         if _state:

@@ -282,6 +282,141 @@ class TestKellySizing:
 
 
 # ---------------------------------------------------------------------------
+# Bayesian Kelly sizing
+# ---------------------------------------------------------------------------
+
+
+class TestBayesianKelly:
+    def test_bayesian_shrinks_with_small_sample(self):
+        """Small n_eff → heavy shrinkage → smaller size than classic Kelly."""
+        classic = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+        )
+        bayesian = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+            n_eff=5,
+        )
+        assert bayesian < classic
+        assert bayesian > 0.0
+
+    def test_bayesian_converges_with_large_sample(self):
+        """Large n_eff → shrinkage factor ≈ 1 → nearly identical to classic."""
+        classic = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+        )
+        bayesian = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+            n_eff=10000,
+        )
+        assert bayesian == pytest.approx(classic, rel=0.01)
+
+    def test_bayesian_zero_neff_returns_zero(self):
+        """n_eff=0 → shrinkage factor is 0 → size is 0."""
+        size = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+            n_eff=0,
+        )
+        assert size == pytest.approx(0.0)
+
+    def test_bayesian_none_neff_is_classic(self):
+        """n_eff=None (default) → no shrinkage → classic Kelly behavior."""
+        classic = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+        )
+        explicit_none = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+            n_eff=None,
+        )
+        assert explicit_none == classic
+
+    def test_bayesian_max_fraction_is_fifteen_percent(self):
+        """Bayesian Kelly must never exceed 15% of bankroll."""
+        size = calculate_kelly_size(
+            edge=0.50,
+            probability=0.95,
+            market_price=0.10,
+            direction="up",
+            bankroll=10_000.0,
+            n_eff=10000,
+        )
+        assert size <= 1500.0
+
+    def test_bayesian_custom_prior_confidence(self):
+        """Higher prior_confidence → more shrinkage at same n_eff."""
+        low_prior = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+            n_eff=30,
+            prior_confidence=10.0,
+        )
+        high_prior = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+            n_eff=30,
+            prior_confidence=100.0,
+        )
+        assert low_prior > high_prior
+
+    def test_bayesian_shrinkage_factor_correctness(self):
+        """Verify shrinkage factor = n_eff / (n_eff + k) is applied correctly."""
+        n_eff = 30
+        k = 30.0
+        expected_factor = n_eff / (n_eff + k)  # 0.5
+
+        classic = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+        )
+        bayesian = calculate_kelly_size(
+            edge=0.05,
+            probability=0.55,
+            market_price=0.50,
+            direction="up",
+            bankroll=50.0,
+            n_eff=n_eff,
+            prior_confidence=k,
+        )
+        assert bayesian == pytest.approx(classic * expected_factor, rel=0.01)
+
+
+# ---------------------------------------------------------------------------
 # Convergence filter (2/4 indicators must agree)
 # ---------------------------------------------------------------------------
 
