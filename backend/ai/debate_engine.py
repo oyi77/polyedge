@@ -83,6 +83,42 @@ class DebateResult:
     latency_ms: float = 0.0
     market_question: str = ""
     market_price: float = 0.0
+    data_sources: list[str] = field(default_factory=list)
+
+    def to_transcript_dict(self) -> dict:
+        """Serialize the full debate transcript to a JSON-serializable dict.
+
+        Returns a dict with bull/bear arguments per round, judge synthesis,
+        metadata, and data sources — suitable for storing in DecisionLog.signal_data.
+        """
+
+        def _arg_to_dict(arg: DebateArgument) -> dict:
+            return {
+                "stance": arg.stance,
+                "round": arg.round_num,
+                "probability": arg.probability,
+                "confidence": arg.confidence,
+                "reasoning": arg.reasoning,
+                "raw_response": arg.raw_response,
+            }
+
+        return {
+            "debate_transcript": {
+                "bull_arguments": [_arg_to_dict(a) for a in self.bull_arguments],
+                "bear_arguments": [_arg_to_dict(a) for a in self.bear_arguments],
+                "judge": {
+                    "reasoning": self.reasoning,
+                    "raw_response": self.judge_raw,
+                    "consensus_probability": self.consensus_probability,
+                    "confidence": self.confidence,
+                },
+                "rounds_completed": self.rounds_completed,
+                "latency_ms": self.latency_ms,
+            },
+            "market_question": self.market_question,
+            "market_price": self.market_price,
+            "data_sources": self.data_sources,
+        }
 
 
 # --- Prompt Builders ---
@@ -329,6 +365,7 @@ async def run_debate(
     category: str = "",
     context: str = "",
     max_rounds: int = MAX_DEBATE_ROUNDS,
+    data_sources: list[str] | None = None,
 ) -> DebateResult | None:
     """
     Run a Bull/Bear/Judge debate on a prediction market question.
@@ -345,6 +382,7 @@ async def run_debate(
         category: Market category (e.g. "crypto", "politics")
         context: Additional context (news, data)
         max_rounds: Maximum debate rounds (1-2, clamped)
+        data_sources: List of data source labels used to build context
 
     Returns:
         DebateResult with consensus probability, or None on total failure
@@ -518,4 +556,5 @@ async def run_debate(
         latency_ms=latency_ms,
         market_question=question,
         market_price=market_price,
+        data_sources=data_sources or [],
     )

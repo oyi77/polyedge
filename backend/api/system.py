@@ -53,6 +53,8 @@ class BotStats(BaseModel):
     pnl_source: str = "botstate"
     paper: dict = {}
     live: dict = {}
+    open_exposure: float = 0.0
+    open_trades: int = 0
 
 
 class EventResponse(BaseModel):
@@ -86,6 +88,18 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
     live_trades = state.total_trades or 0
     live_wins = state.winning_trades or 0
     live_win_rate = live_wins / live_trades if live_trades > 0 else 0.0
+
+    # Open exposure — unsettled trades in the active mode
+    _mode_filter = (
+        (Trade.trading_mode == "paper")
+        if settings.TRADING_MODE == "paper"
+        else (Trade.trading_mode != "paper")
+    )
+    open_trades_rows = (
+        db.query(Trade).filter(Trade.settled == False, _mode_filter).all()
+    )
+    open_trades_count = len(open_trades_rows)
+    open_exposure_amount = sum((t.size or 0.0) for t in open_trades_rows)
 
     # Fallback: if mode PnL is 0 but settled trades exist, recalculate from DB
     pnl_source = "botstate"
@@ -155,6 +169,8 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
             "wins": live_wins,
             "win_rate": live_win_rate,
         },
+        open_exposure=open_exposure_amount,
+        open_trades=open_trades_count,
     )
 
 
@@ -164,7 +180,9 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
 
 
 @router.get("/api/stats/strategies")
-async def get_strategy_stats(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def get_strategy_stats(
+    db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
     """Return P&L breakdown per strategy."""
     from sqlalchemy import case
 
@@ -208,9 +226,13 @@ async def get_strategy_stats(db: Session = Depends(get_db), _: None = Depends(re
 
 
 @router.get("/api/ai/status")
-async def get_ai_status(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def get_ai_status(
+    db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
     """Return AI system status: enabled, provider, budget usage."""
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     spent_today = (
         db.query(func.coalesce(func.sum(AILog.cost_usd), 0.0))
         .filter(AILog.timestamp >= today_start)
@@ -291,7 +313,9 @@ class ResetRequest(BaseModel):
 
 
 @router.post("/api/bot/reset")
-async def reset_bot(body: ResetRequest, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def reset_bot(
+    body: ResetRequest, db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
     if not body.confirm:
         raise HTTPException(
             status_code=400,
@@ -404,7 +428,9 @@ async def run_backtest(
 
     except Exception as e:
         logger.error(f"Backtest failed: {e}")
-        raise HTTPException(status_code=500, detail="Backtest failed — check server logs")
+        raise HTTPException(
+            status_code=500, detail="Backtest failed — check server logs"
+        )
 
 
 @router.get("/api/backtest/quick")
@@ -442,7 +468,9 @@ async def quick_backtest(
 
     except Exception as e:
         logger.error(f"Quick backtest failed: {e}")
-        raise HTTPException(status_code=500, detail="Quick backtest failed — check server logs")
+        raise HTTPException(
+            status_code=500, detail="Quick backtest failed — check server logs"
+        )
 
 
 # ============================================================================
@@ -511,7 +539,14 @@ async def run_scan(db: Session = Depends(get_db), _: None = Depends(require_admi
 # ============================================================================
 
 
-_ALLOWED_DECISION_SORT = {"id", "created_at", "strategy", "market_ticker", "confidence", "decision"}
+_ALLOWED_DECISION_SORT = {
+    "id",
+    "created_at",
+    "strategy",
+    "market_ticker",
+    "confidence",
+    "decision",
+}
 
 
 @router.get("/api/decisions")
@@ -556,6 +591,16 @@ async def list_decisions(
     if order == "desc":
         col = col.desc()
     items = query.order_by(col).offset(offset).limit(limit).all()
+    import json as _json
+
+    def _parse_signal_data(raw):
+        if not raw:
+            return None
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return raw
+
     return {
         "items": [
             {
@@ -567,6 +612,7 @@ async def list_decisions(
                 "reason": d.reason,
                 "outcome": d.outcome,
                 "created_at": d.created_at.isoformat() if d.created_at else None,
+                "signal_data": _parse_signal_data(d.signal_data),
             }
             for d in items
         ],
@@ -627,7 +673,9 @@ async def export_decisions(
 
 
 @router.get("/api/decisions/{decision_id}")
-async def get_decision(decision_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def get_decision(
+    decision_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
     """Get a single decision log entry by ID."""
     decision = db.query(DecisionLog).filter(DecisionLog.id == decision_id).first()
     if not decision:
@@ -677,7 +725,9 @@ async def get_signal_config():
 
 
 @router.get("/api/strategies")
-async def list_strategies(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def list_strategies(
+    db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
     """List all registered strategies with their DB config."""
     from backend.strategies.registry import STRATEGY_REGISTRY
 
@@ -830,6 +880,8 @@ async def run_strategy_now(name: str, _: None = Depends(require_admin)):
         raise
     except Exception as e:
         logger.error(f"Manual run of strategy '{name}' failed: {e}")
-        raise HTTPException(status_code=500, detail="Strategy run failed — check server logs")
+        raise HTTPException(
+            status_code=500, detail="Strategy run failed — check server logs"
+        )
 
     return {"status": "ok", "name": name}

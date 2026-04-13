@@ -1,4 +1,5 @@
 """Authentication and admin routes."""
+
 from fastapi import Depends, HTTPException, Header, APIRouter, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -151,6 +152,10 @@ def _get_grouped_settings() -> dict:
         "AI_LOG_ALL_CALLS": ai,
         "AI_DAILY_BUDGET_USD": ai,
         "AI_SIGNAL_WEIGHT": ai,
+        "AUTO_IMPROVE_INTERVAL_DAYS": ai,
+        "SELF_REVIEW_INTERVAL_DAYS": ai,
+        "RESEARCH_PIPELINE_INTERVAL_HOURS": ai,
+        "JOB_WORKER_ENABLED": system,
         "GROQ_API_KEY": api_keys,
         "AI_API_KEY": api_keys,
         "POLYMARKET_API_KEY": api_keys,
@@ -311,7 +316,8 @@ async def switch_mode(body: ModeSwitch, _: None = Depends(require_admin)):
     # Validate credentials before allowing mode switch
     if new_mode == "live":
         missing = [
-            k for k, v in {
+            k
+            for k, v in {
                 "POLYMARKET_PRIVATE_KEY": settings.POLYMARKET_PRIVATE_KEY,
                 "POLYMARKET_API_KEY": settings.POLYMARKET_API_KEY,
                 "POLYMARKET_API_SECRET": settings.POLYMARKET_API_SECRET,
@@ -378,7 +384,9 @@ async def update_credentials(body: CredentialsUpdate, _: None = Depends(require_
 
     try:
         _proc = await _asyncio.create_subprocess_exec(
-            "pm2", "restart", "polyedge-bot",
+            "pm2",
+            "restart",
+            "polyedge-bot",
             stdout=_asyncio.subprocess.PIPE,
             stderr=_asyncio.subprocess.PIPE,
         )
@@ -421,7 +429,14 @@ async def get_admin_system(
     db_trade_count = db.query(Trade).count()
     db_signal_count = db.query(Signal).count()
 
-    uptime = (datetime.now(timezone.utc) - (request.app.state.start_time if hasattr(request.app.state, 'start_time') else datetime.now(timezone.utc))).total_seconds()
+    uptime = (
+        datetime.now(timezone.utc)
+        - (
+            request.app.state.start_time
+            if hasattr(request.app.state, "start_time")
+            else datetime.now(timezone.utc)
+        )
+    ).total_seconds()
 
     has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
     has_api_key = bool(settings.POLYMARKET_API_KEY)

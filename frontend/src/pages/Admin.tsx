@@ -13,6 +13,7 @@ import { CredentialsTab } from '../components/admin/CredentialsTab'
 import { TelegramTab } from '../components/admin/TelegramTab'
 import { RiskTab } from '../components/admin/RiskTab'
 import { AITab } from '../components/admin/AITab'
+import { DebateMonitorTab } from '../components/admin/DebateMonitorTab'
 import PendingApprovals from './PendingApprovals'
 
 function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
@@ -68,7 +69,7 @@ function AdminLoginGate({ login }: { login: (p: string) => Promise<void> }) {
   )
 }
 
-const TABS = ['System', 'Backtest', 'Risk', 'Credentials', 'Strategies', 'Settings', 'Copy Trader', 'Telegram', 'Market Watch', 'Wallet Config', 'AI', 'Pending Approvals'] as const
+const TABS = ['System', 'Backtest', 'Risk', 'Credentials', 'Strategies', 'Settings', 'Copy Trader', 'Telegram', 'Market Watch', 'Wallet Config', 'AI', 'Debate Monitor', 'Pending Approvals'] as const
 type Tab = typeof TABS[number]
 
 function ApiKeyBar() {
@@ -153,6 +154,7 @@ export default function Admin() {
         {activeTab === 'Market Watch' && <MarketWatchTab />}
         {activeTab === 'Wallet Config' && <WalletConfigTab />}
         {activeTab === 'AI' && <AITab />}
+        {activeTab === 'Debate Monitor' && <DebateMonitorTab />}
         {activeTab === 'Pending Approvals' && <PendingApprovals />}
       </div>
     </div>

@@ -41,6 +41,7 @@ async def _run_debate_gate(
     volume: float,
     category: str,
     context: str,
+    data_sources: list[str] | None = None,
 ) -> Optional[object]:
     """Run debate engine; returns DebateResult or None on failure."""
     try:
@@ -52,6 +53,7 @@ async def _run_debate_gate(
             volume=volume,
             category=category,
             context=context,
+            data_sources=data_sources,
         )
     except Exception as exc:
         logger.warning(
@@ -436,6 +438,15 @@ class GeneralMarketScanner(BaseStrategy):
             if brain_context:
                 enriched_context = f"{enriched_context} | BRAIN: {brain_context}"
 
+            # Build data_sources labels from context_parts for debate transcript
+            data_sources = [
+                part.split(":")[0].strip().lower()
+                for part in context_parts
+                if ":" in part
+            ]
+            if brain_context:
+                data_sources.append("bigbrain_memory")
+
             # AI analysis — enforce per-cycle call cap
             if ai_calls_this_cycle >= max_ai_calls_per_cycle:
                 ctx.logger.debug(
@@ -524,6 +535,7 @@ class GeneralMarketScanner(BaseStrategy):
                 entry_price = no_price
 
             raw_edge = abs(raw_ai_prob - market_price)
+            debate_result = None
 
             if raw_edge > min_debate_edge:
                 debate_result = await _run_debate_gate(
@@ -532,6 +544,7 @@ class GeneralMarketScanner(BaseStrategy):
                     volume=volume,
                     category=next(iter(market_categories), "general"),
                     context=enriched_context,
+                    data_sources=data_sources,
                 )
                 if debate_result is not None:
                     debate_prob = float(debate_result.consensus_probability)
@@ -721,6 +734,9 @@ class GeneralMarketScanner(BaseStrategy):
                 "strategy_name": self.name,
                 "volume": volume,
                 "reasoning": reasoning,
+                "debate_transcript": debate_result.to_transcript_dict()
+                if debate_result
+                else None,
             }
 
             result.decisions.append(decision)
@@ -732,14 +748,14 @@ class GeneralMarketScanner(BaseStrategy):
                 from backend.models.database import DecisionLog
                 import json as _json
 
+                signal_payload = dict(decision)
+                signal_payload["data_sources"] = data_sources
                 log_row = DecisionLog(
                     strategy=self.name,
                     market_ticker=slug[:64] if slug else "unknown",
                     decision="BUY",
                     confidence=getattr(ai_result, "confidence", None),
-                    signal_data=_json.dumps(
-                        {k: v for k, v in decision.items() if k != "reasoning"}
-                    ),
+                    signal_data=_json.dumps(signal_payload),
                     reason=(
                         f"AI edge: {direction.upper()} @ {entry_price:.2%} | "
                         f"AI raw={raw_ai_prob:.2%} anchored={ai_prob:.2%} market={market_price:.2%} "

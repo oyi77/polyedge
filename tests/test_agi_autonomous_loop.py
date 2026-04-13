@@ -133,6 +133,25 @@ class _FakeDebateResult:
         self.market_question = "Will BTC go up?"
         self.market_price = 0.55
 
+    def to_transcript_dict(self) -> dict:
+        return {
+            "debate_transcript": {
+                "bull_arguments": self.bull_arguments,
+                "bear_arguments": self.bear_arguments,
+                "judge": {
+                    "reasoning": self.reasoning,
+                    "raw_response": "",
+                    "consensus_probability": self.consensus_probability,
+                    "confidence": self.confidence,
+                },
+                "rounds_completed": self.rounds_completed,
+                "latency_ms": self.latency_ms,
+            },
+            "market_question": self.market_question,
+            "market_price": self.market_price,
+            "data_sources": [],
+        }
+
 
 # ---------------------------------------------------------------------------
 # Stage mocks

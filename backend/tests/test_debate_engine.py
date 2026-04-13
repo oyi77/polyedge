@@ -474,3 +474,84 @@ async def test_run_debate_neutral_consensus():
 
     assert result is not None
     assert result.consensus_probability == pytest.approx(0.50)
+
+
+# ---------------------------------------------------------------------------
+# to_transcript_dict
+# ---------------------------------------------------------------------------
+
+
+class TestToTranscriptDict:
+    def test_basic_structure(self):
+        arg = DebateArgument(
+            stance="bull",
+            round_num=1,
+            probability=0.75,
+            confidence=0.8,
+            reasoning="Strong momentum",
+            raw_response="PROBABILITY: 0.75\nCONFIDENCE: 0.8\nREASONING: Strong momentum",
+        )
+        result = DebateResult(
+            consensus_probability=0.65,
+            confidence=0.85,
+            reasoning="Balanced view",
+            bull_arguments=[arg],
+            bear_arguments=[],
+            judge_raw="raw judge text",
+            rounds_completed=1,
+            latency_ms=123.4,
+            market_question="Will X happen?",
+            market_price=0.60,
+            data_sources=["order_book", "clob_order_book", "market_data"],
+        )
+        d = result.to_transcript_dict()
+        assert "debate_transcript" in d
+        assert "data_sources" in d
+        assert "market_question" in d
+        assert "market_price" in d
+        transcript = d["debate_transcript"]
+        assert len(transcript["bull_arguments"]) == 1
+        assert transcript["bull_arguments"][0]["stance"] == "bull"
+        assert transcript["bull_arguments"][0]["probability"] == 0.75
+        assert transcript["rounds_completed"] == 1
+        assert transcript["latency_ms"] == 123.4
+        judge = transcript["judge"]
+        assert judge["consensus_probability"] == 0.65
+        assert judge["confidence"] == 0.85
+        assert judge["raw_response"] == "raw judge text"
+        assert d["data_sources"] == ["order_book", "clob_order_book", "market_data"]
+        assert d["market_question"] == "Will X happen?"
+        assert d["market_price"] == 0.60
+
+    def test_empty_arguments(self):
+        result = DebateResult(
+            consensus_probability=0.5,
+            confidence=0.5,
+            reasoning="",
+        )
+        d = result.to_transcript_dict()
+        assert d["debate_transcript"]["bull_arguments"] == []
+        assert d["debate_transcript"]["bear_arguments"] == []
+        assert d["data_sources"] == []
+
+    def test_json_serializable(self):
+        import json
+
+        arg = DebateArgument(
+            stance="bear",
+            round_num=1,
+            probability=0.3,
+            confidence=0.9,
+            reasoning="Weak case",
+        )
+        result = DebateResult(
+            consensus_probability=0.4,
+            confidence=0.7,
+            reasoning="Judge says no",
+            bull_arguments=[],
+            bear_arguments=[arg],
+            data_sources=["bigbrain_memory"],
+        )
+        serialized = json.dumps(result.to_transcript_dict())
+        parsed = json.loads(serialized)
+        assert parsed["data_sources"] == ["bigbrain_memory"]
