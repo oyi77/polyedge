@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     MAX_ENTRY_PRICE: float = 0.80  # Allow entries up to 80c for bond-like trades
     MAX_TRADES_PER_WINDOW: int = 2
     MAX_TOTAL_PENDING_TRADES: int = 12
-    STALE_TRADE_HOURS: int = 18
+    STALE_TRADE_HOURS: int = 48
 
     # Risk management — tuned for $100 bankroll
     DAILY_LOSS_LIMIT: float = 5.0

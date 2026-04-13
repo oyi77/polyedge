@@ -1,19 +1,22 @@
-"""Recalculate PnL for expired trades that have settlement_value but pnl=0.
+"""Recover expired trades by re-fetching market resolutions from the Polymarket API.
 
-These trades were incorrectly expired before their market resolutions were checked.
-This script recalculates their PnL using the correct calculate_pnl() formula and
-updates their result to win/loss/push accordingly, then reconciles BotState.
+Two modes:
+  1. recalculate: Trades with settlement_value but pnl=0 (already had data, just bad math)
+  2. recover: Trades with NO settlement_value (expired before API returned resolution)
 
-Usage: python -m backend.scripts.recalculate_expired_pnl [--dry-run]
+Usage:
+  python -m backend.scripts.recalculate_expired_pnl [--dry-run]          # recalculate only
+  python -m backend.scripts.recalculate_expired_pnl --recover [--dry-run] # re-fetch from API
 """
 
+import asyncio
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from backend.models.database import get_db, Trade, BotState
-from backend.core.settlement_helpers import calculate_pnl
+from backend.core.settlement_helpers import calculate_pnl, fetch_polymarket_resolution
 from backend.config import settings
 
 
@@ -120,6 +123,98 @@ def _reconcile_bot_state(db):
     print("BotState reconciled.")
 
 
+async def recover_expired_trades(dry_run: bool = False):
+    """Re-fetch market resolutions from Polymarket API for expired trades with no settlement_value.
+
+    These trades expired before the API returned a resolution (e.g., the old
+    STALE_TRADE_HOURS=18 window was too short). We now query each market
+    individually to see if it has since resolved, and if so, compute proper PnL.
+    """
+    db = next(get_db())
+
+    expired_no_sv = (
+        db.query(Trade)
+        .filter(
+            Trade.result == "expired",
+            Trade.settlement_value.is_(None),
+        )
+        .all()
+    )
+
+    print(f"Found {len(expired_no_sv)} expired trades with settlement_value=None")
+    if not expired_no_sv:
+        print("Nothing to recover.")
+        return
+
+    recovered = 0
+    still_unresolved = 0
+    api_errors = 0
+    total_pnl_recovered = 0.0
+
+    for trade in expired_no_sv:
+        ticker = trade.market_ticker
+        slug = getattr(trade, "event_slug", None)
+
+        try:
+            is_resolved, settlement_value = await fetch_polymarket_resolution(
+                ticker, event_slug=slug
+            )
+        except Exception as e:
+            print(f"  Trade {trade.id} [{ticker}]: API error — {e}")
+            api_errors += 1
+            continue
+
+        if not is_resolved or settlement_value is None:
+            print(f"  Trade {trade.id} [{ticker}]: still unresolved")
+            still_unresolved += 1
+            continue
+
+        pnl = calculate_pnl(trade, settlement_value)
+
+        if pnl > 0:
+            new_result = "win"
+        elif pnl < 0:
+            new_result = "loss"
+        else:
+            new_result = "push"
+
+        total_pnl_recovered += pnl
+
+        print(
+            f"  Trade {trade.id} [{ticker}]: {trade.direction} @ {trade.entry_price} "
+            f"size=${trade.size:.2f} -> settle={settlement_value} "
+            f"pnl=${pnl:+.2f} ({new_result})"
+        )
+
+        if not dry_run:
+            trade.settlement_value = settlement_value
+            trade.pnl = pnl
+            trade.result = new_result
+
+        recovered += 1
+
+    print(f"\nRecovery summary:")
+    print(f"  Recovered:    {recovered}")
+    print(f"  Unresolved:   {still_unresolved}")
+    print(f"  API errors:   {api_errors}")
+    print(f"  Total PnL:    ${total_pnl_recovered:+.2f}")
+
+    if not dry_run and recovered > 0:
+        db.commit()
+        print("Trade changes committed.")
+        _reconcile_bot_state(db)
+    else:
+        if dry_run:
+            print("DRY RUN — no changes made.")
+        else:
+            print("No trades recovered — nothing to commit.")
+
+
 if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
-    recalculate_expired_trades(dry_run=dry)
+    recover = "--recover" in sys.argv
+
+    if recover:
+        asyncio.run(recover_expired_trades(dry_run=dry))
+    else:
+        recalculate_expired_trades(dry_run=dry)

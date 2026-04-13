@@ -106,6 +106,30 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
             if ts and ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             if ts and ts < stale_threshold:
+                # Last-chance individual resolution check before expiring.
+                # The batch resolution above may have missed this market due to
+                # transient API errors, caching, or timing. One final direct
+                # call can recover trades that would otherwise expire at pnl=0.
+                try:
+                    is_resolved_retry, sv_retry = await fetch_polymarket_resolution(
+                        trade.market_ticker,
+                        event_slug=getattr(trade, "event_slug", None),
+                    )
+                    if is_resolved_retry and sv_retry is not None:
+                        pnl_retry = calculate_pnl(trade, sv_retry)
+                        if await process_settled_trade(
+                            trade, True, sv_retry, pnl_retry, db
+                        ):
+                            logger.info(
+                                f"Trade {trade.id} rescued from expiry via retry: pnl=${pnl_retry:+.2f}"
+                            )
+                            settled_trades.append(trade)
+                            continue
+                except Exception as e:
+                    logger.debug(
+                        f"Last-chance resolution retry failed for trade {trade.id}: {e}"
+                    )
+
                 trade.settled = True
                 trade.result = "expired"
                 trade.settlement_time = now
@@ -201,6 +225,7 @@ async def update_bot_state_with_settlements(
         try:
             if is_real_trade:
                 from backend.agents.pipeline import AGITradingPipeline
+
                 _agi = AGITradingPipeline()
                 _agi.record_outcome(
                     market_ticker=trade.market_ticker,

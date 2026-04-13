@@ -213,16 +213,20 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
                 f"hours_past_end={hours_past_end:.0f}, first_price={first_price:.4f}"
             )
             if market_still_open:
-                # Market is still actively trading — the Gamma API endDate
-                # is misleading (often refers to a group/series date, NOT
-                # the actual market resolution date).  NEVER early-resolve
-                # an actively-trading market based on a stale endDate.
-                # Let the stale-trade expiration handle cleanup instead.
-                logger.info(
-                    f"Market {market.get('id')} skipping zombie resolution: "
-                    f"still active, endDate {hours_past_end:.0f}h ago (likely misleading)"
-                )
-                return False, None
+                # Market is still flagged active — Gamma API endDate may be
+                # misleading (group/series date).  But if the price is
+                # extremely decisive (≥0.95/≤0.05), the outcome is clear
+                # regardless of the active flag.  Otherwise, skip.
+                if first_price >= 0.95 or first_price <= 0.05:
+                    early_threshold_high = 0.95
+                    early_threshold_low = 0.05
+                    tier = f"zombie-forced-{hours_past_end:.0f}h"
+                else:
+                    logger.info(
+                        f"Market {market.get('id')} skipping zombie resolution: "
+                        f"still active, endDate {hours_past_end:.0f}h ago (likely misleading)"
+                    )
+                    return False, None
             else:
                 # Market not actively open but still not officially closed
                 early_threshold_high = 0.70
@@ -230,22 +234,46 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
                 tier = f"zombie-{hours_past_end:.0f}h"
         elif hours_past_end >= 12.0:
             if market_still_open:
-                return False, None
-            early_threshold_high = 0.70
-            early_threshold_low = 0.30
-            tier = f"very-stale-{hours_past_end:.1f}h"
+                # Still-open markets 12h+ past endDate: resolve only if
+                # price is extremely decisive — Polymarket often leaves
+                # the active flag on for hours after resolution.
+                if first_price >= 0.95 or first_price <= 0.05:
+                    early_threshold_high = 0.95
+                    early_threshold_low = 0.05
+                    tier = f"very-stale-forced-{hours_past_end:.1f}h"
+                else:
+                    return False, None
+            else:
+                early_threshold_high = 0.70
+                early_threshold_low = 0.30
+                tier = f"very-stale-{hours_past_end:.1f}h"
         elif hours_past_end >= 6.0:
             if market_still_open:
-                return False, None
-            early_threshold_high = 0.75
-            early_threshold_low = 0.25
-            tier = f"stale-{hours_past_end:.1f}h"
+                # 6h+ past endDate and still "active": only force-resolve
+                # on very strong signals (≥0.95/≤0.05).
+                if first_price >= 0.95 or first_price <= 0.05:
+                    early_threshold_high = 0.95
+                    early_threshold_low = 0.05
+                    tier = f"stale-forced-{hours_past_end:.1f}h"
+                else:
+                    return False, None
+            else:
+                early_threshold_high = 0.75
+                early_threshold_low = 0.25
+                tier = f"stale-{hours_past_end:.1f}h"
         elif hours_past_end >= 2.0:
             if market_still_open:
-                return False, None
-            early_threshold_high = 0.70
-            early_threshold_low = 0.30
-            tier = f"overdue-{hours_past_end:.1f}h"
+                # 2-6h past endDate: only resolve on extreme prices
+                if first_price >= 0.97 or first_price <= 0.03:
+                    early_threshold_high = 0.97
+                    early_threshold_low = 0.03
+                    tier = f"overdue-forced-{hours_past_end:.1f}h"
+                else:
+                    return False, None
+            else:
+                early_threshold_high = 0.70
+                early_threshold_low = 0.30
+                tier = f"overdue-{hours_past_end:.1f}h"
         elif hours_past_end >= 0.5:
             # Tier 2: 30min-2h past endDate
             early_threshold_high = 0.85
