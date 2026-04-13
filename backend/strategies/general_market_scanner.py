@@ -1,6 +1,7 @@
 """General market scanner — finds edge across all Polymarket markets using AI analysis."""
 
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -80,6 +81,64 @@ async def _run_debate_gate(
             exc,
         )
         return None
+
+
+def _compute_composite_confidence(
+    llm_confidence: float,
+    raw_edge: float,
+    volume: float,
+    engine_confidence: float | None = None,
+    debate_confidence: float | None = None,
+    data_source_count: int = 0,
+) -> float:
+    """Compute a composite confidence score that genuinely varies per market.
+
+    Blends multiple independent signals:
+    - LLM confidence (40% weight) — the AI's self-reported certainty
+    - Edge magnitude (25% weight) — larger edges = higher conviction
+    - Prediction engine confidence (15% weight) — logistic regression model
+    - Volume signal (10% weight) — higher volume = more liquid/reliable
+    - Data richness (10% weight) — more data sources = better informed
+
+    When debate or prediction engine didn't run, their weight is
+    redistributed proportionally to the other components.
+    """
+    components: list[tuple[float, float]] = []  # (score, weight)
+
+    # 1. LLM confidence — already 0-1
+    components.append((max(0.0, min(1.0, llm_confidence)), 0.40))
+
+    # 2. Edge magnitude — map raw edge to 0-1 score
+    #    0.02 edge → 0.3 score, 0.05 → 0.5, 0.10 → 0.7, 0.20+ → 0.9
+    edge_score = min(1.0, 1.0 - math.exp(-20.0 * raw_edge))
+    components.append((edge_score, 0.25))
+
+    # 3. Prediction engine confidence — 0-1 if available
+    if engine_confidence is not None:
+        components.append((max(0.0, min(1.0, engine_confidence)), 0.15))
+
+    # 4. Debate confidence — if debate gate fired
+    if debate_confidence is not None:
+        components.append((max(0.0, min(1.0, debate_confidence)), 0.10))
+
+    # 5. Volume signal — log-scale, map to 0-1
+    #    $1K → 0.3, $10K → 0.5, $100K → 0.7, $1M+ → 0.9
+    vol_capped = max(1.0, volume)
+    vol_score = min(1.0, math.log10(vol_capped) / 7.0)  # log10(10M)=7 → 1.0
+    components.append((vol_score, 0.10))
+
+    # 6. Data richness — more sources = better informed
+    #    0 sources → 0.2, 1 → 0.4, 2 → 0.6, 3+ → 0.8
+    richness_score = min(1.0, 0.2 + 0.2 * data_source_count)
+    components.append((richness_score, 0.10))
+
+    # Weighted average with normalization (handles missing components)
+    total_weight = sum(w for _, w in components)
+    if total_weight <= 0:
+        return 0.5
+
+    composite = sum(s * w for s, w in components) / total_weight
+    return round(max(0.0, min(1.0, composite)), 4)
 
 
 GAMMA_API_URL = "https://gamma-api.polymarket.com/markets"
@@ -496,11 +555,11 @@ class GeneralMarketScanner(BaseStrategy):
             if not ai_result:
                 continue
 
-            ai_confidence = float(getattr(ai_result, "confidence", 0.0))
+            llm_confidence = float(getattr(ai_result, "confidence", 0.0))
             min_ai_confidence = float(params.get("min_ai_confidence", 0.6))
-            if ai_confidence < min_ai_confidence:
+            if llm_confidence < min_ai_confidence:
                 ctx.logger.debug(
-                    f"[general_scanner] FILTER:CONFIDENCE {slug}: conf={ai_confidence:.2f} < min={min_ai_confidence}"
+                    f"[general_scanner] FILTER:CONFIDENCE {slug}: conf={llm_confidence:.2f} < min={min_ai_confidence}"
                 )
                 continue
 
@@ -518,9 +577,9 @@ class GeneralMarketScanner(BaseStrategy):
             # PREDICTION ENGINE: Ensemble layer combining LLM signal with
             # quantitative features via logistic regression.
             # ============================================================
+            engine_conf_value: float | None = None
             try:
                 from backend.ai.prediction_engine import PredictionEngine
-                import math
 
                 vol_capped = min(max(volume, 0.0), 1000.0)
                 signal_data = {
@@ -534,12 +593,12 @@ class GeneralMarketScanner(BaseStrategy):
                 engine = PredictionEngine()
                 engine_pred = engine.predict(signal_data)
                 engine_prob = float(engine_pred.probability_yes)
-                # Blend: weight by engine confidence vs anchor weight
-                engine_weight = min(engine_pred.confidence, 0.4)
+                engine_conf_value = float(engine_pred.confidence)
+                engine_weight = min(engine_conf_value, 0.4)
                 ai_prob = (1.0 - engine_weight) * ai_prob + engine_weight * engine_prob
                 ctx.logger.debug(
                     f"[general_scanner] PRED_ENGINE {slug}: "
-                    f"engine_prob={engine_prob:.4f} engine_conf={engine_pred.confidence:.3f} "
+                    f"engine_prob={engine_prob:.4f} engine_conf={engine_conf_value:.3f} "
                     f"blended={ai_prob:.4f}"
                 )
             except Exception as e:
@@ -592,6 +651,24 @@ class GeneralMarketScanner(BaseStrategy):
                         f"[general_scanner] DEBATE_FALLBACK {slug}: "
                         f"debate failed, using single-pass result"
                     )
+
+            debate_conf_value = (
+                float(debate_result.confidence) if debate_result is not None else None
+            )
+            ai_confidence = _compute_composite_confidence(
+                llm_confidence=llm_confidence,
+                raw_edge=raw_edge,
+                volume=volume,
+                engine_confidence=engine_conf_value,
+                debate_confidence=debate_conf_value,
+                data_source_count=len(data_sources),
+            )
+            ctx.logger.debug(
+                f"[general_scanner] COMPOSITE_CONF {slug}: "
+                f"llm={llm_confidence:.2f} "
+                f"engine={engine_conf_value} debate={debate_conf_value} "
+                f"sources={len(data_sources)} → composite={ai_confidence:.4f}"
+            )
 
             # Safe harvesting: for low-YES markets, force NO direction
             # unless the AI is VERY confident it will resolve YES.
@@ -777,7 +854,7 @@ class GeneralMarketScanner(BaseStrategy):
                 "suggested_size": size,
                 "edge": round(dampened_edge, 4),
                 "raw_edge": round(raw_edge, 4),
-                "confidence": getattr(ai_result, "confidence", 0.0),
+                "confidence": ai_confidence,
                 "model_probability": ai_prob,
                 "raw_ai_probability": raw_ai_prob,
                 "market_probability": market_price,
@@ -805,7 +882,7 @@ class GeneralMarketScanner(BaseStrategy):
                     strategy=self.name,
                     market_ticker=slug[:64] if slug else "unknown",
                     decision="BUY",
-                    confidence=getattr(ai_result, "confidence", None),
+                    confidence=ai_confidence,
                     signal_data=_json.dumps(signal_payload),
                     reason=(
                         f"AI edge: {direction.upper()} @ {entry_price:.2%} | "
