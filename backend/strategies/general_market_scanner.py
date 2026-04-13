@@ -718,6 +718,7 @@ class GeneralMarketScanner(BaseStrategy):
 
             decision = {
                 "market_ticker": slug,
+                "token_id": clob_token_id,
                 "market_question": question,
                 "direction": direction,
                 "decision": "BUY",
