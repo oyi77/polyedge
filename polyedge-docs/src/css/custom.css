@@ -1,0 +1,80 @@
+/**
+ * PolyEdge Docs — Custom theme
+ * Dark-first to match the PolyEdge trading dashboard.
+ */
+
+:root {
+  --ifm-color-primary: #22c55e;
+  --ifm-color-primary-dark: #1cad52;
+  --ifm-color-primary-darker: #1a9f4c;
+  --ifm-color-primary-darkest: #15833f;
+  --ifm-color-primary-light: #3fce6f;
+  --ifm-color-primary-lighter: #4dd279;
+  --ifm-color-primary-lightest: #6fdb93;
+  --ifm-code-font-size: 95%;
+  --ifm-font-family-base: 'Inter', system-ui, -apple-system, sans-serif;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #22c55e;
+  --ifm-color-primary-dark: #1cad52;
+  --ifm-color-primary-darker: #1a9f4c;
+  --ifm-color-primary-darkest: #15833f;
+  --ifm-color-primary-light: #3fce6f;
+  --ifm-color-primary-lighter: #4dd279;
+  --ifm-color-primary-lightest: #6fdb93;
+  --ifm-background-color: #0a0a0a;
+  --ifm-background-surface-color: #141414;
+  --ifm-navbar-background-color: #0a0a0a;
+  --ifm-footer-background-color: #0a0a0a;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* Hero section */
+.hero--primary {
+  --ifm-hero-background-color: #0a0a0a;
+  --ifm-hero-text-color: #ffffff;
+}
+
+[data-theme='dark'] .hero--primary {
+  background: linear-gradient(135deg, #0a0a0a 0%, #0f1a12 50%, #0a0a0a 100%);
+}
+
+[data-theme='light'] .hero--primary {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 50%, #f0fdf4 100%);
+  --ifm-hero-text-color: #111827;
+}
+
+/* Sidebar refinements */
+.menu__link {
+  font-size: 0.9rem;
+}
+
+/* Code blocks */
+[data-theme='dark'] .prism-code {
+  background-color: #141414 !important;
+}
+
+/* Table styling */
+table {
+  display: table;
+  width: 100%;
+}
+
+table th {
+  font-weight: 600;
+}
+
+/* Admonition accent colors */
+[data-theme='dark'] .alert--warning {
+  --ifm-alert-background-color: rgba(234, 179, 8, 0.1);
+}
+
+[data-theme='dark'] .alert--danger {
+  --ifm-alert-background-color: rgba(239, 68, 68, 0.1);
+}
+
+[data-theme='dark'] .alert--success {
+  --ifm-alert-background-color: rgba(34, 197, 94, 0.1);
+}

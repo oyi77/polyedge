@@ -13,6 +13,14 @@
   ],
   "routes": [
     {
+      "src": "/docs/(.*\\.[a-zA-Z0-9]+)$",
+      "dest": "/frontend/docs/$1"
+    },
+    {
+      "src": "/docs(/.*)?$",
+      "dest": "/frontend/docs$1/index.html"
+    },
+    {
       "src": "/(.*)",
       "dest": "/frontend/$1"
     }
