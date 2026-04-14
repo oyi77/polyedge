@@ -138,6 +138,9 @@ class PolymarketCLOB:
         simulation: Optional[
             bool
         ] = None,  # backward-compat: simulation=True -> mode="paper"
+        builder_api_key: Optional[str] = None,
+        builder_secret: Optional[str] = None,
+        builder_passphrase: Optional[str] = None,
     ):
         # Backward-compat: if simulation kwarg passed, map to mode
         if simulation is not None:
@@ -148,6 +151,9 @@ class PolymarketCLOB:
         self.api_key = api_key
         self.api_secret = api_secret
         self.api_passphrase = api_passphrase
+        self.builder_api_key = builder_api_key
+        self.builder_secret = builder_secret
+        self.builder_passphrase = builder_passphrase
 
         self._account: Optional[LocalAccount] = None
         if private_key:
@@ -166,12 +172,37 @@ class PolymarketCLOB:
                     api_secret=api_secret,
                     api_passphrase=api_passphrase,
                 )
+            builder_config = None
+            if builder_api_key and builder_secret and builder_passphrase:
+                try:
+                    from py_builder_signing_sdk.config import (
+                        BuilderConfig,
+                        BuilderApiKeyCreds,
+                    )
+
+                    builder_config = BuilderConfig(
+                        local_builder_creds=BuilderApiKeyCreds(
+                            key=builder_api_key,
+                            secret=builder_secret,
+                            passphrase=builder_passphrase,
+                        )
+                    )
+                    logger.info(
+                        "[polymarket_clob.__init__] Builder Program credentials loaded"
+                    )
+                except ImportError:
+                    logger.warning(
+                        "[polymarket_clob.__init__] py_builder_signing_sdk not installed — "
+                        "Builder Program auth unavailable. Install with: "
+                        "pip install py-builder-signing-sdk"
+                    )
             try:
                 self._clob_client = ClobClient(
                     host=self._clob_host,
                     chain_id=self._chain_id,
                     key=private_key,
                     creds=creds,
+                    builder_config=builder_config,
                 )
             except Exception as e:
                 logger.warning(
@@ -625,4 +656,7 @@ def clob_from_settings() -> PolymarketCLOB:
         api_secret=settings.POLYMARKET_API_SECRET,
         api_passphrase=settings.POLYMARKET_API_PASSPHRASE,
         mode=settings.TRADING_MODE,
+        builder_api_key=settings.POLYMARKET_BUILDER_API_KEY,
+        builder_secret=settings.POLYMARKET_BUILDER_SECRET,
+        builder_passphrase=settings.POLYMARKET_BUILDER_PASSPHRASE,
     )
