@@ -55,7 +55,12 @@ async def fetch_polymarket_resolution(
             if slug_response.status_code == 200:
                 slug_results = slug_response.json()
                 if isinstance(slug_results, list) and slug_results:
-                    return _parse_market_resolution(slug_results[0])
+                    result = _parse_market_resolution(slug_results[0])
+                    # If Gamma says unresolved but prices are 0/null, check CLOB
+                    if not result[0] and _has_invalid_prices(slug_results[0]):
+                        clob_result = await _check_clob_resolution(market_id)
+                        if clob_result[0]:
+                            return clob_result
 
             # Fallback: try market ID directly (works for numeric IDs)
             url = f"https://gamma-api.polymarket.com/markets/{market_id}"
@@ -67,6 +72,10 @@ async def fetch_polymarket_resolution(
                     logger.debug(
                         f"Skipping market {market_id} — 3+ consecutive 404/422s"
                     )
+                    # Try CLOB as last resort before giving up
+                    clob_result = await _check_clob_resolution(market_id)
+                    if clob_result[0]:
+                        return clob_result
                     return False, None
                 return await _search_market_in_events(market_id)
 
@@ -79,6 +88,43 @@ async def fetch_polymarket_resolution(
             f"[settlement_helpers.fetch_polymarket_resolution] {type(e).__name__}: Failed to fetch resolution for {event_slug or market_id}: {e}"
         )
         return False, None
+
+
+def _has_invalid_prices(market: dict) -> bool:
+    """Check if market has invalid/zero prices that suggest delisted market."""
+    outcome_prices = market.get("outcomePrices", [])
+    if not outcome_prices:
+        return True
+    try:
+        if isinstance(outcome_prices, str):
+            outcome_prices = json.loads(outcome_prices)
+        prices = [float(p) for p in outcome_prices if p]
+        if not prices or all(p == 0 for p in prices):
+            return True
+    except (ValueError, TypeError):
+        return True
+    return False
+
+
+async def _check_clob_resolution(market_id: str) -> Tuple[bool, Optional[float]]:
+    """Check CLOB API for market closed status."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"https://clob.polymarket.com/markets?slug={market_id}"
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data and isinstance(data, dict) and "data" in data:
+                    markets = data["data"]
+                    if markets and isinstance(markets, list):
+                        market = markets[0]
+                        if market.get("closed"):
+                            logger.info(f"CLOB confirms market {market_id} is closed")
+                            return True, None
+    except Exception as e:
+        logger.debug(f"CLOB resolution check failed for {market_id}: {e}")
+    return False, None
 
 
 async def _search_market_in_events(market_id: str) -> Tuple[bool, Optional[float]]:
