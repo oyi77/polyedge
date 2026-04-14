@@ -57,7 +57,12 @@ async def run_backtest_endpoint(
     db: Session = Depends(get_db),
     _: None = Depends(require_admin),
 ):
-    """Run a backtest for a given strategy and return results."""
+    """Run a backtest for a given strategy and return results.
+
+    Persists the run to BacktestRun/BacktestTrade tables so the
+    /api/backtest/history endpoint has data.  Response shape matches
+    the frontend Backtest.tsx component expectations.
+    """
     from backend.core.backtester import BacktestEngine, BacktestConfig
 
     end_date = _parse_date(body.end_date, datetime.now(timezone.utc))
@@ -75,36 +80,133 @@ async def run_backtest_endpoint(
         daily_loss_limit=body.daily_loss_limit,
     )
 
+    backtest_run = BacktestRun(
+        strategy_name=body.strategy_name,
+        start_date=start_date,
+        end_date=end_date,
+        initial_bankroll=body.initial_bankroll,
+        params={
+            "kelly_fraction": body.kelly_fraction,
+            "max_trade_size": body.max_trade_size,
+            "max_position_fraction": body.max_position_fraction,
+            "max_total_exposure": body.max_total_exposure,
+            "daily_loss_limit": body.daily_loss_limit,
+        },
+        final_equity=0.0,
+        total_pnl=0.0,
+        total_return_pct=0.0,
+        win_rate=0.0,
+        total_trades=0,
+        winning_trades=0,
+        losing_trades=0,
+        completed=False,
+    )
+    db.add(backtest_run)
+    db.commit()
+    db.refresh(backtest_run)
+    run_id = backtest_run.id
+
     try:
         engine = BacktestEngine(config)
         result = await engine.run()
     except Exception as exc:
         logger.error(f"Backtest /run failed: {exc}")
+        backtest_run.completed = True
+        backtest_run.error_message = str(exc)
+        backtest_run.completed_at = datetime.now(timezone.utc)
+        db.commit()
         raise HTTPException(
             status_code=500, detail="Backtest failed — check server logs"
         )
 
-    return {
-        "total_pnl": result.total_pnl,
-        "total_trades": result.total_trades,
-        "win_rate": result.win_rate,
-        "max_drawdown": result.max_drawdown,
-        "sharpe_ratio": result.sharpe_ratio,
-        "return_pct": result.return_pct,
-        "final_bankroll": result.final_bankroll,
-        "equity_curve": result.equity_curve,
-        "trades": [
+    winning_trades = 0
+    for bt in result.trades:
+        pnl_val = bt.pnl if bt.pnl is not None else 0.0
+        if pnl_val > 0:
+            winning_trades += 1
+        db.add(
+            BacktestTrade(
+                run_id=run_id,
+                signal_id=None,
+                market_ticker=bt.market_ticker,
+                platform="backtest",
+                direction=bt.direction,
+                entry_price=bt.entry_price,
+                exit_price=bt.settlement_value if bt.settled else None,
+                size=bt.size,
+                pnl=pnl_val,
+                result="win" if pnl_val > 0 else ("loss" if pnl_val < 0 else "pending"),
+                edge_at_entry=bt.edge,
+                market_probability_at_entry=bt.entry_price,
+                model_probability_at_entry=None,
+                timestamp=bt.timestamp,
+                executed=bt.settled,
+            )
+        )
+
+    losing_trades = result.total_trades - winning_trades
+    backtest_run.final_equity = result.final_bankroll
+    backtest_run.total_pnl = result.total_pnl
+    backtest_run.total_return_pct = result.return_pct
+    backtest_run.win_rate = result.win_rate
+    backtest_run.total_trades = result.total_trades
+    backtest_run.winning_trades = winning_trades
+    backtest_run.losing_trades = losing_trades
+    backtest_run.sharpe_ratio = result.sharpe_ratio
+    backtest_run.completed = True
+    backtest_run.completed_at = datetime.now(timezone.utc)
+    db.commit()
+
+    cumulative_bankroll = body.initial_bankroll
+    trade_log = []
+    for bt in result.trades:
+        pnl_val = bt.pnl if bt.pnl is not None else 0.0
+        cumulative_bankroll += pnl_val
+        trade_log.append(
             {
-                "timestamp": t.timestamp.isoformat(),
-                "market_ticker": t.market_ticker,
-                "direction": t.direction,
-                "entry_price": t.entry_price,
-                "size": t.size,
-                "pnl": t.pnl,
-                "settled": t.settled,
+                "timestamp": bt.timestamp.isoformat(),
+                "market_ticker": bt.market_ticker,
+                "direction": bt.direction,
+                "entry_price": bt.entry_price,
+                "exit_price": bt.settlement_value if bt.settled else None,
+                "size": bt.size,
+                "pnl": pnl_val,
+                "result": "win"
+                if pnl_val > 0
+                else ("loss" if pnl_val < 0 else "pending"),
+                "edge_at_entry": bt.edge,
+                "bankroll_after_trade": round(cumulative_bankroll, 4),
             }
-            for t in result.trades
-        ],
+        )
+
+    return {
+        "strategy_name": body.strategy_name,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "initial_bankroll": body.initial_bankroll,
+        "run_id": run_id,
+        "results": {
+            "summary": {
+                "total_signals": len(result.trades),
+                "total_trades": result.total_trades,
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,
+                "win_rate": result.win_rate,
+                "initial_bankroll": body.initial_bankroll,
+                "final_equity": result.final_bankroll,
+                "total_pnl": result.total_pnl,
+                "total_return_pct": result.return_pct,
+                "sharpe_ratio": result.sharpe_ratio,
+                "max_drawdown": result.max_drawdown,
+                "sortino_ratio": result.sortino_ratio,
+                "profit_factor": result.profit_factor,
+                "avg_edge": result.avg_edge,
+                "avg_trade_size": result.avg_trade_size,
+            },
+            "trade_log": trade_log,
+            "equity_curve": result.equity_curve,
+            "signals_processed": len(result.trades),
+        },
     }
 
 

@@ -1,10 +1,18 @@
 """
 Backtesting engine for PolyEdge strategies.
 
-Replays historical trades and signals to measure strategy performance
-without risking real capital.
+DEPRECATED: Use backend.core.backtester instead.
+This module uses random.random() for unexecuted signals, producing
+non-deterministic results. The backtester module only replays actual
+DB records (signals + trades) and computes all metrics deterministically.
+
+The run_backtest_engine() helper in backend.api.backtest still exists
+for any code that directly imports it, but the /api/backtest/run
+endpoint now uses backend.core.backtester.BacktestEngine exclusively.
 """
+
 import logging
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
@@ -13,6 +21,13 @@ from sqlalchemy.orm import Session
 from backend.models.database import Trade, Signal, BotState
 
 logger = logging.getLogger(__name__)
+
+warnings.warn(
+    "backend.core.backtesting is deprecated — use backend.core.backtester instead. "
+    "This module uses random.random() for unexecuted signals, producing non-deterministic results.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 @dataclass
@@ -24,7 +39,9 @@ class BacktestConfig:
     min_edge_threshold: float = 0.02
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
-    market_types: List[str] = field(default_factory=lambda: ["BTC", "Weather", "CopyTrader"])
+    market_types: List[str] = field(
+        default_factory=lambda: ["BTC", "Weather", "CopyTrader"]
+    )
     slippage_bps: int = 5  # 5 basis points slippage simulation
 
 
@@ -78,7 +95,9 @@ class BacktestEngine:
         Returns:
             BacktestResult with performance metrics
         """
-        logger.info(f"Starting backtest with ${self.config.initial_bankroll:,.2f} initial bankroll")
+        logger.info(
+            f"Starting backtest with ${self.config.initial_bankroll:,.2f} initial bankroll"
+        )
 
         # Fetch historical signals
         signals = self._fetch_signals(db)
@@ -118,6 +137,7 @@ class BacktestEngine:
                     type_filters.append(Signal.market_ticker.like("CT-%"))
 
             from sqlalchemy import or_
+
             query = query.filter(or_(*type_filters))
 
         return query.all()
@@ -162,6 +182,7 @@ class BacktestEngine:
             # No trade was executed, simulate based on market outcome
             # For simplicity, assume 50% win rate on unexecuted signals
             import random
+
             won = random.random() > 0.5
             pnl = position_size * signal.edge if won else -position_size * 0.5
         else:
@@ -207,11 +228,14 @@ class BacktestEngine:
         win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
 
         # Calculate ROI
-        roi = (final_bankroll - self.config.initial_bankroll) / self.config.initial_bankroll
+        roi = (
+            final_bankroll - self.config.initial_bankroll
+        ) / self.config.initial_bankroll
 
         # Calculate Sharpe Ratio (simplified)
         if len(self.pnl_history) > 1:
             import statistics
+
             avg_return = statistics.mean(self.pnl_history)
             std_return = statistics.stdev(self.pnl_history)
             sharpe_ratio = (avg_return / std_return) if std_return > 0 else 0.0

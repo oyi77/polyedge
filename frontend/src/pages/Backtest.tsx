@@ -258,8 +258,28 @@ export function Backtest() {
                       </div>
                       <div className="bg-neutral-700 rounded p-4">
                         <p className="text-xs text-neutral-400 mb-1 uppercase tracking-wide">Sharpe Ratio</p>
-                        <p className="text-2xl font-bold text-amber-400">{s.sharpe_ratio.toFixed(2)}</p>
-                        <p className="text-xs text-neutral-500 mt-1">{s.total_signals} signals scanned</p>
+                        <p className="text-2xl font-bold text-amber-400">{s.sharpe_ratio?.toFixed(2) ?? '0.00'}</p>
+                        <p className="text-xs text-neutral-500 mt-1">{s.total_signals} signals</p>
+                      </div>
+                      <div className="bg-neutral-700 rounded p-4">
+                        <p className="text-xs text-neutral-400 mb-1 uppercase tracking-wide">Max Drawdown</p>
+                        <p className="text-2xl font-bold text-red-400">{((s.max_drawdown ?? 0) * 100).toFixed(1)}%</p>
+                        <p className="text-xs text-neutral-500 mt-1">peak-to-trough</p>
+                      </div>
+                      <div className="bg-neutral-700 rounded p-4">
+                        <p className="text-xs text-neutral-400 mb-1 uppercase tracking-wide">Sortino Ratio</p>
+                        <p className="text-2xl font-bold text-cyan-400">{s.sortino_ratio?.toFixed(2) ?? '0.00'}</p>
+                        <p className="text-xs text-neutral-500 mt-1">downside risk</p>
+                      </div>
+                      <div className="bg-neutral-700 rounded p-4">
+                        <p className="text-xs text-neutral-400 mb-1 uppercase tracking-wide">Profit Factor</p>
+                        <p className="text-2xl font-bold text-purple-400">{s.profit_factor?.toFixed(2) ?? '0.00'}</p>
+                        <p className="text-xs text-neutral-500 mt-1">gross wins / losses</p>
+                      </div>
+                      <div className="bg-neutral-700 rounded p-4">
+                        <p className="text-xs text-neutral-400 mb-1 uppercase tracking-wide">Avg Edge</p>
+                        <p className="text-2xl font-bold text-green-300">{((s.avg_edge ?? 0) * 100).toFixed(1)}%</p>
+                        <p className="text-xs text-neutral-500 mt-1">avg trade ${s.avg_trade_size?.toFixed(2) ?? '0.00'}</p>
                       </div>
                     </>
                   )
@@ -277,6 +297,8 @@ export function Backtest() {
                       <tr className="text-left text-neutral-400 text-xs uppercase tracking-wide border-b border-neutral-700">
                         <th className="pb-2 pr-4">#</th>
                         <th className="pb-2 pr-4">Date</th>
+                        <th className="pb-2 pr-4">Market</th>
+                        <th className="pb-2 pr-4">Dir</th>
                         <th className="pb-2 pr-4">Entry</th>
                         <th className="pb-2 pr-4">Exit</th>
                         <th className="pb-2 pr-4">Size</th>
@@ -292,8 +314,10 @@ export function Backtest() {
                           <td className="py-2 pr-4 text-xs text-neutral-400">
                             {new Date(trade.timestamp).toLocaleDateString()}
                           </td>
+                          <td className="py-2 pr-4 text-xs">{trade.market_ticker ?? '—'}</td>
+                          <td className="py-2 pr-4 text-xs">{(trade.direction ?? '?').toUpperCase()}</td>
                           <td className="py-2 pr-4">{(trade.entry_price * 100).toFixed(1)}¢</td>
-                          <td className="py-2 pr-4">{(trade.exit_price * 100).toFixed(1)}¢</td>
+                          <td className="py-2 pr-4">{trade.exit_price != null ? `${(trade.exit_price * 100).toFixed(1)}¢` : '—'}</td>
                           <td className="py-2 pr-4">${trade.size.toFixed(2)}</td>
                           <td className={`py-2 pr-4 font-semibold ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                             {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}

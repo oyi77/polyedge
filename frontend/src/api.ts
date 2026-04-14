@@ -185,21 +185,29 @@ export async function runBacktest(config: {
       total_pnl: number
       total_return_pct: number
       sharpe_ratio: number
+      max_drawdown: number
+      sortino_ratio: number
+      profit_factor: number
+      avg_edge: number
+      avg_trade_size: number
     }
     trade_log: Array<{
       entry_price: number
-      exit_price: number
+      exit_price: number | null
       size: number
       pnl: number
       result: string
       timestamp: string
+      market_ticker: string
+      direction: string
+      edge_at_entry: number
       bankroll_after_trade: number
     }>
     equity_curve: Array<{
       timestamp: string
-      equity: number
-      pnl: number
+      bankroll: number
     }>
+    signals_processed: number
   }
   run_id?: number
 }> {

@@ -21,12 +21,11 @@ async def fetch_markets(
     order: str = "volume",
     ascending: bool = False,
 ) -> list[dict[str, Any]]:
-    """
-    Fetch active markets from the Polymarket Gamma API.
+    """Fetch markets from the Polymarket Gamma API.
 
     Args:
         limit: Maximum number of markets to return.
-        active: Only return active (non-closed) markets.
+        active: True for active markets, False for closed/resolved.
         order: Sort field (e.g. 'volume', 'liquidity', 'created').
         ascending: Sort direction.
 
@@ -39,7 +38,7 @@ async def fetch_markets(
                 GAMMA_API_URL,
                 params={
                     "active": str(active).lower(),
-                    "closed": "false",
+                    "closed": str(not active).lower(),
                     "limit": limit,
                     "order": order,
                     "ascending": str(ascending).lower(),
