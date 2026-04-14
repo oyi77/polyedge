@@ -273,6 +273,7 @@ class BondScannerStrategy(BaseStrategy):
                 "platform": "polymarket",
                 "strategy_name": self.name,
                 "days_to_resolution": round(days_to_resolution, 2),
+                "market_end_date": end_date_str,
                 "volume": volume,
             }
             decisions.append(decision)

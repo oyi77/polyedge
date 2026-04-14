@@ -102,6 +102,24 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                 settled_trades.append(trade)
                 continue
 
+            # Check if market's end_date has passed - if so and API can't
+            # resolve it, expire immediately instead of waiting 48 hours.
+            market_end = trade.market_end_date
+            if market_end:
+                if market_end.tzinfo is None:
+                    market_end = market_end.replace(tzinfo=timezone.utc)
+                if market_end < now:
+                    # Market expired and API couldn't resolve - expire now
+                    trade.settled = True
+                    trade.result = "expired"
+                    trade.settlement_time = now
+                    trade.pnl = 0
+                    settled_trades.append(trade)
+                    logger.info(
+                        f"Trade {trade.id} expired: market end_date {market_end.isoformat()} passed"
+                    )
+                    continue
+
             ts = trade.timestamp
             if ts and ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)

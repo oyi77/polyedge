@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from backend.config import settings
@@ -33,6 +34,7 @@ async def execute_decision(
     platform = decision.get("platform", "polymarket")
     reasoning = decision.get("reasoning", "")
     market_type = decision.get("market_type", "btc")
+    market_end_date_str = decision.get("market_end_date")
 
     owns_db = db is None
     if owns_db:
@@ -131,6 +133,15 @@ async def execute_decision(
                         f"[{settings.TRADING_MODE.upper()}][{strategy_name}] No token_id for {market_ticker}, skipping order"
                     )
                     return None
+            market_end_date = None
+            if market_end_date_str:
+                try:
+                    market_end_date = datetime.fromisoformat(
+                        market_end_date_str.replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    pass
+
             trade = Trade(
                 market_ticker=market_ticker,
                 platform=platform,
@@ -146,6 +157,7 @@ async def execute_decision(
                 clob_order_id=clob_order_id,
                 filled_size=filled_size,
                 market_type=market_type,
+                market_end_date=market_end_date,
             )
 
             db.add(trade)

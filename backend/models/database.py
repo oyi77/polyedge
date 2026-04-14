@@ -112,6 +112,9 @@ class Trade(Base):
         String, nullable=True
     )  # UUID idempotency key per order attempt
 
+    # Market end date for settlement tracking (when the market expires)
+    market_end_date = Column(DateTime, nullable=True, index=True)
+
 
 class BtcPriceSnapshot(Base):
     """Cached BTC prices for momentum calculation."""

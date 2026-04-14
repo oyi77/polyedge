@@ -391,12 +391,15 @@ class GeneralMarketScanner(BaseStrategy):
             if slug and slug in existing_tickers:
                 continue
 
-            # End-date filter: skip markets that resolve too far in the future
+            # End-date filter: skip markets that have already expired or resolve too far in the future
             end_date_str = market.get("endDate") or ""
             if end_date_str:
                 try:
                     end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
                     days_until = (end_dt - datetime.now(timezone.utc)).days
+                    if days_until < 0:
+                        # Market already expired - past markets should only be used for backtesting
+                        continue
                     if days_until > max_days_to_end:
                         continue
                 except (ValueError, TypeError):
@@ -864,6 +867,7 @@ class GeneralMarketScanner(BaseStrategy):
                 "strategy_name": self.name,
                 "volume": volume,
                 "reasoning": reasoning,
+                "market_end_date": end_date_str,
                 "debate_transcript": debate_result.to_transcript_dict()
                 if debate_result
                 else None,
