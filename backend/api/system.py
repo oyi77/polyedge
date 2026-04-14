@@ -56,6 +56,8 @@ class BotStats(BaseModel):
     open_exposure: float = 0.0
     open_trades: int = 0
     unrealized_pnl: float = 0.0
+    position_cost: float = 0.0
+    position_market_value: float = 0.0
 
 
 class EventResponse(BaseModel):
@@ -103,6 +105,8 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
     open_exposure_amount = sum((t.size or 0.0) for t in open_trades_rows)
 
     unrealized_pnl = 0.0
+    position_cost = 0.0
+    position_market_value = 0.0
     paper_open_trades = (
         db.query(Trade)
         .filter(Trade.settled == False, Trade.trading_mode == "paper")
@@ -135,11 +139,12 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
                         except Exception:
                             pass
                 for t in paper_open_trades:
+                    size = t.size or 0.0
+                    position_cost += size
                     if not t.market_ticker or t.market_ticker not in ticker_to_price:
                         continue
                     prices = ticker_to_price[t.market_ticker]
                     entry = t.entry_price or 0.5
-                    size = t.size or 0.0
                     direction = t.direction
                     if direction == "up":
                         current_price = prices["yes_price"]
@@ -148,13 +153,15 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
                     if entry > 0 and entry < 1:
                         shares = size / entry
                         if direction == "up":
-                            unrealized = shares * current_price - size
+                            mkt_val = shares * current_price
                         else:
-                            unrealized = shares * (1 - current_price) - size
+                            mkt_val = shares * (1 - current_price)
                     else:
-                        unrealized = 0.0
-                    unrealized_pnl += unrealized
-                unrealized_pnl = round(unrealized_pnl, 2)
+                        mkt_val = size
+                    position_market_value += mkt_val
+                unrealized_pnl = round(position_market_value - position_cost, 2)
+                position_cost = round(position_cost, 2)
+                position_market_value = round(position_market_value, 2)
         except Exception:
             unrealized_pnl = 0.0
 
@@ -229,6 +236,8 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
         open_exposure=open_exposure_amount,
         open_trades=open_trades_count,
         unrealized_pnl=unrealized_pnl,
+        position_cost=position_cost,
+        position_market_value=position_market_value,
     )
 
 
