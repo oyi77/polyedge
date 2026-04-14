@@ -55,6 +55,7 @@ class BotStats(BaseModel):
     live: dict = {}
     open_exposure: float = 0.0
     open_trades: int = 0
+    unrealized_pnl: float = 0.0
 
 
 class EventResponse(BaseModel):
@@ -100,6 +101,62 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
     )
     open_trades_count = len(open_trades_rows)
     open_exposure_amount = sum((t.size or 0.0) for t in open_trades_rows)
+
+    unrealized_pnl = 0.0
+    paper_open_trades = (
+        db.query(Trade)
+        .filter(Trade.settled == False, Trade.trading_mode == "paper")
+        .all()
+    )
+    if paper_open_trades:
+        try:
+            import httpx
+
+            tickers = list(
+                {t.market_ticker for t in paper_open_trades if t.market_ticker}
+            )
+            if tickers:
+                ticker_to_price = {}
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    for ticker in tickers[:50]:
+                        try:
+                            r = await client.get(
+                                "https://gamma-api.polymarket.com/markets?slug="
+                                + ticker
+                            )
+                            data = r.json()
+                            if data and isinstance(data, list) and len(data) > 0:
+                                m = data[0]
+                                ticker_to_price[ticker] = {
+                                    "yes_price": float(m.get("yes_price", 0.5)),
+                                    "no_price": float(m.get("no_price", 0.5)),
+                                }
+                            await client.aclose()
+                        except Exception:
+                            pass
+                for t in paper_open_trades:
+                    if not t.market_ticker or t.market_ticker not in ticker_to_price:
+                        continue
+                    prices = ticker_to_price[t.market_ticker]
+                    entry = t.entry_price or 0.5
+                    size = t.size or 0.0
+                    direction = t.direction
+                    if direction == "up":
+                        current_price = prices["yes_price"]
+                    else:
+                        current_price = prices["no_price"]
+                    if entry > 0 and entry < 1:
+                        shares = size / entry
+                        if direction == "up":
+                            unrealized = shares * current_price - size
+                        else:
+                            unrealized = shares * (1 - current_price) - size
+                    else:
+                        unrealized = 0.0
+                    unrealized_pnl += unrealized
+                unrealized_pnl = round(unrealized_pnl, 2)
+        except Exception:
+            unrealized_pnl = 0.0
 
     # Fallback: if mode PnL is 0 but settled trades exist, recalculate from DB
     pnl_source = "botstate"
@@ -171,6 +228,7 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
         },
         open_exposure=open_exposure_amount,
         open_trades=open_trades_count,
+        unrealized_pnl=unrealized_pnl,
     )
 
 

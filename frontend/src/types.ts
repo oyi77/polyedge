@@ -95,6 +95,7 @@ export interface BotStats {
   pnl_source?: string
   open_exposure?: number
   open_trades?: number
+  unrealized_pnl?: number
 }
 
 export interface EquityPoint {
