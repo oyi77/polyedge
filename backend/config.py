@@ -73,7 +73,6 @@ class Settings(BaseSettings):
     # Testnet / network config
     POLYGON_AMOY_RPC: str = "https://rpc-amoy.polygon.technology"
     POLYGON_AMOY_CHAIN_ID: int = 80002
-    POLYMARKET_TESTNET_CLOB_HOST: str = "https://clob-staging.polymarket.com"
 
     # Bot settings - BTC 5-MIN TRADING
     INITIAL_BANKROLL: float = 100.0
@@ -231,8 +230,8 @@ class Settings(BaseSettings):
             if not self.POLYMARKET_BUILDER_API_KEY:
                 _logger.warning(
                     "TRADING_MODE=testnet without POLYMARKET_BUILDER_API_KEY — "
-                    "CLOB order placement will use standard auth. Set Builder "
-                    "credentials for gasless trading."
+                    "CLOB order placement will use standard auth (gas fees apply). "
+                    "Set Builder credentials for gasless trading via Builder Program."
                 )
         return self
 

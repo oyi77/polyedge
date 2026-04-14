@@ -1,4 +1,7 @@
-"""Quick test script to verify Polymarket testnet CLOB connection with builder credentials."""
+"""Quick test script to verify Polymarket testnet mode with Builder Program credentials.
+Note: Testnet mode uses MAINNET CLOB (clob.polymarket.com) with Builder auth for gasless trading.
+The staging CLOB (clob-staging.polymarket.com) is non-functional; there is no separate testnet CLOB.
+"""
 
 import asyncio
 import os
@@ -11,11 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from backend.data.polymarket_clob import (
-    PolymarketCLOB,
-    CHAIN_ID_AMOY,
-    CLOB_HOST_TESTNET,
-)
+from backend.data.polymarket_clob import PolymarketCLOB
 
 
 async def test_testnet():
@@ -25,12 +24,14 @@ async def test_testnet():
     builder_pass = os.getenv("POLYMARKET_BUILDER_PASSPHRASE")
 
     print("=" * 60)
-    print("POLYMARKET TESTNET CONNECTION TEST")
+    print("POLYMARKET TESTNET MODE TEST (Builder Program on Mainnet CLOB)")
     print("=" * 60)
-    print(f"  CLOB Host:  {CLOB_HOST_TESTNET}")
-    print(f"  Chain ID:   {CHAIN_ID_AMOY}")
+    print(f"  CLOB Host:  https://clob.polymarket.com")
+    print(f"  Chain ID:   137 (Polygon mainnet)")
     print(f"  PK set:     {'YES' if pk else 'NO'}")
     print(f"  Builder key: {'YES' if builder_key else 'NO'}")
+    print()
+    print("NOTE: Testnet mode uses mainnet CLOB with Builder auth (gasless trading).")
     print()
 
     if not pk:
@@ -51,16 +52,16 @@ async def test_testnet():
         )
         print()
 
-        # Test 1: Fetch a testnet market price
-        print("TEST 1: Fetch testnet market list...")
+        # Test 1: Fetch markets (should work on mainnet CLOB)
+        print("TEST 1: Fetch market list from mainnet CLOB...")
         try:
             resp = await clob._http.get(
-                f"{CLOB_HOST_TESTNET}/markets", params={"limit": 5}
+                f"{clob._clob_host}/markets", params={"limit": 5}
             )
             resp.raise_for_status()
             data = resp.json()
             count = len(data) if isinstance(data, list) else "unknown"
-            print(f"  ✓ Fetched {count} testnet markets")
+            print(f"  ✓ Fetched {count} markets from mainnet CLOB")
         except Exception as e:
             print(f"  ✗ Failed: {e}")
 
@@ -80,7 +81,7 @@ async def test_testnet():
         except Exception as e:
             print(f"  ✗ Failed: {e}")
 
-        # Test 3: Check wallet balance on testnet
+        # Test 3: Check wallet balance on mainnet
         print()
         print("TEST 3: Check wallet balance...")
         try:
@@ -88,21 +89,21 @@ async def test_testnet():
                 balance = (
                     clob._clob_client.get_balance_allowance(
                         BalanceAllowanceParams(
-                            asset_type=AssetType.CONDITIONAL,
-                            signature_type=1,
+                            asset_type=AssetType.COLLATERAL,
                         )
                     )
                     if hasattr(clob._clob_client, "get_balance_allowance")
                     else None
                 )
                 if balance:
-                    print(f"  ✓ Balance: {balance}")
+                    usdc_balance = float(balance.get("balance", 0)) / 1e6
+                    print(f"  ✓ USDC Balance: {usdc_balance:.2f}")
                 else:
-                    print(f"  ~ No balance data (wallet may need funding on testnet)")
+                    print(f"  ~ No balance data")
             else:
                 print(f"  ✗ ClobClient not initialized")
         except Exception as e:
-            print(f"  ~ Balance check failed (expected for new testnet wallet): {e}")
+            print(f"  ~ Balance check failed: {e}")
 
         # Test 4: Builder auth check
         print()
@@ -118,13 +119,16 @@ async def test_testnet():
 
     print()
     print("=" * 60)
-    print("TESTNET CONNECTION TEST COMPLETE")
+    print("TESTNET MODE TEST COMPLETE")
     print("=" * 60)
     print()
     print("NEXT STEPS:")
-    print("  1. Fund your testnet wallet with testnet USDC")
+    print("  1. Fund your wallet with USDC on Polygon mainnet")
     print("  2. Set TRADING_MODE=testnet in .env")
     print("  3. Start the bot: python -m backend")
+    print(
+        "  4. Monitor dashboard - testnet trades will be REAL but gasless via Builder Program"
+    )
     return True
 
 

@@ -35,12 +35,10 @@ logger = logging.getLogger("trading_bot")
 
 clob_breaker = CircuitBreaker("polymarket_clob")
 
-CLOB_HOST_MAINNET = "https://clob.polymarket.com"
-CLOB_HOST_TESTNET = "https://clob-staging.polymarket.com"
+CLOB_HOST = "https://clob.polymarket.com"  # Polymarket has a single CLOB API; no testnet CLOB exists
 GAMMA_HOST = "https://gamma-api.polymarket.com"
 DATA_HOST = "https://data-api.polymarket.com"
-CHAIN_ID_MAINNET = 137
-CHAIN_ID_AMOY = 80002
+CHAIN_ID = 137  # Polygon mainnet — Builder Program and all trading run on mainnet
 
 # Polymarket minimum order size
 MIN_ORDER_USDC = 1.0
@@ -221,14 +219,11 @@ class PolymarketCLOB:
 
     @property
     def _clob_host(self) -> str:
-        # paper uses mainnet host for real price data (no real orders submitted)
-        if self.mode in ("live", "paper"):
-            return CLOB_HOST_MAINNET
-        return CLOB_HOST_TESTNET  # testnet
+        return CLOB_HOST
 
     @property
     def _chain_id(self) -> int:
-        return CHAIN_ID_AMOY if self.mode == "testnet" else CHAIN_ID_MAINNET
+        return CHAIN_ID
 
     async def __aenter__(self):
         self._http = httpx.AsyncClient(
