@@ -623,12 +623,14 @@ async def get_dashboard(
         for t in trades
     ]
 
-    # Equity curve
+    # Equity curve: track equity at each settled trade
     equity_trades = (
         db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
     )
     equity_curve = []
     cumulative_pnl = 0
+    # Simulate running bankroll: INITIAL + realized P&L (no position adjustments needed
+    # since PnL is already net of stake returns/losses)
     for trade in equity_trades:
         if trade.pnl is not None:
             cumulative_pnl += trade.pnl
@@ -639,6 +641,25 @@ async def get_dashboard(
                     "bankroll": settings.INITIAL_BANKROLL + cumulative_pnl,
                 }
             )
+
+    # Append current point with open positions reflected
+    bot_state = db.query(BotState).first()
+    if bot_state and equity_curve:
+        current_bankroll = (
+            bot_state.paper_bankroll
+            if settings.TRADING_MODE == "paper"
+            else bot_state.bankroll
+        )
+        open_trades = db.query(Trade).filter(Trade.settled == False).all()
+        unrealized = (
+            sum((t.pnl or 0) for t in open_trades if t.pnl is not None)
+            if open_trades
+            else 0
+        )
+        last_point = equity_curve[-1].copy()
+        last_point["timestamp"] = datetime.now(timezone.utc).isoformat()
+        last_point["bankroll"] = current_bankroll + unrealized
+        equity_curve.append(last_point)
 
     # Calibration summary
     calibration = _compute_calibration_summary(db)
