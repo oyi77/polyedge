@@ -63,7 +63,7 @@ export function useStats() {
     mode: stats.mode,
     openExposure: stats.open_exposure ?? 0,
     openTrades: stats.open_trades ?? 0,
-    totalEquity: bankroll + (stats.unrealized_pnl ?? 0),
+    totalEquity: initialBankroll + pnl + (stats.unrealized_pnl ?? 0),
 
     // Paper/Live specific
     paperStats: stats.paper,
