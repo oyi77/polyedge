@@ -52,55 +52,55 @@ class WalletWatcher:
         self._sell_sizes: dict[str, dict[str, float]] = {}
 
     def _get_entry_size(self, wallet: str, pos_key: str) -> float:
-        """Read cumulative buy size from DB for this wallet+position."""
         try:
             db = SessionLocal()
-            condition_id, side = pos_key.split(":", 1)
-            entry = (
-                db.query(CopyTraderEntry)
-                .filter_by(wallet=wallet, condition_id=condition_id, side=side)
-                .first()
-            )
-            return entry.size if entry else 0.0
+            try:
+                condition_id, side = pos_key.split(":", 1)
+                entry = (
+                    db.query(CopyTraderEntry)
+                    .filter_by(wallet=wallet, condition_id=condition_id, side=side)
+                    .first()
+                )
+                return entry.size if entry else 0.0
+            finally:
+                db.close()
         except Exception as e:
             logger.warning(
                 f"DB read error for entry size ({wallet[:10]}, {pos_key}): {e}"
             )
             return 0.0
-        finally:
-            db.close()
 
     def _upsert_entry_size(self, wallet: str, pos_key: str, delta: float) -> float:
-        """Add delta to cumulative buy size in DB; return new total."""
         try:
             db = SessionLocal()
-            condition_id, side = pos_key.split(":", 1)
-            entry = (
-                db.query(CopyTraderEntry)
-                .filter_by(wallet=wallet, condition_id=condition_id, side=side)
-                .first()
-            )
-            if entry:
-                entry.size += delta
-            else:
-                entry = CopyTraderEntry(
-                    wallet=wallet,
-                    condition_id=condition_id,
-                    side=side,
-                    size=delta,
+            try:
+                condition_id, side = pos_key.split(":", 1)
+                entry = (
+                    db.query(CopyTraderEntry)
+                    .filter_by(wallet=wallet, condition_id=condition_id, side=side)
+                    .first()
                 )
-                db.add(entry)
-            db.commit()
-            db.refresh(entry)
-            return entry.size
+                if entry:
+                    entry.size += delta
+                else:
+                    entry = CopyTraderEntry(
+                        wallet=wallet,
+                        condition_id=condition_id,
+                        side=side,
+                        size=delta,
+                    )
+                    db.add(entry)
+                db.commit()
+                db.refresh(entry)
+                return entry.size
+            except Exception:
+                db.rollback()
+                raise
         except Exception as e:
             logger.warning(
                 f"DB upsert error for entry size ({wallet[:10]}, {pos_key}): {e}"
             )
-            db.rollback()
             return 0.0
-        finally:
-            db.close()
 
     async def _fetch_all_trades(
         self, wallet: str, page_size: int = 100, max_pages: int = 5

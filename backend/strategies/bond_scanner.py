@@ -97,7 +97,7 @@ class BondScannerStrategy(BaseStrategy):
 
             open_trades = (
                 ctx.db.query(Trade)
-                .filter(Trade.settled == False, Trade.trading_mode == ctx.mode)
+                .filter(Trade.settled.is_(False), Trade.trading_mode == ctx.mode)
                 .all()
             )
             existing_tickers = {t.market_ticker for t in open_trades if t.market_ticker}

@@ -182,7 +182,7 @@ class MarketMakerStrategy(BaseStrategy):
                         ctx.db.query(func.coalesce(func.sum(Trade.size), 0.0))
                         .filter(
                             Trade.market_ticker == market.ticker,
-                            Trade.settled == False,
+                            Trade.settled.is_(False),
                             Trade.trading_mode == ctx.mode,
                             Trade.strategy == self.name,
                         )

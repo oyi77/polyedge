@@ -13,6 +13,7 @@ When a market moves 5%+ quickly, something significant happened. Either:
 We use web search to determine which scenario applies.
 """
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -143,41 +144,60 @@ class LineMovementDetectorStrategy(BaseStrategy):
         self, market: dict, params: dict
     ) -> Optional[LineMovement]:
         try:
-            outcomes = market.get("outcomePrices", "")
-            if not outcomes:
+            raw_outcomes = market.get("outcomePrices")
+            if not raw_outcomes:
                 return None
 
-            prices = [float(p) for p in outcomes.strip("[]").split(",") if p.strip()]
+            if isinstance(raw_outcomes, str):
+                try:
+                    prices = [float(p) for p in json.loads(raw_outcomes) if p]
+                except (json.JSONDecodeError, ValueError):
+                    prices = [
+                        float(p)
+                        for p in raw_outcomes.strip("[]").split(",")
+                        if p.strip()
+                    ]
+            elif isinstance(raw_outcomes, list):
+                prices = [float(p) for p in raw_outcomes if p is not None]
+            else:
+                return None
+
             if not prices:
                 return None
 
             current_price = prices[0]
 
-            price_history = market.get("priceHistory", [])
-            if not price_history:
-                return None
+            one_day_pct = market.get("oneDayPriceChange")
+            if one_day_pct is not None:
+                try:
+                    price_change_pct = float(one_day_pct) * 100
+                except (ValueError, TypeError):
+                    price_change_pct = 0.0
+            else:
+                price_history = market.get("priceHistory")
+                if price_history and isinstance(price_history, list) and price_history:
+                    now = time.time()
+                    lookback_seconds = params["lookback_hours"] * 3600
+                    target_time = now - lookback_seconds
 
-            now = time.time()
-            lookback_seconds = params["lookback_hours"] * 3600
-            target_time = now - lookback_seconds
+                    price_1h_ago = None
+                    for point in reversed(price_history):
+                        ts = point.get("t", 0)
+                        if ts <= target_time:
+                            price_1h_ago = point.get("p", current_price)
+                            break
 
-            price_1h_ago = None
-            for point in reversed(price_history):
-                ts = point.get("t", 0)
-                if ts <= target_time:
-                    price_1h_ago = point.get("p", current_price)
-                    break
+                    if price_1h_ago is None:
+                        price_1h_ago = price_history[0].get("p", current_price)
 
-            if price_1h_ago is None:
-                if price_history:
-                    price_1h_ago = price_history[0].get("p", current_price)
+                    if price_1h_ago == 0:
+                        return None
+
+                    price_change_pct = (
+                        (current_price - price_1h_ago) / price_1h_ago
+                    ) * 100
                 else:
                     return None
-
-            if price_1h_ago == 0:
-                return None
-
-            price_change_pct = ((current_price - price_1h_ago) / price_1h_ago) * 100
 
             if abs(price_change_pct) < params["min_price_change_pct"]:
                 return None
@@ -186,8 +206,23 @@ class LineMovementDetectorStrategy(BaseStrategy):
             if volume_24h < params["min_volume_24h"]:
                 return None
 
-            tokens = market.get("clobTokenIds", "").strip("[]").split(",")
-            token_id = tokens[0].strip().strip('"') if tokens else None
+            raw_tokens = market.get("clobTokenIds", "")
+            token_id = None
+            if isinstance(raw_tokens, list):
+                token_id = str(raw_tokens[0]) if raw_tokens else None
+            elif isinstance(raw_tokens, str) and raw_tokens:
+                try:
+                    parsed = json.loads(raw_tokens)
+                    token_id = str(parsed[0]) if parsed else None
+                except (json.JSONDecodeError, IndexError):
+                    tokens = raw_tokens.strip("[]").split(",")
+                    token_id = tokens[0].strip().strip('"') if tokens else None
+
+            price_1h_ago = (
+                current_price / (1 + price_change_pct / 100)
+                if price_change_pct != 0
+                else current_price
+            )
 
             return LineMovement(
                 ticker=market.get("slug", market.get("question", "")[:50]),
@@ -240,7 +275,7 @@ class LineMovementDetectorStrategy(BaseStrategy):
             )
             return None
 
-        action = "BUY" if direction == "up" else "BUY"
+        action = "BUY"
         side = "yes" if direction == "up" else "no"
         entry_price = (
             movement.current_price
