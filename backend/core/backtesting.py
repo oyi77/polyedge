@@ -179,15 +179,12 @@ class BacktestEngine:
         )
 
         if not historical_trade:
-            # No trade was executed, simulate based on market outcome
-            # For simplicity, assume 50% win rate on unexecuted signals
-            import random
+            # No trade was executed — skip signal entirely to avoid
+            # non-deterministic (random) P&L simulation.  Only replay
+            # signals that have a matching historical trade outcome.
+            return
 
-            won = random.random() > 0.5
-            pnl = position_size * signal.edge if won else -position_size * 0.5
-        else:
-            # Use actual trade outcome
-            pnl = historical_trade.pnl
+        pnl = historical_trade.pnl
 
         # Update bankroll
         self.bankroll += pnl

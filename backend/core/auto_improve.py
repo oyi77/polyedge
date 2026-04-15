@@ -154,7 +154,14 @@ def check_rollback_needed(db: Session, target_settings=None, bigbrain=None) -> b
                 f"Restored: {json.dumps(_last_param_change['previous_values'])}"
             )
             try:
-                asyncio.create_task(bigbrain.send_alert(rollback_msg, level="warning"))
+                task = asyncio.create_task(
+                    bigbrain.send_alert(rollback_msg, level="warning")
+                )
+                task.add_done_callback(
+                    lambda t: (
+                        t.exception() if not t.cancelled() and t.exception() else None
+                    )
+                )
             except Exception as e:
                 logger.debug("Failed to send rollback alert: %s", e)
 

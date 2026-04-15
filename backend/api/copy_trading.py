@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List
-from sqlalchemy import func
+from sqlalchemy import String, func, cast
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db, Signal, SessionLocal, CopyTraderEntry
@@ -218,9 +218,13 @@ async def get_copy_trader_status(
         wallet_details = []
         for addr, trades, pnl in wallet_entries:
             pseudonym = addr[:8] + "..."
+            # SQLite doesn't support JSON .contains() — use LIKE on JSON string representation
             signal = (
                 db.query(Signal)
-                .filter(Signal.market_type == "copy", Signal.sources.contains([addr]))
+                .filter(
+                    Signal.market_type == "copy",
+                    cast(Signal.sources, String).like(f'%"{addr}"%'),
+                )
                 .first()
             )
             if signal and signal.sources and len(signal.sources) > 1:
