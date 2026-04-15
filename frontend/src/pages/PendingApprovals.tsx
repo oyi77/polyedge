@@ -222,10 +222,10 @@ export default function PendingApprovals() {
                   <td className={`px-3 py-2 font-bold ${it.direction === 'up' || it.direction === 'yes' ? 'text-green-400' : 'text-red-400'}`}>
                     {it.direction?.toUpperCase() ?? '--'}
                   </td>
-                  <td className="px-3 py-2 text-right text-neutral-300 tabular-nums">${it.size.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right text-neutral-300 tabular-nums">${(it.size ?? 0).toFixed(2)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
-                    <span className={`${it.confidence >= 0.7 ? 'text-green-400' : it.confidence >= 0.5 ? 'text-amber-400' : 'text-red-400'}`}>
-                      {(it.confidence * 100).toFixed(1)}%
+                    <span className={`${(it.confidence ?? 0) >= 0.7 ? 'text-green-400' : (it.confidence ?? 0) >= 0.5 ? 'text-amber-400' : 'text-red-400'}`}>
+                      {((it.confidence ?? 0) * 100).toFixed(1)}%
                     </span>
                   </td>
                   <td className="px-3 py-2 text-neutral-600 whitespace-nowrap">
@@ -261,10 +261,10 @@ export default function PendingApprovals() {
         <div className="shrink-0 px-4 py-2 border-t border-neutral-800 flex items-center gap-4">
           <span className="text-[10px] text-neutral-600">{items.length} pending</span>
           <span className="text-[10px] text-neutral-600">
-            Total size: <span className="text-neutral-400 tabular-nums">${items.reduce((s, i) => s + i.size, 0).toFixed(2)}</span>
+            Total size: <span className="text-neutral-400 tabular-nums">${items.reduce((s, i) => s + (i.size ?? 0), 0).toFixed(2)}</span>
           </span>
           <span className="text-[10px] text-neutral-600">
-            Avg confidence: <span className="text-neutral-400 tabular-nums">{(items.reduce((s, i) => s + i.confidence, 0) / items.length * 100).toFixed(1)}%</span>
+            Avg confidence: <span className="text-neutral-400 tabular-nums">{(items.reduce((s, i) => s + (i.confidence ?? 0), 0) / items.length * 100).toFixed(1)}%</span>
           </span>
         </div>
       )}

@@ -127,7 +127,7 @@ export default function EdgeTracker() {
                     track.win_rate >= 45 ? 'text-yellow-500' :
                     'text-red-500'
                   }`}>
-                    {(track.win_rate * 100).toFixed(0)}%
+                    {((track.win_rate ?? 0) * 100).toFixed(0)}%
                   </span>
                 </div>
 
@@ -137,7 +137,7 @@ export default function EdgeTracker() {
                   <span className={`text-sm font-bold tabular-nums ${
                     track.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'
                   }`}>
-                    {track.total_pnl >= 0 ? '+' : ''}${Math.abs(track.total_pnl).toFixed(0)}
+                    {(track.total_pnl ?? 0) >= 0 ? '+' : ''}${Math.abs(track.total_pnl ?? 0).toFixed(0)}
                   </span>
                 </div>
 
@@ -163,7 +163,7 @@ export default function EdgeTracker() {
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[9px] text-neutral-600">EXECUTION RATE</span>
                   <span className="text-[9px] text-neutral-500 tabular-nums">
-                    {track.total_signals > 0 ? ((track.signals_executed / track.total_signals) * 100).toFixed(0) : 0}%
+                    {track.total_signals > 0 ? (((track.signals_executed ?? 0) / track.total_signals) * 100).toFixed(0) : 0}%
                   </span>
                 </div>
                 <div className="w-full bg-neutral-800 rounded-full h-1">

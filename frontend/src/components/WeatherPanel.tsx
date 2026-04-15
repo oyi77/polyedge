@@ -81,18 +81,18 @@ export function WeatherPanel({ forecasts, signals }: Props) {
             </div>
             <div className="flex-1 flex items-center gap-3 text-[10px] tabular-nums">
               <span className="text-neutral-300">
-                {f.mean_high.toFixed(0)}F
-                <span className="text-neutral-600 ml-0.5">+/-{f.std_high.toFixed(0)}</span>
+                {(f.mean_high ?? 0).toFixed(0)}F
+                <span className="text-neutral-600 ml-0.5">+/-{(f.std_high ?? 0).toFixed(0)}</span>
               </span>
-              <AgreementBar value={f.ensemble_agreement} />
-              <span className={`${f.ensemble_agreement > 0.7 ? 'text-green-500' : 'text-amber-500'}`}>
-                {(f.ensemble_agreement * 100).toFixed(0)}%
+              <AgreementBar value={f.ensemble_agreement ?? 0} />
+              <span className={`${(f.ensemble_agreement ?? 0) > 0.7 ? 'text-green-500' : 'text-amber-500'}`}>
+                {((f.ensemble_agreement ?? 0) * 100).toFixed(0)}%
               </span>
             </div>
             <div className="flex items-center gap-1 shrink-0">
               {bestEdge && (
                 <span className={`text-[10px] tabular-nums ${bestEdge.edge > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                  {bestEdge.edge > 0 ? '+' : ''}{(bestEdge.edge * 100).toFixed(1)}%
+                  {bestEdge.edge > 0 ? '+' : ''}{((bestEdge.edge ?? 0) * 100).toFixed(1)}%
                 </span>
               )}
               {citySignals.length > 0 && citySignals[0].platform && (

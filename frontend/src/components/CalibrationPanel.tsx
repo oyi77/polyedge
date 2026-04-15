@@ -5,14 +5,16 @@ interface Props {
 }
 
 export function CalibrationPanel({ calibration }: Props) {
-  const accuracyPct = (calibration.accuracy * 100).toFixed(0)
-  const accuracyColor = calibration.accuracy >= 0.55 ? '#22c55e' : calibration.accuracy < 0.50 ? '#dc2626' : '#a1a1aa'
+  const acc = calibration.accuracy ?? 0
+  const accuracyPct = (acc * 100).toFixed(0)
+  const accuracyColor = acc >= 0.55 ? '#22c55e' : acc < 0.50 ? '#dc2626' : '#a1a1aa'
 
-  const brierLabel = calibration.brier_score <= 0.20 ? 'Good' : calibration.brier_score <= 0.25 ? 'OK' : 'Poor'
-  const brierColor = calibration.brier_score <= 0.20 ? '#22c55e' : calibration.brier_score <= 0.25 ? '#d97706' : '#dc2626'
+  const brier = calibration.brier_score ?? 0.25
+  const brierLabel = brier <= 0.20 ? 'Good' : brier <= 0.25 ? 'OK' : 'Poor'
+  const brierColor = brier <= 0.20 ? '#22c55e' : brier <= 0.25 ? '#d97706' : '#dc2626'
 
-  const predEdge = (calibration.avg_predicted_edge * 100).toFixed(1)
-  const actualEdge = (calibration.avg_actual_edge * 100).toFixed(1)
+  const predEdge = ((calibration.avg_predicted_edge ?? 0) * 100).toFixed(1)
+  const actualEdge = ((calibration.avg_actual_edge ?? 0) * 100).toFixed(1)
 
   return (
     <div className="space-y-2">
@@ -24,7 +26,7 @@ export function CalibrationPanel({ calibration }: Props) {
         <div className="text-[10px] text-neutral-500 leading-tight">
           <div>Accuracy</div>
           <div className="tabular-nums text-neutral-600">
-            {Math.round(calibration.accuracy * calibration.total_with_outcome)}/{calibration.total_with_outcome}
+            {Math.round(acc * (calibration.total_with_outcome ?? 0))}/{calibration.total_with_outcome ?? 0}
           </div>
         </div>
       </div>
@@ -34,7 +36,7 @@ export function CalibrationPanel({ calibration }: Props) {
         <div>
           <span className="text-neutral-500">Brier: </span>
           <span className="tabular-nums" style={{ color: brierColor }}>
-            {calibration.brier_score.toFixed(3)} ({brierLabel})
+            {brier.toFixed(3)} ({brierLabel})
           </span>
         </div>
       </div>
@@ -47,7 +49,7 @@ export function CalibrationPanel({ calibration }: Props) {
             <div
               className="meter-fill"
               style={{
-                width: `${Math.min(100, Math.abs(calibration.avg_predicted_edge) * 500)}%`,
+                width: `${Math.min(100, Math.abs(calibration.avg_predicted_edge ?? 0) * 500)}%`,
                 backgroundColor: '#d97706'
               }}
             />
@@ -60,14 +62,14 @@ export function CalibrationPanel({ calibration }: Props) {
             <div
               className="meter-fill"
               style={{
-                width: `${Math.min(100, Math.abs(calibration.avg_actual_edge) * 500)}%`,
-                backgroundColor: calibration.avg_actual_edge >= 0 ? '#22c55e' : '#dc2626'
+                width: `${Math.min(100, Math.abs(calibration.avg_actual_edge ?? 0) * 500)}%`,
+                backgroundColor: (calibration.avg_actual_edge ?? 0) >= 0 ? '#22c55e' : '#dc2626'
               }}
             />
           </div>
           <span
             className="tabular-nums w-10 text-right"
-            style={{ color: calibration.avg_actual_edge >= 0 ? '#22c55e' : '#dc2626' }}
+            style={{ color: (calibration.avg_actual_edge ?? 0) >= 0 ? '#22c55e' : '#dc2626' }}
           >
             {actualEdge}%
           </span>
@@ -75,7 +77,7 @@ export function CalibrationPanel({ calibration }: Props) {
       </div>
 
       <div className="text-[9px] text-neutral-600 tabular-nums">
-        {calibration.total_signals} tracked / {calibration.total_with_outcome} settled
+        {calibration.total_signals ?? 0} tracked / {calibration.total_with_outcome ?? 0} settled
       </div>
     </div>
   )

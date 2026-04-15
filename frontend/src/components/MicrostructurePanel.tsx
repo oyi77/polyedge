@@ -38,7 +38,7 @@ function RsiGauge({ value }: { value: number }) {
           fontSize="14" fontWeight="600"
           fontFamily="JetBrains Mono"
         >
-          {value.toFixed(0)}
+          {(value ?? 0).toFixed(0)}
         </text>
         <text
           x="38" y="48" textAnchor="middle"
@@ -63,7 +63,7 @@ function MeterBar({ label, value, min, max, color, format }: {
 }) {
   const range = max - min
   const pct = Math.max(0, Math.min(100, ((value - min) / range) * 100))
-  const displayValue = format ? format(value) : value.toFixed(2)
+  const displayValue = format ? format(value ?? 0) : (value ?? 0).toFixed(2)
 
   return (
     <div className="space-y-0.5">

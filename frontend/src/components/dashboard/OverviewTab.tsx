@@ -250,10 +250,10 @@ export function OverviewTab({
                     <span className={`text-[9px] uppercase tracking-wider font-bold ${isActive ? modeKey === 'live' ? 'text-red-400' : 'text-amber-400' : 'text-neutral-600'}`}>{modeKey === 'live' ? 'Live' : 'Paper'}</span>
                     {isActive && <span className={`text-[8px] uppercase px-1 py-0.5 border ${modeKey === 'live' ? 'text-red-400 border-red-500/30 bg-red-500/10' : 'text-amber-400 border-amber-500/30 bg-amber-500/10'}`}>Active</span>}
                   </div>
-                  <div className={`text-xs font-semibold tabular-nums ${modeData.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{modeData.pnl >= 0 ? '+' : ''}${modeData.pnl.toFixed(2)}</div>
+                  <div className={`text-xs font-semibold tabular-nums ${(modeData.pnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>{(modeData.pnl ?? 0) >= 0 ? '+' : ''}${(modeData.pnl ?? 0).toFixed(2)}</div>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[9px] text-neutral-600 tabular-nums">{modeData.trades}t</span>
-                    <span className="text-[9px] text-neutral-600 tabular-nums">{(modeData.win_rate * 100).toFixed(0)}%w</span>
+                    <span className="text-[9px] text-neutral-600 tabular-nums">{modeData.trades ?? 0}t</span>
+                    <span className="text-[9px] text-neutral-600 tabular-nums">{((modeData.win_rate ?? 0) * 100).toFixed(0)}%w</span>
                   </div>
                 </div>
               )

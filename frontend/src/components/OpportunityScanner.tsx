@@ -78,8 +78,8 @@ export default function OpportunityScanner() {
             >
               <span className="text-neutral-200 font-medium truncate max-w-[50%]">{op.market_id}</span>
               <span className="text-neutral-500 uppercase">{op.kind}</span>
-              <span className={`font-semibold ${op.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {op.net_profit >= 0 ? '+' : ''}{(op.net_profit * 100).toFixed(2)}%
+              <span className={`font-semibold ${(op.net_profit ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {(op.net_profit ?? 0) >= 0 ? '+' : ''}{((op.net_profit ?? 0) * 100).toFixed(2)}%
               </span>
             </li>
           ))}
