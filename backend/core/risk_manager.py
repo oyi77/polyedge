@@ -88,6 +88,7 @@ class RiskManager:
                 .filter(
                     Trade.settled == True,
                     Trade.settlement_time >= day_start,
+                    Trade.trading_mode == self.s.TRADING_MODE,
                 )
                 .scalar()
                 or 0.0
@@ -98,6 +99,7 @@ class RiskManager:
                 .filter(
                     Trade.settled == True,
                     Trade.settlement_time >= week_start,
+                    Trade.trading_mode == self.s.TRADING_MODE,
                 )
                 .scalar()
                 or 0.0
@@ -156,6 +158,7 @@ class RiskManager:
                 .filter(
                     Trade.settled == True,
                     Trade.settlement_time >= today_start,
+                    Trade.trading_mode == self.s.TRADING_MODE,
                 )
                 .scalar()
                 or 0.0
@@ -180,6 +183,7 @@ class RiskManager:
                 .filter(
                     Trade.market_ticker == market_ticker,
                     Trade.settled == False,
+                    Trade.trading_mode == self.s.TRADING_MODE,
                 )
                 .scalar()
                 or 0

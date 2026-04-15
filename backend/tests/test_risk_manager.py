@@ -16,6 +16,7 @@ class MockSettings:
     SLIPPAGE_TOLERANCE: float = 0.02
     DAILY_DRAWDOWN_LIMIT_PCT: float = 0.10
     WEEKLY_DRAWDOWN_LIMIT_PCT: float = 0.20
+    TRADING_MODE: str = "paper"
 
 
 def make_rm():

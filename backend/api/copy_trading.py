@@ -1,4 +1,5 @@
 """Copy trading routes - leaderboard, signals, positions."""
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List
@@ -54,7 +55,12 @@ async def get_copy_leaderboard(limit: int = 100, _: None = Depends(require_admin
                 page_limit = min(50, limit - offset)
                 resp = await client.get(
                     f"{DATA_API}/leaderboard",
-                    params={"timePeriod": "all", "orderBy": "PNL", "limit": page_limit, "offset": offset},
+                    params={
+                        "timePeriod": "all",
+                        "orderBy": "PNL",
+                        "limit": page_limit,
+                        "offset": offset,
+                    },
                 )
                 resp.raise_for_status()
                 page = resp.json()
@@ -75,7 +81,7 @@ async def get_copy_leaderboard(limit: int = 100, _: None = Depends(require_admin
             win_rate = 0.0
             if trades > 0:
                 wins = int(t.get("numWins", 0))
-                win_rate = wins / trades if wins else 0.0
+                win_rate = wins / trades if trades > 0 else 0.0
 
             # Score: weighted composite of profit, win rate, market diversity
             score = 0.0
@@ -86,19 +92,23 @@ async def get_copy_leaderboard(limit: int = 100, _: None = Depends(require_admin
 
             pseudonym = t.get("username", t.get("pseudonym", ""))
             if not pseudonym:
-                pseudonym = f"{wallet[:6]}...{wallet[-4:]}" if len(wallet) > 10 else wallet
+                pseudonym = (
+                    f"{wallet[:6]}...{wallet[-4:]}" if len(wallet) > 10 else wallet
+                )
 
-            result.append(ScoredTraderResponse(
-                wallet=wallet,
-                pseudonym=pseudonym,
-                profit_30d=round(profit, 2),
-                win_rate=round(win_rate, 3),
-                total_trades=trades,
-                unique_markets=markets,
-                estimated_bankroll=round(volume * 0.1, 2),
-                score=round(score, 3),
-                market_diversity=round(min(markets / 100, 1.0), 3),
-            ))
+            result.append(
+                ScoredTraderResponse(
+                    wallet=wallet,
+                    pseudonym=pseudonym,
+                    profit_30d=round(profit, 2),
+                    win_rate=round(win_rate, 3),
+                    total_trades=trades,
+                    unique_markets=markets,
+                    estimated_bankroll=round(volume * 0.1, 2),
+                    score=round(score, 3),
+                    market_diversity=round(min(markets / 100, 1.0), 3),
+                )
+            )
 
         logger.info(f"Returning {len(result)} traders from Polymarket Data API")
         return result
@@ -108,6 +118,7 @@ async def get_copy_leaderboard(limit: int = 100, _: None = Depends(require_admin
         # Fallback to scraper
         try:
             from backend.data.polymarket_scraper import fetch_real_leaderboard
+
             traders = await fetch_real_leaderboard(limit=limit)
             if traders:
                 return [
@@ -126,7 +137,9 @@ async def get_copy_leaderboard(limit: int = 100, _: None = Depends(require_admin
                 ]
         except Exception:
             pass
-        raise HTTPException(status_code=500, detail=f"Failed to fetch leaderboard: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch leaderboard: {str(e)}"
+        )
 
 
 @router.get("/api/copy/signals", response_model=List[CopySignalResponse])
@@ -164,7 +177,9 @@ async def get_copy_signals(limit: int = 20, _: None = Depends(require_admin)):
 
 
 @router.get("/api/copy-trader/positions")
-async def get_copy_trader_positions(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def get_copy_trader_positions(
+    db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
     """Return recent copy trader position entries from DB."""
     entries = (
         db.query(CopyTraderEntry)
@@ -185,36 +200,49 @@ async def get_copy_trader_positions(db: Session = Depends(get_db), _: None = Dep
 
 
 @router.get("/api/copy-trader/status")
-async def get_copy_trader_status(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+async def get_copy_trader_status(
+    db: Session = Depends(get_db), _: None = Depends(require_admin)
+):
     """Return copy trader status including tracked wallets and recent signals."""
     try:
-        wallet_entries = db.query(
-            CopyTraderEntry.wallet,
-            func.count(CopyTraderEntry.id).label('trades'),
-            func.sum(CopyTraderEntry.pnl).label('pnl')
-        ).group_by(CopyTraderEntry.wallet).all()
+        wallet_entries = (
+            db.query(
+                CopyTraderEntry.wallet,
+                func.count(CopyTraderEntry.id).label("trades"),
+                func.sum(CopyTraderEntry.pnl).label("pnl"),
+            )
+            .group_by(CopyTraderEntry.wallet)
+            .all()
+        )
 
         wallet_details = []
         for addr, trades, pnl in wallet_entries:
             pseudonym = addr[:8] + "..."
-            signal = db.query(Signal).filter(
-                Signal.market_type == "copy",
-                Signal.sources.contains([addr])
-            ).first()
+            signal = (
+                db.query(Signal)
+                .filter(Signal.market_type == "copy", Signal.sources.contains([addr]))
+                .first()
+            )
             if signal and signal.sources and len(signal.sources) > 1:
                 pseudonym = signal.sources[1] if len(signal.sources) > 1 else pseudonym
 
             score = min(100, (trades * 2) + (pnl if pnl > 0 else 0))
-            wallet_details.append({
-                "address": addr,
-                "pseudonym": pseudonym,
-                "score": score,
-                "profit_30d": pnl or 0.0
-            })
+            wallet_details.append(
+                {
+                    "address": addr,
+                    "pseudonym": pseudonym,
+                    "score": score,
+                    "profit_30d": pnl or 0.0,
+                }
+            )
 
-        recent_signals = db.query(Signal).filter(
-            Signal.market_type == "copy"
-        ).order_by(Signal.timestamp.desc()).limit(10).all()
+        recent_signals = (
+            db.query(Signal)
+            .filter(Signal.market_type == "copy")
+            .order_by(Signal.timestamp.desc())
+            .limit(10)
+            .all()
+        )
 
         signals_data = [
             {
@@ -222,7 +250,7 @@ async def get_copy_trader_status(db: Session = Depends(get_db), _: None = Depend
                 "direction": s.direction,
                 "edge": s.edge,
                 "confidence": s.confidence,
-                "timestamp": s.timestamp.isoformat() if s.timestamp else None
+                "timestamp": s.timestamp.isoformat() if s.timestamp else None,
             }
             for s in recent_signals
         ]
@@ -233,7 +261,7 @@ async def get_copy_trader_status(db: Session = Depends(get_db), _: None = Depend
             "wallet_details": wallet_details,
             "recent_signals": signals_data,
             "status": "active" if len(wallet_details) > 0 else "idle",
-            "errors": []
+            "errors": [],
         }
     except Exception as e:
         logger.error(f"Error getting copy trader status: {e}")
@@ -243,5 +271,5 @@ async def get_copy_trader_status(db: Session = Depends(get_db), _: None = Depend
             "wallet_details": [],
             "recent_signals": [],
             "status": "error",
-            "errors": [{"source": "database", "message": str(e)}]
+            "errors": [{"source": "database", "message": str(e)}],
         }

@@ -84,14 +84,20 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
 
     # Paper stats
     paper_pnl = state.paper_pnl or 0.0
-    paper_bankroll = state.paper_bankroll or settings.INITIAL_BANKROLL
+    paper_bankroll = (
+        state.paper_bankroll
+        if state.paper_bankroll is not None
+        else settings.INITIAL_BANKROLL
+    )
     paper_trades = state.paper_trades or 0
     paper_wins = state.paper_wins or 0
     paper_win_rate = paper_wins / paper_trades if paper_trades > 0 else 0.0
 
     # Live stats
     live_pnl = state.total_pnl or 0.0
-    live_bankroll = state.bankroll or settings.INITIAL_BANKROLL
+    live_bankroll = (
+        state.bankroll if state.bankroll is not None else settings.INITIAL_BANKROLL
+    )
     live_trades = state.total_trades or 0
     live_wins = state.winning_trades or 0
     live_win_rate = live_wins / live_trades if live_trades > 0 else 0.0

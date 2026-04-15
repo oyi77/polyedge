@@ -127,14 +127,24 @@ async def generate_weather_signal(
         from backend.models.database import BotState, SessionLocal
 
         _db = SessionLocal()
-        _state = _db.query(BotState).first()
-        if _state:
-            bankroll = (
-                float(_state.paper_bankroll or settings.INITIAL_BANKROLL)
-                if settings.TRADING_MODE == "paper"
-                else float(_state.bankroll or settings.INITIAL_BANKROLL)
-            )
-        _db.close()
+        try:
+            _state = _db.query(BotState).first()
+            if _state:
+                bankroll = (
+                    float(
+                        _state.paper_bankroll
+                        if _state.paper_bankroll is not None
+                        else settings.INITIAL_BANKROLL
+                    )
+                    if settings.TRADING_MODE == "paper"
+                    else float(
+                        _state.bankroll
+                        if _state.bankroll is not None
+                        else settings.INITIAL_BANKROLL
+                    )
+                )
+        finally:
+            _db.close()
     except Exception:
         pass
     suggested_size = calculate_kelly_size(

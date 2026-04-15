@@ -206,7 +206,11 @@ async def update_bot_state_with_settlements(
                     #   LOSS: size + (-size) = 0  (stake already deducted at open)
                     state.paper_pnl = (state.paper_pnl or 0.0) + trade.pnl
                     state.paper_bankroll = (
-                        (state.paper_bankroll or settings.INITIAL_BANKROLL)
+                        (
+                            state.paper_bankroll
+                            if state.paper_bankroll is not None
+                            else settings.INITIAL_BANKROLL
+                        )
                         + trade.size
                         + trade.pnl
                     )
@@ -217,7 +221,9 @@ async def update_bot_state_with_settlements(
                     # Expired/push: return stake to bankroll but do NOT
                     # count as a trade and do NOT affect realized PNL.
                     state.paper_bankroll = (
-                        state.paper_bankroll or settings.INITIAL_BANKROLL
+                        state.paper_bankroll
+                        if state.paper_bankroll is not None
+                        else settings.INITIAL_BANKROLL
                     ) + trade.size
                     logger.info(
                         f"Expired/push trade {trade.id}: returned ${trade.size:.2f} to paper bankroll"

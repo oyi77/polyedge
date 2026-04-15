@@ -30,7 +30,9 @@ def get_strategy_metrics(
     """Get per-strategy performance metrics ranked by risk-adjusted return."""
     from backend.core.strategy_ranker import strategy_ranker
 
-    ranked = strategy_ranker.rank_all(db, lookback_days=lookback_days, min_trades=min_trades)
+    ranked = strategy_ranker.rank_all(
+        db, lookback_days=lookback_days, min_trades=min_trades
+    )
 
     return {
         "lookback_days": lookback_days,
@@ -148,9 +150,17 @@ def get_allocations(
     bankroll = settings.INITIAL_BANKROLL
     if state:
         bankroll = (
-            float(state.paper_bankroll or settings.INITIAL_BANKROLL)
+            float(
+                state.paper_bankroll
+                if state.paper_bankroll is not None
+                else settings.INITIAL_BANKROLL
+            )
             if settings.TRADING_MODE == "paper"
-            else float(state.bankroll or settings.INITIAL_BANKROLL)
+            else float(
+                state.bankroll
+                if state.bankroll is not None
+                else settings.INITIAL_BANKROLL
+            )
         )
 
     allocations = strategy_ranker.auto_allocate(db, bankroll, lookback_days)
