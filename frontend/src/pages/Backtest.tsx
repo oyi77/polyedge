@@ -169,6 +169,27 @@ export function Backtest() {
         </div>
       </motion.div>
 
+      {/* Look-Ahead Bias Warning */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+        className="bg-amber-900/30 border border-amber-600/40 rounded-lg p-4"
+      >
+        <div className="flex items-start gap-3">
+          <span className="text-amber-400 text-lg">⚠</span>
+          <div>
+            <h3 className="text-amber-300 font-semibold text-sm">Look-Ahead Bias Warning</h3>
+            <p className="text-amber-200/80 text-xs mt-1">
+              Backtest results may be inflated if seeded from synthetic data that knows market outcomes before creating signals.
+              Use <code className="bg-amber-900/50 px-1 rounded text-amber-300">scripts/seed_honest_backtest.py</code> which fetches
+              real historical BTC prices from Binance to eliminate look-ahead bias. Honest-seeded signals are tagged with
+              <code className="bg-amber-900/50 px-1 rounded text-amber-300">honest-seed</code> in their reasoning.
+            </p>
+          </div>
+        </div>
+      </motion.div>
+
       {/* Backtest History */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
