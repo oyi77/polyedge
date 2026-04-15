@@ -673,6 +673,7 @@ async def auto_trader_job():
                 .all()
             )
             if not signals:
+                log_event("info", "AutoTrader cycle: no pending signals")
                 return
 
             current_exposure = float(
