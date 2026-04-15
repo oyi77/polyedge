@@ -42,7 +42,10 @@ async def execute_decision(
     try:
         async with _trade_execution_lock:
             event_slug = decision.get("slug") or decision.get("event_slug")
-            filters = [Trade.settled == False]
+            filters = [
+                Trade.settled == False,
+                Trade.trading_mode == settings.TRADING_MODE,
+            ]
             if event_slug:
                 filters.append(
                     or_(
@@ -67,9 +70,15 @@ async def execute_decision(
                 return None
 
             if settings.TRADING_MODE == "paper":
-                bankroll = state.paper_bankroll or 0.0
+                bankroll = (
+                    state.paper_bankroll if state.paper_bankroll is not None else 0.0
+                )
             elif settings.TRADING_MODE == "testnet":
-                bankroll = state.testnet_bankroll or 0.0
+                bankroll = (
+                    state.testnet_bankroll
+                    if state.testnet_bankroll is not None
+                    else 0.0
+                )
             else:
                 bankroll = state.bankroll or settings.INITIAL_BANKROLL
             current_exposure = _get_current_exposure(db)
@@ -248,12 +257,12 @@ async def execute_decision(
 
 
 def _get_current_exposure(db) -> float:
-    """Sum of open (unsettled) trade sizes."""
+    """Sum of open (unsettled) trade sizes for current trading mode."""
     from sqlalchemy import func
 
     result = (
         db.query(func.coalesce(func.sum(Trade.size), 0.0))
-        .filter(Trade.settled == False)
+        .filter(Trade.settled == False, Trade.trading_mode == settings.TRADING_MODE)
         .scalar()
     )
     return float(result or 0.0)

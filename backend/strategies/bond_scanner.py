@@ -95,7 +95,11 @@ class BondScannerStrategy(BaseStrategy):
         try:
             from backend.models.database import Trade
 
-            open_trades = ctx.db.query(Trade).filter(Trade.settled == False).all()
+            open_trades = (
+                ctx.db.query(Trade)
+                .filter(Trade.settled == False, Trade.trading_mode == ctx.mode)
+                .all()
+            )
             existing_tickers = {t.market_ticker for t in open_trades if t.market_ticker}
             existing_tickers |= {t.event_slug for t in open_trades if t.event_slug}
             bond_count = sum(

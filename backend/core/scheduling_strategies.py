@@ -31,7 +31,11 @@ async def _process_signal_with_approval(
 
     existing_trade = (
         db.query(Trade)
-        .filter(Trade.event_slug == signal.market.slug, Trade.settled == False)
+        .filter(
+            Trade.event_slug == signal.market.slug,
+            Trade.settled == False,
+            Trade.trading_mode == settings.TRADING_MODE,
+        )
         .first()
     )
     if existing_trade:
@@ -379,6 +383,7 @@ async def weather_scan_and_trade_job():
                 .filter(
                     Trade.settled == False,
                     Trade.market_type == "weather",
+                    Trade.trading_mode == settings.TRADING_MODE,
                 )
                 .scalar()
             )
@@ -397,6 +402,7 @@ async def weather_scan_and_trade_job():
                     .filter(
                         Trade.market_ticker == signal.market.market_id,
                         Trade.settled == False,
+                        Trade.trading_mode == settings.TRADING_MODE,
                     )
                     .first()
                 )
@@ -635,7 +641,9 @@ async def auto_trader_job():
 
             current_exposure = float(
                 db.query(func.coalesce(func.sum(Trade.size), 0.0))
-                .filter(Trade.settled == False)
+                .filter(
+                    Trade.settled == False, Trade.trading_mode == settings.TRADING_MODE
+                )
                 .scalar()
                 or 0.0
             )

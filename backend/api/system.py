@@ -122,7 +122,9 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
 
     # Testnet stats
     testnet_pnl = state.testnet_pnl or 0.0
-    testnet_bankroll = state.testnet_bankroll or 0.0
+    testnet_bankroll = (
+        state.testnet_bankroll if state.testnet_bankroll is not None else 0.0
+    )
     testnet_trades = state.testnet_trades or 0
     testnet_wins = state.testnet_wins or 0
     testnet_win_rate = testnet_wins / testnet_trades if testnet_trades > 0 else 0.0
@@ -171,7 +173,6 @@ async def get_stats(db: Session = Depends(get_db), _: None = Depends(require_adm
                                     "yes_price": float(m.get("yes_price", 0.5)),
                                     "no_price": float(m.get("no_price", 0.5)),
                                 }
-                            await client.aclose()
                         except Exception:
                             pass
                 for t in paper_open_trades:
