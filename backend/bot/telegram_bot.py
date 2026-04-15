@@ -487,15 +487,46 @@ class PolyEdgeBot:
 
     async def _cmd_status(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         from backend.config import settings
+        from backend.models.database import SessionLocal, BotState
 
         mode_emoji = {"paper": "🟠 PAPER", "testnet": "🟡 TESTNET", "live": "🔴 LIVE"}
         mode = mode_emoji.get(settings.TRADING_MODE, "🟠 PAPER")
         paused = "⏸ PAUSED" if self._paused else "🟢 RUNNING"
+
+        bankroll = settings.INITIAL_BANKROLL
+        try:
+            db = SessionLocal()
+            try:
+                state = db.query(BotState).first()
+                if state:
+                    if settings.TRADING_MODE == "paper":
+                        bankroll = (
+                            state.paper_bankroll
+                            if state.paper_bankroll is not None
+                            else settings.INITIAL_BANKROLL
+                        )
+                    elif settings.TRADING_MODE == "testnet":
+                        bankroll = (
+                            state.testnet_bankroll
+                            if state.testnet_bankroll is not None
+                            else settings.INITIAL_BANKROLL
+                        )
+                    else:
+                        bankroll = (
+                            state.bankroll
+                            if state.bankroll is not None
+                            else settings.INITIAL_BANKROLL
+                        )
+            finally:
+                db.close()
+        except Exception:
+            pass
+
         await update.message.reply_text(
             f"<b>PolyEdge Status</b>\n\n"
             f"Mode:     {mode}\n"
             f"Scanner:  {paused}\n"
-            f"Bankroll: ${settings.INITIAL_BANKROLL:,.2f}\n"
+            f"Bankroll: ${bankroll:,.2f}\n"
             f"Cities:   {settings.WEATHER_CITIES}\n"
             f"Edge min: {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}",
             parse_mode=ParseMode.HTML,

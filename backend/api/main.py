@@ -654,17 +654,24 @@ async def get_dashboard(
     # Append current point with open positions reflected
     bot_state = db.query(BotState).first()
     if bot_state and equity_curve:
-        current_bankroll = (
-            bot_state.bankroll
-            if bot_state.bankroll is not None
-            else settings.INITIAL_BANKROLL
-            if settings.TRADING_MODE != "paper"
-            else (
+        if settings.TRADING_MODE == "paper":
+            current_bankroll = (
                 bot_state.paper_bankroll
                 if bot_state.paper_bankroll is not None
                 else settings.INITIAL_BANKROLL
             )
-        )
+        elif settings.TRADING_MODE == "testnet":
+            current_bankroll = (
+                bot_state.testnet_bankroll
+                if bot_state.testnet_bankroll is not None
+                else settings.INITIAL_BANKROLL
+            )
+        else:
+            current_bankroll = (
+                bot_state.bankroll
+                if bot_state.bankroll is not None
+                else settings.INITIAL_BANKROLL
+            )
         open_trades = (
             db.query(Trade)
             .filter(Trade.settled == False, Trade.trading_mode == settings.TRADING_MODE)
