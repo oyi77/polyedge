@@ -42,18 +42,16 @@ class MarketMakerStrategy(BaseStrategy):
         "quote_size": 25.0,  # USD per side
     }
 
-    def calculate_spread(self, volatility: float, inventory_pct: float) -> float:
-        """
-        Compute spread = base_spread + volatility_adjustment + inventory_skew.
-
-        volatility_adjustment widens spread in high-vol environments.
-        inventory_skew widens the spread when inventory is lopsided.
-        Result is clamped to [min_spread, max_spread].
-        """
-        base_spread = self.default_params["base_spread"]
-        min_spread = self.default_params["min_spread"]
-        max_spread = self.default_params["max_spread"]
-        inventory_skew_factor = self.default_params["inventory_skew_factor"]
+    def calculate_spread(
+        self, volatility: float, inventory_pct: float, params: dict = None
+    ) -> float:
+        p = params or self.default_params
+        base_spread = p.get("base_spread", self.default_params["base_spread"])
+        min_spread = p.get("min_spread", self.default_params["min_spread"])
+        max_spread = p.get("max_spread", self.default_params["max_spread"])
+        inventory_skew_factor = p.get(
+            "inventory_skew_factor", self.default_params["inventory_skew_factor"]
+        )
 
         volatility_adjustment = volatility * 0.5
         inventory_skew = abs(inventory_pct) * inventory_skew_factor * base_spread
@@ -62,17 +60,13 @@ class MarketMakerStrategy(BaseStrategy):
         return max(min_spread, min(max_spread, spread))
 
     def calculate_quotes(
-        self, mid_price: float, spread: float, inventory_pct: float
+        self, mid_price: float, spread: float, inventory_pct: float, params: dict = None
     ) -> Quote:
-        """
-        Compute bid and ask around mid_price with inventory skew.
-
-        When long (inventory_pct > 0), skew prices down to encourage selling.
-        When short (inventory_pct < 0), skew prices up to encourage buying.
-        Skew is applied symmetrically to move both bid and ask.
-        """
-        inventory_skew_factor = self.default_params["inventory_skew_factor"]
-        quote_size = self.default_params["quote_size"]
+        p = params or self.default_params
+        inventory_skew_factor = p.get(
+            "inventory_skew_factor", self.default_params["inventory_skew_factor"]
+        )
+        quote_size = p.get("quote_size", self.default_params["quote_size"])
 
         # Skew pushes prices away from the overweight side
         # Positive inventory -> skew bid/ask down so we sell more
@@ -190,8 +184,10 @@ class MarketMakerStrategy(BaseStrategy):
                     )
                     inventory_pct = max(-1.0, min(1.0, inventory_pct))
 
-                    spread = self.calculate_spread(volatility, inventory_pct)
-                    quote = self.calculate_quotes(mid_price, spread, inventory_pct)
+                    spread = self.calculate_spread(volatility, inventory_pct, params)
+                    quote = self.calculate_quotes(
+                        mid_price, spread, inventory_pct, params
+                    )
 
                     decision = "QUOTE"
                     record_decision(

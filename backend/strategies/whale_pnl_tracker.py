@@ -319,10 +319,14 @@ class WhalePNLTrackerStrategy(BaseStrategy):
                     # This is a heuristic - real implementation would use actual position data
                     side = "YES" if trade.get("pnl", 0) >= 0 else "NO"
 
-                    # Create synthetic condition_id and ticker for now
-                    # Real implementation would parse from actual position data
-                    condition_id = f"cond_{wallet[:8]}_{trade.get('timestamp', 0)}"
-                    ticker = f"Whale_{wallet[:6]}"
+                    condition_id = trade.get("asset") or trade.get("condition_id") or ""
+                    ticker = (
+                        trade.get("market")
+                        or trade.get("question", "")[:50]
+                        or condition_id[:20]
+                    )
+                    if not condition_id:
+                        continue
 
                     position = WhalePosition(
                         wallet=wallet,
@@ -330,7 +334,12 @@ class WhalePNLTrackerStrategy(BaseStrategy):
                         side=side,
                         size=trade.get("size", 0),
                         ticker=ticker,
-                        opened_at=datetime.fromtimestamp(trade.get("timestamp", 0)),
+                        ts = trade.get("timestamp", 0)
+                    opened_at = (
+                        datetime.fromtimestamp(ts, tz=timezone.utc)
+                        if ts > 0
+                        else datetime.now(timezone.utc)
+                    )
                     )
 
                     positions.append(position)

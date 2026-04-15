@@ -257,9 +257,11 @@ class RealtimeScannerStrategy(BaseStrategy):
                                 "direction": direction.lower(),
                                 "confidence": confidence,
                                 "edge": slow_velocity,
-                                "size": None,
+                                "size": ctx.params.get("max_position_usd", 50),
                                 "entry_price": rt_entry_price,
-                                "suggested_size": None,
+                                "suggested_size": ctx.params.get(
+                                    "max_position_usd", 50
+                                ),
                                 "model_probability": confidence,
                                 "market_probability": current_price,
                                 "platform": "polymarket",
