@@ -467,7 +467,7 @@ async def reset_bot(
             state.paper_trades = 0
             state.paper_wins = 0
             state.paper_pnl = 0.0
-            state.testnet_bankroll = 0.0
+            state.testnet_bankroll = settings.INITIAL_BANKROLL
             state.testnet_trades = 0
             state.testnet_wins = 0
             state.testnet_pnl = 0.0
