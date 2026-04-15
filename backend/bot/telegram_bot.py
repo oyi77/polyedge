@@ -260,12 +260,12 @@ class PolyEdgeBot:
         try:
             from backend.config import settings
 
-            edge_pct = abs(signal.edge) * 100
-            direction = signal.direction.upper()
+            edge_pct = abs(getattr(signal, "edge", 0) or 0) * 100
+            direction = getattr(signal, "direction", "N/A").upper()
             entry = (
-                signal.entry_price
-                if hasattr(signal, "entry_price")
-                else getattr(signal, "market_probability", 0)
+                getattr(signal, "entry_price", None)
+                or getattr(signal, "market_probability", None)
+                or 0
             )
             size_str = (
                 f"${trade.size:.2f}"
@@ -566,7 +566,7 @@ class PolyEdgeBot:
                     f"[{(getattr(t, 'trading_mode', None) or 'paper').upper()[:1]}]"
                 )
                 lines.append(
-                    f"{mode_tag} <b>{t.direction.upper()}</b> {t.market_type} "
+                    f"{mode_tag} <b>{t.direction.upper()}</b> {getattr(t, 'event_slug', None) or t.market_ticker} "
                     f"${t.size:.0f} @ {t.entry_price:.0%} "
                     f"<i>{t.market_ticker[:20]}</i>"
                 )
