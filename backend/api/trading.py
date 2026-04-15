@@ -234,7 +234,7 @@ async def get_trades(
     _: str = Depends(require_admin),
 ):
     limit = min(limit, 500)
-    query = db.query(Trade)
+    query = db.query(Trade).filter(Trade.trading_mode == settings.TRADING_MODE)
     if status:
         query = query.filter(Trade.result == status)
     trades = query.order_by(Trade.timestamp.desc()).limit(limit).all()
@@ -283,7 +283,10 @@ async def get_equity_curve(
     db: Session = Depends(get_db), _: str = Depends(require_admin)
 ):
     trades = (
-        db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+        db.query(Trade)
+        .filter(Trade.settled == True, Trade.trading_mode == settings.TRADING_MODE)
+        .order_by(Trade.timestamp)
+        .all()
     )
 
     curve = []

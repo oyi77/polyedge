@@ -592,7 +592,13 @@ async def get_dashboard(
         )
 
     # Recent trades (with TradeContext enrichment)
-    trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
+    trades = (
+        db.query(Trade)
+        .filter(Trade.trading_mode == settings.TRADING_MODE)
+        .order_by(Trade.timestamp.desc())
+        .limit(50)
+        .all()
+    )
     trade_ids = [t.id for t in trades]
     contexts = {}
     if trade_ids:
@@ -625,7 +631,10 @@ async def get_dashboard(
 
     # Equity curve: track equity at each settled trade
     equity_trades = (
-        db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+        db.query(Trade)
+        .filter(Trade.settled == True, Trade.trading_mode == settings.TRADING_MODE)
+        .order_by(Trade.timestamp)
+        .all()
     )
     equity_curve = []
     cumulative_pnl = 0
@@ -646,11 +655,21 @@ async def get_dashboard(
     bot_state = db.query(BotState).first()
     if bot_state and equity_curve:
         current_bankroll = (
-            bot_state.paper_bankroll
-            if settings.TRADING_MODE == "paper"
-            else bot_state.bankroll
+            bot_state.bankroll
+            if bot_state.bankroll is not None
+            else settings.INITIAL_BANKROLL
+            if settings.TRADING_MODE != "paper"
+            else (
+                bot_state.paper_bankroll
+                if bot_state.paper_bankroll is not None
+                else settings.INITIAL_BANKROLL
+            )
         )
-        open_trades = db.query(Trade).filter(Trade.settled == False).all()
+        open_trades = (
+            db.query(Trade)
+            .filter(Trade.settled == False, Trade.trading_mode == settings.TRADING_MODE)
+            .all()
+        )
         unrealized = (
             sum((t.pnl or 0) for t in open_trades if t.pnl is not None)
             if open_trades

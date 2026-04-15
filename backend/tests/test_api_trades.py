@@ -1,4 +1,5 @@
 """Tests for /api/trades, /api/settlements, /api/signals, /api/stats endpoints."""
+
 import pytest
 from backend.config import settings
 
@@ -20,6 +21,7 @@ class TestTrades:
         """Seeded trade appears in results."""
         from backend.models.database import Trade
         from datetime import datetime
+        from unittest.mock import patch
 
         trade = Trade(
             market_ticker="BTC-TEST",
@@ -31,11 +33,13 @@ class TestTrades:
             market_price_at_entry=0.55,
             edge_at_entry=0.05,
             result="pending",
+            trading_mode="paper",
         )
         db.add(trade)
         db.commit()
 
-        resp = client.get("/api/trades")
+        with patch("backend.api.trading.settings.TRADING_MODE", "paper"):
+            resp = client.get("/api/trades")
         data = resp.json()
         assert isinstance(data, list)
         tickers = [t["market_ticker"] for t in data]
