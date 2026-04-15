@@ -211,15 +211,24 @@ class BondScannerStrategy(BaseStrategy):
 
                 state = ctx.db.query(BotState).first()
                 if state:
-                    bankroll = (
-                        float(state.bankroll)
-                        if _settings.TRADING_MODE != "paper"
-                        else float(
+                    if _settings.TRADING_MODE == "paper":
+                        bankroll = float(
                             state.paper_bankroll
                             if state.paper_bankroll is not None
-                            else state.bankroll
+                            else _settings.INITIAL_BANKROLL
                         )
-                    )
+                    elif _settings.TRADING_MODE == "testnet":
+                        bankroll = float(
+                            state.testnet_bankroll
+                            if state.testnet_bankroll is not None
+                            else _settings.INITIAL_BANKROLL
+                        )
+                    else:
+                        bankroll = float(
+                            state.bankroll
+                            if state.bankroll is not None
+                            else _settings.INITIAL_BANKROLL
+                        )
             except Exception:
                 pass
 

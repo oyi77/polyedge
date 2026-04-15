@@ -179,6 +179,7 @@ class MarketMakerStrategy(BaseStrategy):
                         .filter(
                             Trade.market_ticker == market.ticker,
                             Trade.settled == False,
+                            Trade.trading_mode == ctx.mode,
                             Trade.strategy == self.name,
                         )
                         .scalar()
