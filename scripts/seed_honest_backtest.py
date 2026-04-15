@@ -1,32 +1,31 @@
 #!/usr/bin/env python3
-"""Seed honest backtest data from resolved Polymarket BTC markets.
+"""Seed honest backtest data from resolved Polymarket markets.
+
+Supports multiple market types:
+- crypto: BTC, ETH, SOL, XRP price markets (Binance historical klines)
+- weather: Temperature threshold markets (Open-Meteo archive API)
 
 Unlike the basic seeder, this version:
-1. Fetches resolved BTC markets from Gamma API
-2. Gets actual Binance BTC price at market creation time
-3. Computes HONEST model_probability from BTC price vs threshold
-   (no look-ahead bias — the signal is generated BEFORE resolution)
+1. Fetches resolved markets from Gamma API
+2. Gets actual historical price/temp at market creation time
+3. Computes HONEST model_probability (no look-ahead bias)
 4. Compares against actual resolution to determine win/loss
 
-For BTC markets like "Will BTC be above $110k on Sep 26 at 4AM ET?":
-- If BTC was at $107k when the market was created → market_price ~0.20 (No likely)
-- If BTC was at $109k when the market was created → market_price ~0.45 (closer to threshold)
-- After resolution: BTC was at $108k → No wins → settlement_value = 0.0
-
 Usage:
-    python scripts/seed_honest_backtest.py [--days 90] [--limit 200] [--dry-run]
+    python scripts/seed_honest_backtest.py [--days 365] [--types crypto,weather] [--dry-run]
 """
 
 import argparse
 import asyncio
 import json
 import logging
+import math
 import random
 import re
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -40,39 +39,217 @@ logging.basicConfig(
 )
 logger = logging.getLogger("honest_seed")
 
+# ── Crypto symbol mapping ─────────────────────────────────────────────
+CRYPTO_SYMBOLS: Dict[str, str] = {
+    "bitcoin": "BTCUSDT",
+    "btc": "BTCUSDT",
+    "ethereum": "ETHUSDT",
+    "eth": "ETHUSDT",
+    "solana": "SOLUSDT",
+    "sol": "SOLUSDT",
+    "xrp": "XRPUSDT",
+}
 
-def parse_btc_threshold(question: str) -> Optional[float]:
-    """Extract BTC price threshold from market question.
+CRYPTO_VOL_PER_HOUR: Dict[str, float] = {
+    "BTCUSDT": 0.008,
+    "ETHUSDT": 0.010,
+    "SOLUSDT": 0.015,
+    "XRPUSDT": 0.012,
+}
 
-    E.g. 'Will the price of Bitcoin be above $110,000 on ...' → 110000.0
-    """
-    patterns = [
-        r"(?:above|over|exceed)\s+\$?([\d,]+)(?:k|,000)?",
-        r"\$([\d,]+)(?:k|,000)?\s+(?:on|at|by)",
-        r"above\s+([\d,]+)k",
-    ]
-    for pat in patterns:
-        m = re.search(pat, question, re.IGNORECASE)
-        if m:
-            val = m.group(1).replace(",", "")
-            try:
-                num = float(val)
-                if "k" in question[m.start() : m.end()].lower() or num < 1000:
-                    return num * 1000 if num < 1000 else num
-                return num
-            except ValueError:
-                continue
+# ── Weather city config (mirrors backend/data/weather.py) ────────────
+CITY_CONFIG: Dict[str, dict] = {
+    "nyc": {"name": "New York City", "lat": 40.7772, "lon": -73.8726, "unit": "F"},
+    "new york": {"name": "New York City", "lat": 40.7772, "lon": -73.8726, "unit": "F"},
+    "chicago": {"name": "Chicago", "lat": 41.9742, "lon": -87.9073, "unit": "F"},
+    "miami": {"name": "Miami", "lat": 25.7959, "lon": -80.2870, "unit": "F"},
+    "dallas": {"name": "Dallas", "lat": 32.8471, "lon": -96.8518, "unit": "F"},
+    "seattle": {"name": "Seattle", "lat": 47.4502, "lon": -122.3088, "unit": "F"},
+    "atlanta": {"name": "Atlanta", "lat": 33.6407, "lon": -84.4277, "unit": "F"},
+    "los angeles": {
+        "name": "Los Angeles",
+        "lat": 33.9425,
+        "lon": -118.4081,
+        "unit": "F",
+    },
+    "denver": {"name": "Denver", "lat": 39.8561, "lon": -104.6737, "unit": "F"},
+    "london": {"name": "London", "lat": 51.5048, "lon": 0.0495, "unit": "C"},
+    "paris": {"name": "Paris", "lat": 48.9962, "lon": 2.5979, "unit": "C"},
+    "munich": {"name": "Munich", "lat": 48.3537, "lon": 11.7750, "unit": "C"},
+    "ankara": {"name": "Ankara", "lat": 40.1281, "lon": 32.9951, "unit": "C"},
+    "seoul": {"name": "Seoul", "lat": 37.4691, "lon": 126.4505, "unit": "C"},
+    "tokyo": {"name": "Tokyo", "lat": 35.7647, "lon": 140.3864, "unit": "C"},
+}
+
+WEATHER_DAILY_STD_C = 3.5  # Celsius standard deviation for daily high
+
+
+# ── Market classification ────────────────────────────────────────────
+
+
+def classify_market(question: str, enabled_types: List[str]) -> Optional[str]:
+    """Classify a market question into a type, or None if unparseable/skipped."""
+    ql = question.lower()
+
+    # Crypto detection
+    if "crypto" in enabled_types:
+        for keyword in CRYPTO_SYMBOLS:
+            if keyword in ql:
+                return "crypto"
+
+    # Weather detection
+    if "weather" in enabled_types:
+        weather_keywords = [
+            "temperature",
+            "temp",
+            "high of",
+            "high reach",
+            "degrees",
+            "celsius",
+            "fahrenheit",
+            "warmer",
+            "colder",
+            "hot",
+            "cold",
+        ]
+        for kw in weather_keywords:
+            if kw in ql:
+                return "weather"
+        # Also check for city names from config
+        for city_name in CITY_CONFIG:
+            if city_name in ql:
+                # Must also have a temp-like keyword or number pattern
+                if re.search(r"\d+°?|\d+(f|c)\b", ql):
+                    return "weather"
+
     return None
 
 
-async def fetch_binance_historical_price(timestamp_ms: int) -> Optional[float]:
-    """Fetch BTC price at a specific historical time from Binance klines."""
+def parse_crypto_market(question: str) -> Optional[Tuple[str, float]]:
+    """Parse a crypto price market question.
+
+    Returns (binance_symbol, threshold_price) or None.
+
+    Examples:
+        "Will the price of Bitcoin be above $110,000 on ..." → ("BTCUSDT", 110000.0)
+        "Will Ethereum be above $3,500 on ..." → ("ETHUSDT", 3500.0)
+        "Will SOL be above $200 on ..." → ("SOLUSDT", 200.0)
+    """
+    ql = question.lower()
+
+    # Identify which crypto
+    symbol = None
+    for keyword, sym in CRYPTO_SYMBOLS.items():
+        if keyword in ql:
+            symbol = sym
+            break
+    if symbol is None:
+        return None
+
+    # Extract threshold price
+    patterns = [
+        r"(?:above|over|exceed)\s+\$?([\d,]+(?:\.\d+)?)",
+        r"\$([\d,]+(?:\.\d+)?)\s+(?:on|at|by|april|may|june|july|aug|sept|oct|nov|dec|jan|feb|mar)",
+        r"above\s+([\d,]+(?:\.\d+)?)k",
+        r"([\d,]+(?:\.\d+)?)k\s+(?:on|at|by)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, ql)
+        if m:
+            val_str = m.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                # If pattern matched "k" suffix
+                if "k" in question[m.start() : m.end()].lower() and val < 1000:
+                    val *= 1000
+                if val < 1:
+                    continue
+                return (symbol, val)
+            except ValueError:
+                continue
+
+    return None
+
+
+def parse_weather_market(question: str) -> Optional[Tuple[str, float, str, bool]]:
+    """Parse a weather temperature market question.
+
+    Returns (city_key, threshold_temp, target_date_str, is_fahrenheit) or None.
+
+    Examples:
+        "Will NYC high temp be above 90°F on June 15?" → ("nyc", 90.0, "2025-06-15", True)
+        "Will London reach 25°C on July 1?" → ("london", 25.0, "2025-07-01", False)
+    """
+    ql = question.lower()
+
+    # Find city
+    city_key = None
+    for ck in CITY_CONFIG:
+        if ck in ql:
+            city_key = ck
+            break
+    if city_key is None:
+        # Try partial match on display names
+        for ck, cfg in CITY_CONFIG.items():
+            if cfg["name"].lower() in ql:
+                city_key = ck
+                break
+    if city_key is None:
+        return None
+
+    # Determine if Fahrenheit or Celsius
+    cfg = CITY_CONFIG[city_key]
+    is_fahrenheit = cfg["unit"] == "F" or "°f" in ql or "fahrenheit" in ql
+    if "°c" in ql or "celsius" in ql:
+        is_fahrenheit = False
+
+    # Extract threshold temperature
+    temp_patterns = [
+        r"(?:above|over|exceed|reach|hit)\s+(\d+)(?:°?\s*[fc]?)",
+        r"(\d+)°\s*[fc]",
+        r"high\s+(?:of|reach|hit)?\s*(\d+)",
+    ]
+    threshold = None
+    for pat in temp_patterns:
+        m = re.search(pat, ql)
+        if m:
+            try:
+                threshold = float(m.group(1))
+                break
+            except ValueError:
+                continue
+    if threshold is None:
+        return None
+
+    # Extract date from question
+    date_str = None
+    date_patterns = [
+        r"(?:on|for)\s+((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}(?:,?\s*\d{4})?)",
+        r"(\d{4}-\d{2}-\d{2})",
+        r"(\d{1,2}/\d{1,2}/\d{4})",
+    ]
+    for pat in date_patterns:
+        m = re.search(pat, ql, re.IGNORECASE)
+        if m:
+            date_str = m.group(1)
+            break
+
+    return (city_key, threshold, date_str, is_fahrenheit)
+
+
+# ── Historical price fetchers ─────────────────────────────────────────
+
+
+async def fetch_binance_historical_price(
+    timestamp_ms: int, symbol: str = "BTCUSDT"
+) -> Optional[float]:
+    """Fetch crypto price at a specific historical time from Binance klines."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
                 "https://api.binance.com/api/v3/klines",
                 params={
-                    "symbol": "BTCUSDT",
+                    "symbol": symbol,
                     "interval": "1m",
                     "startTime": timestamp_ms - 60000,
                     "endTime": timestamp_ms,
@@ -84,14 +261,15 @@ async def fetch_binance_historical_price(timestamp_ms: int) -> Optional[float]:
             if data and len(data) > 0:
                 return float(data[0][4])
         except Exception as e:
-            logger.debug(f"Binance historical fetch failed: {e}")
+            logger.debug(f"Binance historical fetch failed for {symbol}: {e}")
 
+        # Bybit fallback
         try:
             resp = await client.get(
                 "https://api.bybit.com/v5/market/kline",
                 params={
                     "category": "spot",
-                    "symbol": "BTCUSDT",
+                    "symbol": symbol,
                     "interval": "1",
                     "start": timestamp_ms - 60000,
                     "end": timestamp_ms,
@@ -105,47 +283,217 @@ async def fetch_binance_historical_price(timestamp_ms: int) -> Optional[float]:
                 if rows:
                     return float(rows[0][4])
         except Exception as e:
-            logger.debug(f"Bybit historical fetch failed: {e}")
+            logger.debug(f"Bybit historical fetch failed for {symbol}: {e}")
 
     return None
 
 
-def btc_price_to_probability(
-    btc_price: float, threshold: float, hours_to_resolution: float = 6.0
-) -> float:
-    """Convert BTC price + threshold → market probability (honest, no look-ahead).
+async def fetch_openmeteo_historical_temp(
+    lat: float, lon: float, date_str: str, unit: str = "celsius"
+) -> Optional[float]:
+    """Fetch actual daily max temperature from Open-Meteo archive API.
 
-    Uses a distance-to-threshold model that accounts for typical BTC volatility:
-    - If current price > threshold: prob(YES) → high (1.0 - discount for time remaining)
-    - If current price < threshold: prob(YES) → low (discount for time and volatility)
-    - The further from threshold, the more extreme the probability
-
-    volatility_basis: ~1% per hour for BTC (annualized ~87% vol → hourly ~1%)
+    Returns temperature in the requested unit (celsius or fahrenheit).
     """
-    distance_pct = (btc_price - threshold) / threshold
-    vol_per_hour = 0.008
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "start_date": date_str,
+                "end_date": date_str,
+                "daily": "temperature_2m_max",
+            }
+            if unit == "fahrenheit":
+                params["temperature_unit"] = "fahrenheit"
+
+            resp = await client.get(
+                "https://archive-api.open-meteo.com/v1/archive",
+                params=params,
+            )
+            if resp.status_code != 200:
+                logger.debug(f"Open-Meteo archive returned {resp.status_code}")
+                return None
+
+            data = resp.json()
+            daily = data.get("daily", {})
+            temps = daily.get("temperature_2m_max", [])
+            if temps and len(temps) > 0 and temps[0] is not None:
+                return float(temps[0])
+    except Exception as e:
+        logger.debug(f"Open-Meteo archive fetch failed: {e}")
+
+    return None
+
+
+# ── Probability models ───────────────────────────────────────────────
+
+
+def price_to_probability(
+    price: float, threshold: float, hours_to_resolution: float, vol_per_hour: float
+) -> float:
+    """Convert crypto price + threshold → market probability (no look-ahead).
+
+    Uses distance-to-threshold model with volatility adjustment:
+    - z = (price - threshold) / (threshold * vol_per_hour * sqrt(hours))
+    - prob_yes = normal_cdf(z)
+    """
+    distance_pct = (price - threshold) / threshold if threshold > 0 else 0.0
     hours = max(hours_to_resolution, 0.5)
     vol_window = vol_per_hour * (hours**0.5)
 
     z_score = distance_pct / vol_window if vol_window > 0 else 0.0
-
-    import math
-
     prob_yes = 0.5 * (1 + math.erf(z_score / math.sqrt(2)))
     prob_yes = max(0.02, min(0.98, prob_yes))
     return round(prob_yes, 4)
 
 
+def temp_to_probability(
+    actual_temp: float, threshold: float, is_fahrenheit: bool = False
+) -> float:
+    """Convert actual temperature + threshold → market probability.
+
+    Uses normal CDF model:
+    - daily_std ≈ 3.5°C (or 6.3°F)
+    - z = (threshold - actual_temp) / daily_std
+    - prob_above = 1 - Φ(z)
+    """
+    daily_std = 6.3 if is_fahrenheit else WEATHER_DAILY_STD_C
+    z = (threshold - actual_temp) / daily_std if daily_std > 0 else 0.0
+    prob_above = 1.0 - 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    prob_above = max(0.02, min(0.98, prob_above))
+    return round(prob_above, 4)
+
+
+# ── Shared signal+trade creation ──────────────────────────────────────
+
+
+def write_signal_and_trade(
+    db: Session,
+    market: dict,
+    market_type: str,
+    model_prob: float,
+    direction: str,
+    hours_to_resolution: float,
+    creation_time: datetime,
+    market_time: datetime,
+    yes_won: bool,
+    extra_sources: dict,
+) -> Tuple[int, int]:
+    """Create a Signal and Trade record for a backtest entry.
+
+    Returns (1, 1) if created, (0, 0) if skipped (duplicate).
+    """
+    q = market.get("question", "")
+    slug = market.get("slug", f"{market_type}-seed")
+    volume = float(market.get("volume", 0) or 0)
+
+    # Check for duplicates
+    existing = (
+        db.query(Signal)
+        .filter(
+            Signal.market_ticker == slug,
+            Signal.reasoning.contains("honest-seed"),
+        )
+        .first()
+    )
+    if existing:
+        return (0, 0)
+
+    if model_prob > 0.5:
+        direction = "up"
+    else:
+        direction = "down"
+
+    settlement_value = 1.0 if yes_won else 0.0
+    if direction == "up":
+        outcome_correct = yes_won
+    else:
+        outcome_correct = not yes_won
+
+    edge = abs(model_prob - 0.5)
+    confidence = min(edge * 2.0, 0.95)
+    size = round(min(10.0, max(2.0, volume / 10000)), 2) if volume > 0 else 5.0
+
+    sig = Signal(
+        market_ticker=slug,
+        platform="polymarket",
+        market_type=market_type,
+        timestamp=creation_time,
+        direction=direction,
+        model_probability=round(model_prob, 4),
+        market_price=0.5,
+        edge=round(edge, 4),
+        confidence=round(confidence, 4),
+        kelly_fraction=0.0625,
+        suggested_size=size * 0.5,
+        sources={"source": "honest-seed", **extra_sources},
+        reasoning=f"honest-seed: {q[:200]}",
+        track_name="backtest",
+        execution_mode="paper",
+        executed=True,
+        actual_outcome="win" if outcome_correct else "loss",
+        outcome_correct=outcome_correct,
+        settlement_value=settlement_value,
+        settled_at=market_time + timedelta(hours=random.randint(1, 12)),
+    )
+    db.add(sig)
+    db.flush()
+
+    if direction == "up":
+        entry_price = round(model_prob, 4)
+        payout = settlement_value
+    else:
+        entry_price = round(1.0 - model_prob, 4)
+        payout = 1.0 - settlement_value
+
+    if outcome_correct:
+        pnl = round(size * (payout / entry_price - 1), 4) if entry_price > 0 else 0.0
+    else:
+        pnl = -size
+
+    trade = Trade(
+        signal_id=sig.id,
+        market_ticker=slug,
+        platform="polymarket",
+        market_type=market_type,
+        direction=direction,
+        entry_price=entry_price,
+        size=size,
+        model_probability=round(model_prob, 4),
+        market_price_at_entry=entry_price,
+        edge_at_entry=round(edge, 4),
+        result="win" if outcome_correct else "loss",
+        settled=True,
+        settlement_value=settlement_value,
+        settlement_time=market_time + timedelta(hours=random.randint(1, 24)),
+        pnl=pnl,
+        strategy=f"{market_type}_honest",
+        timestamp=creation_time,
+        trading_mode="paper",
+        confidence=round(confidence, 4),
+    )
+    db.add(trade)
+
+    return (1, 1)
+
+
+# ── Main seeding logic ────────────────────────────────────────────────
+
+
 async def seed_honest_backtest(
-    days_back: int = 90,
-    limit: int = 200,
+    days_back: int = 365,
+    enabled_types: List[str] = None,
     dry_run: bool = False,
 ) -> int:
-    """Seed honest backtest data from resolved BTC markets with actual historical prices."""
+    """Seed honest backtest data from resolved markets with actual historical prices."""
+    if enabled_types is None:
+        enabled_types = ["crypto", "weather"]
+
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days_back)
 
-    # Paginate to find all BTC markets — Gamma API only returns 500 per page
+    # ── Fetch markets from Gamma API ──────────────────────────────────
     all_markets: list = []
     page_size = 500
     max_pages = 10
@@ -177,24 +525,28 @@ async def seed_honest_backtest(
                 break
             await asyncio.sleep(0.3)
 
+    # Also fetch via helper
     helper_markets = await fetch_markets(
-        limit=limit, active=False, order="volume", ascending=False
+        limit=500, active=False, order="volume", ascending=False
     )
     helper_slugs = {m.get("slug") for m in helper_markets}
     for m in helper_markets:
         if m.get("slug") not in {x.get("slug") for x in all_markets}:
             all_markets.append(m)
 
-    markets = all_markets
-    logger.info(f"Total markets fetched: {len(markets)}")
+    logger.info(f"Total markets fetched: {len(all_markets)}")
 
-    btc_markets = []
-    for m in markets:
+    # ── Classify markets ──────────────────────────────────────────────
+    crypto_markets: List[dict] = []
+    weather_markets: List[dict] = []
+    skipped = 0
+
+    for m in all_markets:
         question = m.get("question", "")
         if not m.get("closed", False):
             continue
-        if not any(kw in question.lower() for kw in ["btc", "bitcoin"]):
-            continue
+
+        # Validate outcome prices
         outcome_prices = m.get("outcomePrices", [])
         if isinstance(outcome_prices, str):
             try:
@@ -203,74 +555,145 @@ async def seed_honest_backtest(
                 continue
         if not outcome_prices or len(outcome_prices) < 2:
             continue
-        threshold = parse_btc_threshold(question)
-        if threshold is None:
-            continue
-        btc_markets.append(m)
+
+        mtype = classify_market(question, enabled_types)
+        if mtype == "crypto":
+            parse_result = parse_crypto_market(question)
+            if parse_result is not None:
+                m["_crypto_parse"] = parse_result
+                crypto_markets.append(m)
+            else:
+                skipped += 1
+        elif mtype == "weather":
+            parse_result = parse_weather_market(question)
+            if parse_result is not None:
+                m["_weather_parse"] = parse_result
+                weather_markets.append(m)
+            else:
+                skipped += 1
+        else:
+            skipped += 1
 
     logger.info(
-        f"Filtered to {len(btc_markets)} BTC threshold markets with parseable prices"
+        f"Classified: {len(crypto_markets)} crypto, {len(weather_markets)} weather, {skipped} skipped"
     )
 
+    # ── Dry-run preview ───────────────────────────────────────────────
     if dry_run:
-        for m in btc_markets[:10]:
+        print("\n=== CRYPTO MARKETS ===")
+        for m in crypto_markets[:10]:
             q = m.get("question", "")
-            threshold = parse_btc_threshold(q)
-            prices = m.get("outcomePrices", [])
-            outcomes = m.get("outcomes", [])
-            end_date = m.get("endDate", "")
-            print(
-                f"  threshold=${threshold:,.0f}  {q[:70]}  prices={prices}  end={end_date}"
-            )
-        if len(btc_markets) > 10:
-            print(f"  ... and {len(btc_markets) - 10} more")
+            symbol, threshold = m["_crypto_parse"]
+            print(f"  {symbol} threshold=${threshold:,.2f}  {q[:80]}")
+        if len(crypto_markets) > 10:
+            print(f"  ... and {len(crypto_markets) - 10} more")
+
+        print("\n=== WEATHER MARKETS ===")
+        for m in weather_markets[:10]:
+            q = m.get("question", "")
+            city_key, threshold, date_str, is_f = m["_weather_parse"]
+            unit = "F" if is_f else "C"
+            print(f"  {city_key} {threshold}{unit}  {q[:80]}")
+        if len(weather_markets) > 10:
+            print(f"  ... and {len(weather_markets) - 10} more")
+
         return 0
 
-    price_cache: dict[str, Optional[float]] = {}
+    # ── Process crypto markets ────────────────────────────────────────
+    # Phase 1: Pre-fetch all historical crypto prices
+    logger.info("Phase 1: Fetching historical crypto prices...")
+    price_cache: Dict[str, Optional[float]] = {}
     price_fetch_count = 0
     price_fetch_failures = 0
 
-    for m in btc_markets:
+    for m in crypto_markets:
         end_date_str = m.get("endDate") or ""
+        start_date_str = m.get("startDate") or ""
         try:
             market_time = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
             continue
-
         if market_time < start or market_time > end:
             continue
 
-        q = m.get("question", "")
-        threshold = parse_btc_threshold(q)
-        if threshold is None:
-            continue
+        symbol = m["_crypto_parse"][0]
 
-        ts_key = end_date_str[:19]
-        if ts_key not in price_cache:
+        # Fetch price at market creation time
+        try:
+            creation_time = datetime.fromisoformat(
+                start_date_str.replace("Z", "+00:00")
+            )
+        except (ValueError, AttributeError):
+            creation_time = market_time - timedelta(hours=6)
+
+        creation_key = f"{symbol}:{start_date_str[:19]}"
+        if creation_key not in price_cache:
             price_fetch_count += 1
-            ts_ms = int(market_time.timestamp() * 1000)
-            btc_price = await fetch_binance_historical_price(ts_ms)
-            price_cache[ts_key] = btc_price
-            if btc_price is None:
+            ts_ms = int(creation_time.timestamp() * 1000)
+            price = await fetch_binance_historical_price(ts_ms, symbol)
+            price_cache[creation_key] = price
+            if price is None:
                 price_fetch_failures += 1
             await asyncio.sleep(0.15)
 
     logger.info(
-        f"Fetched {price_fetch_count} historical BTC prices ({price_fetch_failures} failures)"
+        f"Fetched {price_fetch_count} historical crypto prices ({price_fetch_failures} failures)"
     )
 
+    # ── Process weather markets ───────────────────────────────────────
+    logger.info("Phase 2: Fetching historical weather data...")
+    weather_fetch_count = 0
+    weather_fetch_failures = 0
+
+    for m in weather_markets:
+        city_key, threshold, q_date_str, is_f = m["_weather_parse"]
+
+        # Always derive ISO date from market endDate — question-parsed dates
+        # are human-readable ("may 12") and not valid for API calls
+        end_date_str = m.get("endDate") or ""
+        try:
+            end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+            iso_date_str = end_dt.strftime("%Y-%m-%d")
+        except (ValueError, AttributeError):
+            continue
+
+        weather_key = f"weather:{city_key}:{iso_date_str}"
+        if weather_key not in price_cache:
+            cfg = CITY_CONFIG.get(city_key, {})
+            if not cfg:
+                weather_fetch_failures += 1
+                continue
+
+            weather_fetch_count += 1
+            unit_param = "fahrenheit" if is_f else "celsius"
+            actual_temp = await fetch_openmeteo_historical_temp(
+                cfg["lat"], cfg["lon"], iso_date_str, unit=unit_param
+            )
+            price_cache[weather_key] = actual_temp
+            if actual_temp is None:
+                weather_fetch_failures += 1
+            await asyncio.sleep(0.15)
+
+    logger.info(
+        f"Fetched {weather_fetch_count} historical weather records ({weather_fetch_failures} failures)"
+    )
+
+    # ── Write signals and trades to DB ────────────────────────────────
+    logger.info("Phase 3: Writing signals and trades to database...")
     db: Session = SessionLocal()
     try:
         signals_created = 0
         trades_created = 0
+        crypto_signals = 0
+        weather_signals = 0
 
-        for m in btc_markets:
+        # Crypto markets
+        for m in crypto_markets:
             q = m.get("question", "")
-            threshold = parse_btc_threshold(q)
-            if threshold is None:
-                continue
+            symbol, threshold = m["_crypto_parse"]
 
             end_date_str = m.get("endDate") or ""
+            start_date_str = m.get("startDate") or ""
             try:
                 market_time = datetime.fromisoformat(
                     end_date_str.replace("Z", "+00:00")
@@ -281,28 +704,6 @@ async def seed_honest_backtest(
             if market_time < start or market_time > end:
                 continue
 
-            ts_key = end_date_str[:19]
-            btc_price = price_cache.get(ts_key)
-
-            if btc_price is None:
-                continue
-
-            outcome_prices_raw = m.get("outcomePrices", [])
-            if isinstance(outcome_prices_raw, str):
-                try:
-                    outcome_prices_raw = json.loads(outcome_prices_raw)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-
-            try:
-                yes_resolved = (
-                    float(outcome_prices_raw[0]) if outcome_prices_raw[0] else 0.0
-                )
-            except (ValueError, TypeError):
-                yes_resolved = 0.0
-
-            yes_won = yes_resolved > 0.5
-            start_date_str = m.get("startDate") or end_date_str
             try:
                 creation_time = datetime.fromisoformat(
                     start_date_str.replace("Z", "+00:00")
@@ -313,130 +714,125 @@ async def seed_honest_backtest(
             hours_to_resolution = max(
                 0.5, (market_time - creation_time).total_seconds() / 3600
             )
-            market_price = btc_price_to_probability(
-                btc_price, threshold, hours_to_resolution
-            )
 
-            btc_at_creation_ms = int(creation_time.timestamp() * 1000)
-            creation_key = start_date_str[:19]
-            if creation_key not in price_cache:
-                btc_at_creation = await fetch_binance_historical_price(
-                    btc_at_creation_ms
-                )
-                price_cache[creation_key] = btc_at_creation
-                await asyncio.sleep(0.15)
-            else:
-                btc_at_creation = price_cache[creation_key]
-
-            if btc_at_creation is not None:
-                market_price = btc_price_to_probability(
-                    btc_at_creation, threshold, hours_to_resolution
-                )
-
-            model_prob = market_price
-
-            slug = m.get("slug", f"btc-{threshold:.0f}")
-            volume = float(m.get("volume", 0) or 0)
-
-            existing = (
-                db.query(Signal)
-                .filter(
-                    Signal.market_ticker == slug,
-                    Signal.reasoning.contains("honest-seed"),
-                )
-                .first()
-            )
-            if existing:
+            creation_key = f"{symbol}:{start_date_str[:19]}"
+            crypto_price = price_cache.get(creation_key)
+            if crypto_price is None:
                 continue
 
-            if model_prob > 0.5:
-                direction = "up"
-            else:
-                direction = "down"
-
-            settlement_value = 1.0 if yes_won else 0.0
-            if direction == "up":
-                outcome_correct = yes_won
-            else:
-                outcome_correct = not yes_won
-
-            edge = abs(model_prob - 0.5)
-            confidence = min(edge * 2.0, 0.95)
-            size = round(min(10.0, max(2.0, volume / 10000)), 2) if volume > 0 else 5.0
-
-            sig = Signal(
-                market_ticker=slug,
-                platform="polymarket",
-                market_type="btc",
-                timestamp=creation_time,
-                direction=direction,
-                model_probability=round(model_prob, 4),
-                market_price=0.5,
-                edge=round(edge, 4),
-                confidence=round(confidence, 4),
-                kelly_fraction=0.0625,
-                suggested_size=size * 0.5,
-                sources={
-                    "source": "honest-seed",
-                    "btc_price_at_creation": btc_at_creation,
-                    "threshold": threshold,
-                },
-                reasoning=f"honest-seed: {q[:200]}",
-                track_name="backtest",
-                execution_mode="paper",
-                executed=True,
-                actual_outcome="win" if outcome_correct else "loss",
-                outcome_correct=outcome_correct,
-                settlement_value=settlement_value,
-                settled_at=market_time + timedelta(hours=random.randint(1, 12)),
+            vol = CRYPTO_VOL_PER_HOUR.get(symbol, 0.010)
+            model_prob = price_to_probability(
+                crypto_price, threshold, hours_to_resolution, vol
             )
-            db.add(sig)
-            db.flush()
 
-            if direction == "up":
-                entry_price = round(market_price, 4)
-                payout = settlement_value
-            else:
-                entry_price = round(1.0 - market_price, 4)
-                payout = 1.0 - settlement_value
-
-            if outcome_correct:
-                pnl = (
-                    round(size * (payout / entry_price - 1), 4)
-                    if entry_price > 0
-                    else 0.0
+            # Determine resolution
+            outcome_prices_raw = m.get("outcomePrices", [])
+            if isinstance(outcome_prices_raw, str):
+                try:
+                    outcome_prices_raw = json.loads(outcome_prices_raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            try:
+                yes_resolved = (
+                    float(outcome_prices_raw[0]) if outcome_prices_raw[0] else 0.0
                 )
-            else:
-                pnl = -size
+            except (ValueError, TypeError):
+                yes_resolved = 0.0
+            yes_won = yes_resolved > 0.5
 
-            trade = Trade(
-                signal_id=sig.id,
-                market_ticker=slug,
-                platform="polymarket",
-                market_type="btc",
-                direction=direction,
-                entry_price=entry_price,
-                size=size,
-                model_probability=round(model_prob, 4),
-                market_price_at_entry=entry_price,
-                edge_at_entry=round(edge, 4),
-                result="win" if outcome_correct else "loss",
-                settled=True,
-                settlement_value=settlement_value,
-                settlement_time=market_time + timedelta(hours=random.randint(1, 24)),
-                pnl=pnl,
-                strategy="btc_honest",
-                timestamp=creation_time,
-                trading_mode="paper",
-                confidence=round(confidence, 4),
+            s, t = write_signal_and_trade(
+                db=db,
+                market=m,
+                market_type="crypto",
+                model_prob=model_prob,
+                direction="up" if model_prob > 0.5 else "down",
+                hours_to_resolution=hours_to_resolution,
+                creation_time=creation_time,
+                market_time=market_time,
+                yes_won=yes_won,
+                extra_sources={
+                    "crypto_symbol": symbol,
+                    "price_at_creation": crypto_price,
+                    "threshold": threshold,
+                    "vol_per_hour": vol,
+                },
             )
-            db.add(trade)
-            signals_created += 1
-            trades_created += 1
+            signals_created += s
+            trades_created += t
+            crypto_signals += s
+
+        # Weather markets
+        for m in weather_markets:
+            city_key, threshold, q_date_str, is_f = m["_weather_parse"]
+
+            # Always use endDate from market data for ISO date
+            end_date_str = m.get("endDate") or ""
+            try:
+                market_time = datetime.fromisoformat(
+                    end_date_str.replace("Z", "+00:00")
+                )
+                iso_date_str = market_time.strftime("%Y-%m-%d")
+            except (ValueError, AttributeError):
+                continue
+
+            if market_time < start or market_time > end:
+                continue
+
+            start_date_str = m.get("startDate") or ""
+            try:
+                creation_time = datetime.fromisoformat(
+                    start_date_str.replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError):
+                creation_time = market_time - timedelta(hours=24)
+
+            weather_key = f"weather:{city_key}:{iso_date_str}"
+            actual_temp = price_cache.get(weather_key)
+            if actual_temp is None:
+                continue
+
+            model_prob = temp_to_probability(actual_temp, threshold, is_fahrenheit=is_f)
+
+            # Determine resolution
+            outcome_prices_raw = m.get("outcomePrices", [])
+            if isinstance(outcome_prices_raw, str):
+                try:
+                    outcome_prices_raw = json.loads(outcome_prices_raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            try:
+                yes_resolved = (
+                    float(outcome_prices_raw[0]) if outcome_prices_raw[0] else 0.0
+                )
+            except (ValueError, TypeError):
+                yes_resolved = 0.0
+            yes_won = yes_resolved > 0.5
+
+            s, t = write_signal_and_trade(
+                db=db,
+                market=m,
+                market_type="weather",
+                model_prob=model_prob,
+                direction="up" if model_prob > 0.5 else "down",
+                hours_to_resolution=24.0,
+                creation_time=creation_time,
+                market_time=market_time,
+                yes_won=yes_won,
+                extra_sources={
+                    "city": city_key,
+                    "actual_temp": actual_temp,
+                    "threshold": threshold,
+                    "unit": "F" if is_f else "C",
+                },
+            )
+            signals_created += s
+            trades_created += t
+            weather_signals += s
 
         db.commit()
         logger.info(
-            f"Created {signals_created} honest signals and {trades_created} trades"
+            f"Created {signals_created} honest signals and {trades_created} trades "
+            f"(crypto={crypto_signals}, weather={weather_signals})"
         )
         return signals_created
 
@@ -450,27 +846,35 @@ async def seed_honest_backtest(
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Seed HONEST backtest data from resolved BTC markets"
+        description="Seed HONEST backtest data from resolved Polymarket markets"
     )
     parser.add_argument(
-        "--days", type=int, default=90, help="Days of history to search"
+        "--days", type=int, default=365, help="Days of history to search"
     )
     parser.add_argument(
-        "--limit", type=int, default=200, help="Max markets from Gamma API"
+        "--types",
+        type=str,
+        default="crypto,weather",
+        help="Comma-separated market types to seed (crypto,weather). Default: crypto,weather",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Preview without writing to DB"
     )
     args = parser.parse_args()
 
+    enabled_types = [t.strip() for t in args.types.split(",") if t.strip()]
+
     logger.info("=" * 60)
     logger.info("PolyEdge HONEST Backtest Data Seeder")
-    logger.info("No look-ahead bias — uses actual BTC price at market creation time")
+    logger.info(f"Market types: {enabled_types}")
+    logger.info(
+        "No look-ahead bias — uses actual historical data at market creation time"
+    )
     logger.info("=" * 60)
 
     await seed_honest_backtest(
         days_back=args.days,
-        limit=args.limit,
+        enabled_types=enabled_types,
         dry_run=args.dry_run,
     )
 
