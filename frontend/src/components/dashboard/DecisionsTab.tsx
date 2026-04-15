@@ -61,8 +61,8 @@ export function DecisionsTab() {
                   {r.created_at ? new Date(r.created_at).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—'}
                 </td>
                 <td className="px-2 py-1 text-neutral-500">{r.strategy}</td>
-                <td className="px-2 py-1 text-neutral-400 truncate max-w-[80px]" title={r.market_ticker}>
-                  {r.market_ticker.length > 14 ? `${r.market_ticker.slice(0, 12)}…` : r.market_ticker}
+                <td className="px-2 py-1 text-neutral-400 truncate max-w-[80px]" title={r.market_ticker ?? ''}>
+                  {(r.market_ticker ?? '').length > 14 ? `${(r.market_ticker ?? '').slice(0, 12)}…` : (r.market_ticker ?? '—')}
                 </td>
                 <td className="px-2 py-1">
                   {r.decision === 'BUY' ? <span className="text-green-400 font-bold">BUY</span>

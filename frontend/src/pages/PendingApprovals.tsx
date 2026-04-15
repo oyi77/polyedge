@@ -216,8 +216,8 @@ export default function PendingApprovals() {
                       className="accent-green-500"
                     />
                   </td>
-                  <td className="px-3 py-2 text-neutral-300 truncate max-w-[150px]" title={it.market_id}>
-                    {it.market_id.length > 20 ? `${it.market_id.slice(0, 18)}...` : it.market_id}
+                  <td className="px-3 py-2 text-neutral-300 truncate max-w-[150px]" title={it.market_id ?? ''}>
+                    {(it.market_id ?? '').length > 20 ? `${(it.market_id ?? '').slice(0, 18)}...` : (it.market_id ?? '--')}
                   </td>
                   <td className={`px-3 py-2 font-bold ${it.direction === 'up' || it.direction === 'yes' ? 'text-green-400' : 'text-red-400'}`}>
                     {it.direction?.toUpperCase() ?? '--'}

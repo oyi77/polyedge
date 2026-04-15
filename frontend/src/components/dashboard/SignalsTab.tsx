@@ -81,8 +81,8 @@ export function SignalsTab() {
                     ? <span className="text-amber-400">AI</span>
                     : <span className="text-orange-400">BTC</span>}
                 </td>
-                <td className="px-2 py-1 text-neutral-400 truncate max-w-[100px]" title={row.market_ticker}>
-                  {row.market_ticker.length > 18 ? `${row.market_ticker.slice(0, 16)}…` : row.market_ticker}
+                <td className="px-2 py-1 text-neutral-400 truncate max-w-[100px]" title={row.market_ticker ?? ''}>
+                  {(row.market_ticker ?? '').length > 18 ? `${(row.market_ticker ?? '').slice(0, 16)}…` : (row.market_ticker ?? '—')}
                 </td>
                 <td className={`px-2 py-1 font-bold ${row.direction === 'up' || row.direction === 'yes' ? 'text-green-400' : 'text-red-400'}`}>
                   {row.direction?.toUpperCase()}

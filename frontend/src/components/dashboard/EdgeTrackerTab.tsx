@@ -169,7 +169,7 @@ export function EdgeTrackerTab() {
                 <div className="w-full bg-neutral-800 h-1">
                   <div
                     className={`h-1 ${
-                      (track.signals_executed / track.total_signals) >= 0.5 ? 'bg-blue-500' : 'bg-yellow-600'
+                      (track.total_signals > 0 && (track.signals_executed / track.total_signals) >= 0.5) ? 'bg-blue-500' : 'bg-yellow-600'
                     }`}
                     style={{
                       width: `${track.total_signals > 0 ? (track.signals_executed / track.total_signals) * 100 : 0}%`
