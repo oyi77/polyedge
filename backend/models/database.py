@@ -45,7 +45,7 @@ def configure_sqlite_wal(engine_obj):
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA busy_timeout=10000")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
@@ -187,6 +187,7 @@ class Signal(Base):
         String, nullable=True, default="legacy", index=True
     )  # Which edge track generated this signal
     execution_mode = Column(String, nullable=True, default="paper")  # 'paper' or 'live'
+    token_id = Column(String, nullable=True)
 
     executed = Column(Boolean, default=False)
 

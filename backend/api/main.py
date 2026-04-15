@@ -638,8 +638,6 @@ async def get_dashboard(
     )
     equity_curve = []
     cumulative_pnl = 0
-    # Simulate running bankroll: INITIAL + realized P&L (no position adjustments needed
-    # since PnL is already net of stake returns/losses)
     for trade in equity_trades:
         if trade.pnl is not None:
             cumulative_pnl += trade.pnl

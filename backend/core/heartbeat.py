@@ -24,7 +24,7 @@ def _do_heartbeat_write_raw(strategy_name: str) -> None:
     from backend.config import settings
 
     db_path = settings.DATABASE_URL.replace("sqlite:///", "")
-    conn = sqlite3.connect(db_path, timeout=5.0)
+    conn = sqlite3.connect(db_path, timeout=10.0)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         row = conn.execute("SELECT misc_data FROM bot_state WHERE id=1").fetchone()
@@ -237,7 +237,7 @@ def _sync_balance_to_db(balance: float, mode: str) -> None:
     from backend.config import settings
 
     db_path = settings.DATABASE_URL.replace("sqlite:///", "")
-    conn = sqlite3.connect(db_path, timeout=5.0)
+    conn = sqlite3.connect(db_path, timeout=10.0)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         if mode == "live":

@@ -686,14 +686,25 @@ async def auto_trader_job():
 
             executed = 0
             queued = 0
+            skipped = 0
             for sig in signals:
+                # In live/testnet mode, signals without a token_id cannot
+                # be placed on the CLOB — mark them executed so they are
+                # not re-processed forever.
+                token_id = getattr(sig, "token_id", None)
+                if settings.TRADING_MODE in ("testnet", "live") and not token_id:
+                    sig.executed = True
+                    skipped += 1
+                    continue
+
                 signal_dict = {
                     "market_id": sig.market_ticker,
-                    "side": "BUY",
+                    "market_ticker": sig.market_ticker,
+                    "side": "BUY" if (sig.direction or "yes") == "yes" else "SELL",
                     "confidence": getattr(sig, "confidence", 0.0) or 0.0,
                     "size": min(50.0, bankroll * 0.03),
                     "price": getattr(sig, "model_probability", 0.5) or 0.5,
-                    "token_id": None,
+                    "token_id": token_id,
                 }
                 result = await trader.execute_signal(
                     signal_dict,
@@ -712,16 +723,26 @@ async def auto_trader_job():
                         "edge": getattr(sig, "edge", 0.0) or 0.0,
                         "confidence": getattr(sig, "confidence", 0.0) or 0.0,
                         "model_probability": getattr(sig, "model_probability", None),
+                        "token_id": token_id,
                         "platform": "polymarket",
                     }
                     exec_result = await execute_decision(decision, "auto_trader", db=db)
                     if exec_result is not None:
+                        sig.executed = True
                         executed += 1
                         current_exposure += trade_size
                 elif result.pending_approval:
                     queued += 1
+                else:
+                    # Signal was rejected — mark executed so it's not
+                    # re-processed every cycle.
+                    sig.executed = True
+                    skipped += 1
             db.commit()
-            log_event("data", f"AutoTrader cycle: executed={executed} queued={queued}")
+            log_event(
+                "info",
+                f"AutoTrader cycle: executed={executed} queued={queued} skipped={skipped}",
+            )
         finally:
             db.close()
     except Exception as e:

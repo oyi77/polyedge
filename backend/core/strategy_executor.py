@@ -200,6 +200,7 @@ async def execute_decision(
                 reasoning=reasoning,
                 track_name=strategy_name,
                 execution_mode=settings.TRADING_MODE,
+                token_id=token_id,
                 executed=True,
             )
             db.add(signal_record)
