@@ -1,5 +1,6 @@
 """Auto-trader: routes high-confidence signals to immediate execution,
 low-confidence signals to a manual approval queue."""
+
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,7 +26,9 @@ class AutoTrader:
         self.risk = risk_manager
         self.clob_factory = clob_factory
 
-    async def execute_signal(self, signal: Dict[str, Any], bankroll: float, current_exposure: float) -> ExecutionResult:
+    async def execute_signal(
+        self, signal: Dict[str, Any], bankroll: float, current_exposure: float
+    ) -> ExecutionResult:
         confidence = float(signal.get("confidence", 0.0))
         size = float(signal.get("size", 0.0))
 
@@ -34,6 +37,7 @@ class AutoTrader:
             current_exposure=current_exposure,
             bankroll=bankroll,
             confidence=confidence,
+            market_ticker=signal.get("market_ticker"),
         )
         if not decision.allowed:
             return ExecutionResult(False, False, decision.reason)
@@ -41,13 +45,27 @@ class AutoTrader:
         if confidence < settings.AUTO_APPROVE_MIN_CONFIDENCE:
             if settings.SIGNAL_APPROVAL_MODE != "manual":
                 # In auto_approve or auto_deny mode, skip low-confidence signals instead of queuing
-                return ExecutionResult(False, False, f"skipped low-confidence signal (conf {confidence:.2f})")
+                return ExecutionResult(
+                    False,
+                    False,
+                    f"skipped low-confidence signal (conf {confidence:.2f})",
+                )
             pending_id = self._create_pending(signal, decision.adjusted_size)
-            return ExecutionResult(False, True, f"queued for manual approval (conf {confidence:.2f})", pending_id=pending_id)
+            return ExecutionResult(
+                False,
+                True,
+                f"queued for manual approval (conf {confidence:.2f})",
+                pending_id=pending_id,
+            )
 
         # High-confidence path
         if settings.TRADING_MODE == "paper" or self.clob_factory is None:
-            return ExecutionResult(True, False, "paper-mode auto-execute", order_id=f"paper-{datetime.now(timezone.utc).timestamp()}")
+            return ExecutionResult(
+                True,
+                False,
+                "paper-mode auto-execute",
+                order_id=f"paper-{datetime.now(timezone.utc).timestamp()}",
+            )
 
         try:
             async with self.clob_factory() as clob:
@@ -58,7 +76,9 @@ class AutoTrader:
                     size=decision.adjusted_size,
                 )
             if result.success:
-                return ExecutionResult(True, False, "live auto-execute", order_id=result.order_id)
+                return ExecutionResult(
+                    True, False, "live auto-execute", order_id=result.order_id
+                )
             return ExecutionResult(False, False, f"clob rejected: {result.error}")
         except Exception as e:
             logger.exception("auto_trader live execute error")

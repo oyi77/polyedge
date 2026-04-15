@@ -509,9 +509,12 @@ class PolyEdgeBot:
 
             db = SessionLocal()
             try:
+                from backend.config import settings as _s
+
                 pending = (
                     db.query(Trade)
                     .filter(Trade.settled == False)
+                    .filter(Trade.trading_mode == _s.TRADING_MODE)
                     .order_by(Trade.timestamp.desc())
                     .all()
                 )
@@ -659,7 +662,15 @@ class PolyEdgeBot:
 
             db = SessionLocal()
             try:
-                trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(n).all()
+                from backend.config import settings as _s
+
+                trades = (
+                    db.query(Trade)
+                    .filter(Trade.trading_mode == _s.TRADING_MODE)
+                    .order_by(Trade.timestamp.desc())
+                    .limit(n)
+                    .all()
+                )
             finally:
                 db.close()
             if not trades:
@@ -697,8 +708,21 @@ class PolyEdgeBot:
 
             db = SessionLocal()
             try:
-                pending = db.query(Trade).filter(Trade.settled == False).all()
-                settled = db.query(Trade).filter(Trade.settled == True).all()
+                from backend.config import settings as _s
+
+                mode = _s.TRADING_MODE
+                pending = (
+                    db.query(Trade)
+                    .filter(Trade.settled == False)
+                    .filter(Trade.trading_mode == mode)
+                    .all()
+                )
+                settled = (
+                    db.query(Trade)
+                    .filter(Trade.settled == True)
+                    .filter(Trade.trading_mode == mode)
+                    .all()
+                )
             finally:
                 db.close()
             total_pnl = sum(t.pnl or 0.0 for t in settled)
@@ -742,7 +766,14 @@ class PolyEdgeBot:
 
             db = SessionLocal()
             try:
-                all_trades = db.query(Trade).filter(Trade.settled == True).all()
+                from backend.config import settings as _s
+
+                all_trades = (
+                    db.query(Trade)
+                    .filter(Trade.settled == True)
+                    .filter(Trade.trading_mode == _s.TRADING_MODE)
+                    .all()
+                )
             finally:
                 db.close()
             if not all_trades:
