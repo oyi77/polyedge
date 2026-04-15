@@ -118,7 +118,9 @@ async def generate_weather_signal(
         members = forecast.member_lows
 
     above_count = sum(1 for m in members if m > market.threshold_f)
-    agreement_frac = max(above_count, len(members) - above_count) / len(members)
+    agreement_frac = (
+        max(above_count, len(members) - above_count) / len(members) if members else 0.5
+    )
     confidence = min(0.9, agreement_frac)
 
     # Kelly sizing — use current bankroll from BotState, not static INITIAL_BANKROLL
