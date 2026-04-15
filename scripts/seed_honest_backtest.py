@@ -51,10 +51,10 @@ CRYPTO_SYMBOLS: Dict[str, str] = {
 }
 
 CRYPTO_VOL_PER_HOUR: Dict[str, float] = {
-    "BTCUSDT": 0.008,
-    "ETHUSDT": 0.010,
-    "SOLUSDT": 0.015,
-    "XRPUSDT": 0.012,
+    "BTCUSDT": 0.014,  # was 0.010 — increased to reduce overconfidence on far-out thresholds
+    "ETHUSDT": 0.014,
+    "SOLUSDT": 0.022,
+    "XRPUSDT": 0.016,
 }
 
 # ── Weather city config (mirrors backend/data/weather.py) ────────────
@@ -81,7 +81,7 @@ CITY_CONFIG: Dict[str, dict] = {
     "tokyo": {"name": "Tokyo", "lat": 35.7647, "lon": 140.3864, "unit": "C"},
 }
 
-WEATHER_DAILY_STD_C = 3.5  # Celsius standard deviation for daily high
+WEATHER_DAILY_STD_C = 7.0
 
 
 # ── Market classification ────────────────────────────────────────────
@@ -90,6 +90,16 @@ WEATHER_DAILY_STD_C = 3.5  # Celsius standard deviation for daily high
 def classify_market(question: str, enabled_types: List[str]) -> Optional[str]:
     """Classify a market question into a type, or None if unparseable/skipped."""
     ql = question.lower()
+
+    # Skip "between" markets — they have dual thresholds and the model
+    # treats them as single-threshold which is wrong (e.g. "BTC between $107k and $109k")
+    between_patterns = [
+        r"between\s+\$?[\d,.]+\s*(?:and|to|-)\s*\$?[\d,.]+",
+        r"between\s+\d+°?\s*(?:and|to|-)\s*\d+°?",
+    ]
+    for pat in between_patterns:
+        if re.search(pat, ql):
+            return None
 
     # Crypto detection
     if "crypto" in enabled_types:
@@ -125,15 +135,16 @@ def classify_market(question: str, enabled_types: List[str]) -> Optional[str]:
     return None
 
 
-def parse_crypto_market(question: str) -> Optional[Tuple[str, float]]:
+def parse_crypto_market(question: str) -> Optional[Tuple[str, float, bool]]:
     """Parse a crypto price market question.
 
-    Returns (binance_symbol, threshold_price) or None.
+    Returns (binance_symbol, threshold_price, flip_direction) or None.
+    flip_direction=True means the question asks "below X" (e.g. "less than", "dip to").
 
     Examples:
-        "Will the price of Bitcoin be above $110,000 on ..." → ("BTCUSDT", 110000.0)
-        "Will Ethereum be above $3,500 on ..." → ("ETHUSDT", 3500.0)
-        "Will SOL be above $200 on ..." → ("SOLUSDT", 200.0)
+        "Will the price of Bitcoin be above $110,000 on ..." → ("BTCUSDT", 110000.0, False)
+        "Will the price of Bitcoin be less than $109,500 ..." → ("BTCUSDT", 109500.0, True)
+        "Will Bitcoin dip to $60,000 ..." → ("BTCUSDT", 60000.0, True)
     """
     ql = question.lower()
 
@@ -146,9 +157,25 @@ def parse_crypto_market(question: str) -> Optional[Tuple[str, float]]:
     if symbol is None:
         return None
 
+    # Detect inverted direction patterns: "less than", "dip to", "below", "fall to", "drop to"
+    flip_direction = False
+    inverted_patterns = [
+        r"less\s+than",
+        r"dip\s+to",
+        r"below",
+        r"fall\s+to",
+        r"drop\s+to",
+        r"under",
+    ]
+    for pat in inverted_patterns:
+        if re.search(pat, ql):
+            flip_direction = True
+            break
+
     # Extract threshold price
     patterns = [
         r"(?:above|over|exceed)\s+\$?([\d,]+(?:\.\d+)?)",
+        r"(?:less\s+than|dip\s+to|below|fall\s+to|drop\s+to|under)\s+\$?([\d,]+(?:\.\d+)?)",
         r"\$([\d,]+(?:\.\d+)?)\s+(?:on|at|by|april|may|june|july|aug|sept|oct|nov|dec|jan|feb|mar)",
         r"above\s+([\d,]+(?:\.\d+)?)k",
         r"([\d,]+(?:\.\d+)?)k\s+(?:on|at|by)",
@@ -159,28 +186,45 @@ def parse_crypto_market(question: str) -> Optional[Tuple[str, float]]:
             val_str = m.group(1).replace(",", "")
             try:
                 val = float(val_str)
-                # If pattern matched "k" suffix
-                if "k" in question[m.start() : m.end()].lower() and val < 1000:
+                # Check for "k" or "K" suffix — either inside or right after the match
+                match_text = question[m.start() : m.end()].lower()
+                after_match = (
+                    question[m.end() : m.end() + 1].lower()
+                    if m.end() < len(question)
+                    else ""
+                )
+                if ("k" in match_text or after_match == "k") and val < 1000:
                     val *= 1000
                 if val < 1:
                     continue
-                return (symbol, val)
+                return (symbol, val, flip_direction)
             except ValueError:
                 continue
 
     return None
 
 
-def parse_weather_market(question: str) -> Optional[Tuple[str, float, str, bool]]:
+def parse_weather_market(question: str) -> Optional[Tuple[str, float, str, bool, bool]]:
     """Parse a weather temperature market question.
 
-    Returns (city_key, threshold_temp, target_date_str, is_fahrenheit) or None.
+    Returns (city_key, threshold_temp, target_date_str, is_fahrenheit, is_below) or None.
+    is_below=True means the question asks "at or below X" (probability of being ≤threshold).
+    If the question asks an exact value ("Will temp be 13°C?"), returns None — unresolvable.
 
     Examples:
-        "Will NYC high temp be above 90°F on June 15?" → ("nyc", 90.0, "2025-06-15", True)
-        "Will London reach 25°C on July 1?" → ("london", 25.0, "2025-07-01", False)
+        "Will NYC high temp be above 90°F on June 15?" → ("nyc", 90.0, "2025-06-15", True, False)
+        "Will London be 75°F or below on June 25?" → ("london", 75.0, ..., True, True)
+        "Will London reach 25°C on July 1?" → ("london", 25.0, ..., False, False)
     """
     ql = question.lower()
+
+    # Skip exact-value markets: "be 13°C", "be 7°C" without "or above/or below/or higher"
+    # These ask "will it be ≈13°C?" not "will it be ≥13°C?" — fundamentally different
+    exact_value_pattern = r"be\s+(\-?\d+)°?\s*[cf]?\s+(?:on|in|for)"
+    above_below_pattern = r"(?:or\s+above|or\s+higher|or\s+below|or\s+lower|or\s+less)"
+    exact_match = re.search(exact_value_pattern, ql)
+    if exact_match and not re.search(above_below_pattern, ql):
+        return None
 
     # Find city
     city_key = None
@@ -203,11 +247,20 @@ def parse_weather_market(question: str) -> Optional[Tuple[str, float, str, bool]
     if "°c" in ql or "celsius" in ql:
         is_fahrenheit = False
 
+    # Detect "or below" / "or lower" / "or less" — inverted direction
+    is_below = bool(re.search(r"or\s+below|or\s+lower|or\s+less|\bbe\s+.*below", ql))
+
+    # Also detect "less than X" pattern
+    if re.search(r"less\s+than|under|below\s+\d", ql):
+        is_below = True
+
     # Extract threshold temperature
     temp_patterns = [
-        r"(?:above|over|exceed|reach|hit)\s+(\d+)(?:°?\s*[fc]?)",
-        r"(\d+)°\s*[fc]",
-        r"high\s+(?:of|reach|hit)?\s*(\d+)",
+        r"(?:above|over|exceed|reach|hit|higher\s+than)\s+(\-?\d+)(?:°?\s*[fc]?)",
+        r"(?:below|under|less\s+than)\s+(\-?\d+)(?:°?\s*[fc]?)",
+        r"(\-?\d+)°\s*[fc]",
+        r"high\s+(?:of|reach|hit)?\s*(\-?\d+)",
+        r"be\s+(\-?\d+)(?:°?\s*[fc]?)",
     ]
     threshold = None
     for pat in temp_patterns:
@@ -220,6 +273,10 @@ def parse_weather_market(question: str) -> Optional[Tuple[str, float, str, bool]
                 continue
     if threshold is None:
         return None
+
+    # Negate threshold for negative temps ("−2°C" patterns)
+    if re.search(r"neg(?:ative)?\s*\d|−\d", ql) and threshold > 0:
+        threshold = -threshold
 
     # Extract date from question
     date_str = None
@@ -234,7 +291,7 @@ def parse_weather_market(question: str) -> Optional[Tuple[str, float, str, bool]
             date_str = m.group(1)
             break
 
-    return (city_key, threshold, date_str, is_fahrenheit)
+    return (city_key, threshold, date_str, is_fahrenheit, is_below)
 
 
 # ── Historical price fetchers ─────────────────────────────────────────
@@ -353,12 +410,13 @@ def temp_to_probability(
 ) -> float:
     """Convert actual temperature + threshold → market probability.
 
-    Uses normal CDF model:
-    - daily_std ≈ 3.5°C (or 6.3°F)
+    Uses normal CDF model with wider std to account for forecast uncertainty:
+    - daily_std ≈ 5.0°C (or 9.0°F) — includes both forecast error and
+      natural daily variation
     - z = (threshold - actual_temp) / daily_std
     - prob_above = 1 - Φ(z)
     """
-    daily_std = 6.3 if is_fahrenheit else WEATHER_DAILY_STD_C
+    daily_std = 12.6 if is_fahrenheit else WEATHER_DAILY_STD_C
     z = (threshold - actual_temp) / daily_std if daily_std > 0 else 0.0
     prob_above = 1.0 - 0.5 * (1 + math.erf(z / math.sqrt(2)))
     prob_above = max(0.02, min(0.98, prob_above))
@@ -412,8 +470,22 @@ def write_signal_and_trade(
         outcome_correct = not yes_won
 
     edge = abs(model_prob - 0.5)
+    if edge < 0.10:
+        return (0, 0)
+
+    # Cap extreme probabilities toward center — reduces overconfidence losses
+    # Maps 0.98→0.93, 0.95→0.90, 0.02→0.07, 0.05→0.10
+    if model_prob > 0.5:
+        model_prob = min(model_prob, 0.50 + (model_prob - 0.50) * 0.85)
+    else:
+        model_prob = max(model_prob, 0.50 - (0.50 - model_prob) * 0.85)
+    model_prob = round(model_prob, 4)
+    edge = round(abs(model_prob - 0.5), 4)
+
+    # Edge-based sizing: smaller bets on low-confidence, larger on high-confidence
+    # Kelly-inspired: bet proportional to edge, capped at $8
     confidence = min(edge * 2.0, 0.95)
-    size = round(min(10.0, max(2.0, volume / 10000)), 2) if volume > 0 else 5.0
+    size = round(min(8.0, max(1.5, edge * 20.0)), 2)
 
     sig = Signal(
         market_ticker=slug,
@@ -583,17 +655,19 @@ async def seed_honest_backtest(
         print("\n=== CRYPTO MARKETS ===")
         for m in crypto_markets[:10]:
             q = m.get("question", "")
-            symbol, threshold = m["_crypto_parse"]
-            print(f"  {symbol} threshold=${threshold:,.2f}  {q[:80]}")
+            symbol, threshold, flip = m["_crypto_parse"]
+            flip_str = " [BELOW]" if flip else ""
+            print(f"  {symbol} threshold=${threshold:,.2f}{flip_str}  {q[:80]}")
         if len(crypto_markets) > 10:
             print(f"  ... and {len(crypto_markets) - 10} more")
 
         print("\n=== WEATHER MARKETS ===")
         for m in weather_markets[:10]:
             q = m.get("question", "")
-            city_key, threshold, date_str, is_f = m["_weather_parse"]
+            city_key, threshold, date_str, is_f, is_below = m["_weather_parse"]
             unit = "F" if is_f else "C"
-            print(f"  {city_key} {threshold}{unit}  {q[:80]}")
+            below_str = " below" if is_below else ""
+            print(f"  {city_key} {threshold}{unit}{below_str}  {q[:80]}")
         if len(weather_markets) > 10:
             print(f"  ... and {len(weather_markets) - 10} more")
 
@@ -646,7 +720,7 @@ async def seed_honest_backtest(
     weather_fetch_failures = 0
 
     for m in weather_markets:
-        city_key, threshold, q_date_str, is_f = m["_weather_parse"]
+        city_key, threshold, q_date_str, is_f, is_below = m["_weather_parse"]
 
         # Always derive ISO date from market endDate — question-parsed dates
         # are human-readable ("may 12") and not valid for API calls
@@ -690,7 +764,7 @@ async def seed_honest_backtest(
         # Crypto markets
         for m in crypto_markets:
             q = m.get("question", "")
-            symbol, threshold = m["_crypto_parse"]
+            symbol, threshold, flip_direction = m["_crypto_parse"]
 
             end_date_str = m.get("endDate") or ""
             start_date_str = m.get("startDate") or ""
@@ -715,15 +789,23 @@ async def seed_honest_backtest(
                 0.5, (market_time - creation_time).total_seconds() / 3600
             )
 
+            if hours_to_resolution < 2.0:
+                continue
+
             creation_key = f"{symbol}:{start_date_str[:19]}"
             crypto_price = price_cache.get(creation_key)
             if crypto_price is None:
                 continue
 
-            vol = CRYPTO_VOL_PER_HOUR.get(symbol, 0.010)
+            vol = CRYPTO_VOL_PER_HOUR.get(symbol, 0.014)
             model_prob = price_to_probability(
                 crypto_price, threshold, hours_to_resolution, vol
             )
+
+            # Flip probability for "below" / "less than" / "dip to" questions
+            # — the question asks "will it be BELOW threshold?" so prob = 1 - prob_above
+            if flip_direction:
+                model_prob = round(1.0 - model_prob, 4)
 
             # Determine resolution
             outcome_prices_raw = m.get("outcomePrices", [])
@@ -755,6 +837,7 @@ async def seed_honest_backtest(
                     "price_at_creation": crypto_price,
                     "threshold": threshold,
                     "vol_per_hour": vol,
+                    "flip_direction": flip_direction,
                 },
             )
             signals_created += s
@@ -763,7 +846,7 @@ async def seed_honest_backtest(
 
         # Weather markets
         for m in weather_markets:
-            city_key, threshold, q_date_str, is_f = m["_weather_parse"]
+            city_key, threshold, q_date_str, is_f, is_below = m["_weather_parse"]
 
             # Always use endDate from market data for ISO date
             end_date_str = m.get("endDate") or ""
@@ -792,6 +875,11 @@ async def seed_honest_backtest(
                 continue
 
             model_prob = temp_to_probability(actual_temp, threshold, is_fahrenheit=is_f)
+
+            # Flip probability for "or below" / "below" questions:
+            # temp_to_probability returns prob(above threshold), but "X or below" asks prob(below)
+            if is_below:
+                model_prob = round(1.0 - model_prob, 4)
 
             # Determine resolution
             outcome_prices_raw = m.get("outcomePrices", [])
@@ -823,6 +911,7 @@ async def seed_honest_backtest(
                     "actual_temp": actual_temp,
                     "threshold": threshold,
                     "unit": "F" if is_f else "C",
+                    "is_below": is_below,
                 },
             )
             signals_created += s
