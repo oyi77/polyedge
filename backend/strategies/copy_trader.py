@@ -341,11 +341,16 @@ class CopyTraderStrategy(BaseStrategy):
                 _fetch_token_id(s.source_trade.condition_id, self._engine._http)
                 for s in (signals or [])
             ]
-            token_ids = await asyncio.gather(*token_id_tasks) if token_id_tasks else []
+            token_ids = (
+                await asyncio.gather(*token_id_tasks, return_exceptions=True)
+                if token_id_tasks
+                else []
+            )
 
             # Populate result.decisions so strategy_executor can place trades
             for i, signal in enumerate(signals or []):
-                token_id = token_ids[i] if i < len(token_ids) else None
+                raw_tid = token_ids[i] if i < len(token_ids) else None
+                token_id = raw_tid if isinstance(raw_tid, str) else None
                 if not token_id:
                     ctx.logger.warning(
                         f"CopyTrader: skipping signal for {signal.source_trade.condition_id[:20]}... — no token_id"

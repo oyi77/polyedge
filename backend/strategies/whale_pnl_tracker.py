@@ -80,6 +80,32 @@ async def _fetch_token_id(
             await http.aclose()
 
 
+async def _fetch_market_prob(
+    condition_id: str, http: Optional[httpx.AsyncClient] = None
+) -> float:
+    close_client = False
+    if http is None:
+        http = httpx.AsyncClient(timeout=10.0)
+        close_client = True
+    try:
+        resp = await http.get(
+            f"{GAMMA_HOST}/markets",
+            params={"condition_id": condition_id},
+        )
+        if resp.status_code == 200:
+            markets = resp.json()
+            if markets and isinstance(markets, list) and len(markets) > 0:
+                prices_str = markets[0].get("outcomePrices")
+                if prices_str:
+                    return float(str(prices_str).split(",")[0])
+        return 0.50
+    except Exception:
+        return 0.50
+    finally:
+        if close_client:
+            await http.aclose()
+
+
 @dataclass
 class WhalePosition:
     """Represents a whale's open position."""
@@ -164,18 +190,29 @@ class WhalePNLTrackerStrategy(BaseStrategy):
 
             # Fetch token_ids for all positions in parallel
             token_id_map: Dict[str, Optional[str]] = {}
+            market_prob_map: Dict[str, float] = {}
             async with httpx.AsyncClient(timeout=10.0) as http:
                 token_id_tasks = [
                     _fetch_token_id(pos.condition_id, http) for pos in all_positions
                 ]
+                price_tasks = [
+                    _fetch_market_prob(pos.condition_id, http) for pos in all_positions
+                ]
                 token_id_results = await asyncio.gather(
                     *token_id_tasks, return_exceptions=True
+                )
+                price_results = await asyncio.gather(
+                    *price_tasks, return_exceptions=True
                 )
                 for pos, tid in zip(all_positions, token_id_results):
                     if isinstance(tid, str):
                         token_id_map[pos.condition_id] = tid
                     else:
                         token_id_map[pos.condition_id] = None
+                for pos, price in zip(all_positions, price_results):
+                    market_prob_map[pos.condition_id] = (
+                        price if isinstance(price, float) else 0.50
+                    )
 
             # Step 3: Generate signals for new positions
             for position in all_positions:
@@ -192,13 +229,7 @@ class WhalePNLTrackerStrategy(BaseStrategy):
                         )
                         direction = "up" if position.side == "YES" else "down"
 
-                        # entry_price = cost per share for the direction we buy.
-                        # Without live orderbook data we fall back to 0.50 (fair
-                        # coin).  This is direction-aware: YES share costs
-                        # market_prob, NO share costs 1 - market_prob.
-                        # TODO: fetch real YES price from ctx.clob when
-                        # condition_id maps to a real Polymarket market.
-                        market_prob = 0.50
+                        market_prob = market_prob_map.get(position.condition_id, 0.50)
                         entry_price = (
                             market_prob if position.side == "YES" else 1.0 - market_prob
                         )

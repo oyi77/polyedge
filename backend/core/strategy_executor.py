@@ -80,7 +80,11 @@ async def execute_decision(
                     else 0.0
                 )
             else:
-                bankroll = state.bankroll or settings.INITIAL_BANKROLL
+                bankroll = (
+                    state.bankroll
+                    if state.bankroll is not None
+                    else settings.INITIAL_BANKROLL
+                )
             current_exposure = _get_current_exposure(db)
 
             risk = risk_manager.validate_trade(

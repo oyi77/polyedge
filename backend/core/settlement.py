@@ -262,18 +262,18 @@ async def update_bot_state_with_settlements(
                     # No bankroll modification — CLOB balance is authoritative for live mode.
                     pass
 
-        # AGI hook: update Bayesian Kelly posterior on trade outcome
-        try:
+            # AGI hook: update Bayesian Kelly posterior on each trade outcome
             if is_real_trade:
-                from backend.agents.pipeline import AGITradingPipeline
+                try:
+                    from backend.agents.pipeline import AGITradingPipeline
 
-                _agi = AGITradingPipeline()
-                _agi.record_outcome(
-                    market_ticker=trade.market_ticker,
-                    won=(trade.result == "win"),
-                )
-        except Exception as _e:
-            logger.debug(f"[settlement] AGI record_outcome skipped: {_e}")
+                    _agi = AGITradingPipeline()
+                    _agi.record_outcome(
+                        market_ticker=trade.market_ticker,
+                        won=(trade.result == "win"),
+                    )
+                except Exception as _e:
+                    logger.debug(f"[settlement] AGI record_outcome skipped: {_e}")
 
         try:
             db.commit()
