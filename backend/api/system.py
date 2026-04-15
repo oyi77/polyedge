@@ -330,7 +330,7 @@ async def get_strategy_stats(
             func.avg(Trade.edge_at_entry).label("avg_edge"),
             func.avg(Trade.size).label("avg_size"),
         )
-        .filter(Trade.strategy.isnot(None))
+        .filter(Trade.strategy.isnot(None), Trade.trading_mode == settings.TRADING_MODE)
         .group_by(Trade.strategy)
         .all()
     )
