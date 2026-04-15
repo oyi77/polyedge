@@ -387,6 +387,7 @@ class TestDeduplication:
                     model_probability=0.55,
                     market_price_at_entry=0.45,
                     edge_at_entry=0.10,
+                    trading_mode="paper",
                 )
                 session.add(t)
             session.commit()
@@ -397,8 +398,11 @@ class TestDeduplication:
                 resolve_calls.append((set(normal), set(weather)))
                 return {"DEDUP-MKT": (False, None)}
 
-            with patch(
-                "backend.core.settlement._resolve_markets", side_effect=mock_resolve
+            with (
+                patch(
+                    "backend.core.settlement._resolve_markets", side_effect=mock_resolve
+                ),
+                patch("backend.core.settlement.settings.TRADING_MODE", "paper"),
             ):
                 from backend.core.settlement import settle_pending_trades
 

@@ -72,9 +72,13 @@ async def _process_signal_with_approval(
     MIN_TRADE_SIZE = 10
     bankroll = (
         state.bankroll
+        if state.bankroll is not None
+        else settings.INITIAL_BANKROLL
         if settings.TRADING_MODE != "paper"
         else (
-            state.paper_bankroll if state.paper_bankroll is not None else state.bankroll
+            state.paper_bankroll
+            if state.paper_bankroll is not None
+            else settings.INITIAL_BANKROLL
         )
     )
     trade_size = min(signal.suggested_size, bankroll * MAX_TRADE_FRACTION)
@@ -415,11 +419,13 @@ async def weather_scan_and_trade_job():
 
                 bankroll = (
                     state.bankroll
+                    if state.bankroll is not None
+                    else settings.INITIAL_BANKROLL
                     if settings.TRADING_MODE != "paper"
                     else (
                         state.paper_bankroll
                         if state.paper_bankroll is not None
-                        else state.bankroll
+                        else settings.INITIAL_BANKROLL
                     )
                 )
                 if bankroll < MIN_TRADE_SIZE:
@@ -505,7 +511,13 @@ async def settlement_job():
 
         db = SessionLocal()
         try:
-            pending_count = db.query(Trade).filter(Trade.settled == False).count()
+            pending_count = (
+                db.query(Trade)
+                .filter(
+                    Trade.settled == False, Trade.trading_mode == settings.TRADING_MODE
+                )
+                .count()
+            )
 
             if pending_count == 0:
                 log_event("data", "No pending trades to settle")
@@ -621,17 +633,22 @@ async def auto_trader_job():
 
             bankroll = (
                 state.bankroll
+                if state.bankroll is not None
+                else settings.INITIAL_BANKROLL
                 if settings.TRADING_MODE != "paper"
                 else (
                     state.paper_bankroll
                     if state.paper_bankroll is not None
-                    else state.bankroll
+                    else settings.INITIAL_BANKROLL
                 )
             )
 
             signals = (
                 db.query(Signal)
-                .filter(Signal.executed == False)
+                .filter(
+                    Signal.executed == False,
+                    Signal.trading_mode == settings.TRADING_MODE,
+                )
                 .order_by(Signal.timestamp.desc())
                 .limit(10)
                 .all()
@@ -700,7 +717,11 @@ async def heartbeat_job():
     try:
         db = SessionLocal()
         state = db.query(BotState).first()
-        pending = db.query(Trade).filter(Trade.settled == False).count()
+        pending = (
+            db.query(Trade)
+            .filter(Trade.settled == False, Trade.trading_mode == settings.TRADING_MODE)
+            .count()
+        )
 
         if state is None:
             log_event("warning", "Heartbeat: Bot state not initialized")
